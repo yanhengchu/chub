@@ -9,7 +9,7 @@
 
 Chub 只管理一种 `Chub Session`。页面、API、微信槽位和任务入口统一使用 `session_id`；调用方不能提交或替换 `native_session_id`、`runtime_id` 或 `implementation_id`。
 
-Session Store 的当前格式为 v3，严格校验文件类型、所有者、权限、大小和字段结构。读取失败时，Session 写入失败关闭；不根据页面缓存、标题或工作目录猜测状态。Chub 自有的旧格式状态不兼容时整体初始化为当前格式，第三方或 Runtime 原生数据不在该边界内。
+Session Store 的当前格式为 v3，位于共享 AI Runtime 状态目录 `data/local/state/ai-runtime`，严格校验文件类型、所有者、权限、大小和字段结构。读取失败时，Session 写入失败关闭；不根据页面缓存、标题或工作目录猜测状态。Chub 自有的旧格式状态不兼容时整体初始化为当前格式，第三方或 Runtime 原生数据不在该边界内。退役的 `data/local/state/codex` 不作为读取或迁移来源；升级恢复会按固定边界清理它。
 
 每条 Session 固定保存以下业务事实：
 
@@ -20,6 +20,8 @@ Session Store 的当前格式为 v3，严格校验文件类型、所有者、权
 | 任务认领 | 当前 Quick Worker 的任务 ID 与执行代次，只用于首个 Native ID 的原子认领和迟到结果拒绝。 |
 | 用户配置 | 标题、权限、模型和推理等级；`ask` 不能用于后台任务提交。 |
 | 展示投影 | `status`、`activity`、活动来源、最近活动时间和有界错误文本；它们不替代 Worker 任务终态或 Runtime 原生状态。 |
+
+Session Manager 是上述 Session Store、Native 映射和认领记录的唯一 writer。Quick Worker 只负责执行任务、持有租约，并返回带任务 ID 与执行代次的可信 Native 结果；它不得直接写入或替换 Session 映射。Session Manager 核对认领、Runtime 身份、兼容性和全局唯一性后，才原子持久化绑定。Worker 的任务恢复、取消和通知终态以[Chub Quick Worker 独立服务设计](CHUB_QUICK_WORKER_DESIGN.md)为准。
 
 ## 创建、绑定与续接
 

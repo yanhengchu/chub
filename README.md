@@ -47,7 +47,7 @@ cp config/settings.example.yaml config/settings.local.yaml
 
 `config/settings.local.yaml` 仅保存本机配置，不应提交。按实际设备填写节点信息、Runtime、自动化和可选 OpenClaw 配置；字段说明以 [settings 示例](config/settings.example.yaml) 和对应专项设计为准。
 
-Chub 始终提供 loopback 访问；启用默认的 Tailnet 可信访问后，也会使用当前可用的 Tailscale 地址。不要配置公网监听或普通局域网监听。Android 通过同一 Tailnet 的浏览器访问 Chub；它不是原生 Android 应用或离线 PWA。
+Chub 始终提供 loopback 访问；启用默认的 Tailnet 可信访问后，会在启动时自动发现并监听当前可用的 Tailscale 地址。Tailscale 未启动、没有可用地址或地址已变化时，Chub 保持仅 loopback 监听并正常运行，这不表示 Web 启动失败；下次 Web 启动会再次尝试发现。不要配置公网监听或普通局域网监听。Android 通过同一 Tailnet 的浏览器访问 Chub；它不是原生 Android 应用或离线 PWA。
 
 ## 使用与维护入口
 
@@ -91,6 +91,14 @@ Chub 始终提供 loopback 访问；启用默认的 Tailnet 可信访问后，�
 | 本项目说明 | 说明产品定位、当前能力概览、使用入口与文档导航。 |
 | [Chub 总体架构设计](docs/CHUB_ARCHITECTURE_DESIGN.md) | 定义分层、状态所有权、依赖方向，以及能力由谁实际执行和确认。 |
 | [Chub 集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md) | 按使用场景登记当前可用能力、入口映射与微信固定指令契约。 |
+
+### AI Agent 默认阅读顺序
+
+1. 先阅读本 README，确认当前产品范围、部署入口和文档职责。
+2. 再阅读[Chub 总体架构设计](docs/CHUB_ARCHITECTURE_DESIGN.md)的三层架构、状态所有权、维护恢复边界和跨层不可违反约束，建立实现判断基线。
+3. 最后按当前任务只阅读[Chub 集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md)的相关章节：确认当前能力与允许入口；仅处理微信时再阅读第 2.2 节完整指令契约，仅处理程序化集成时再阅读第 3 节。
+
+进入专项设计前，不要假定未登记能力可用，也不要把能力 ID 当作可直接调用的 API；具体运行时授权和实现仍以对应公开用例及其校验为准。
 
 三者共同构成当前项目理解基线：项目说明不替代架构边界，架构不重复逐项能力，能力清单不改变状态所有权或专项协议。出现表述冲突时，产品定位、分层/状态所有权、当前能力/入口契约依次以这三份文档中各自负责的范围为准；目标设计不得覆盖当前能力结论。新增能力先在能力清单明确场景与效果；若改变责任、权限、状态或恢复边界，再同步总体架构和对应专项设计。
 

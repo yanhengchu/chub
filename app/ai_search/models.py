@@ -49,10 +49,9 @@ class SearchRun(_StrictModel):
 
 
 class AiSearchState(_StrictModel):
-    version: Literal[6] = 6
+    version: Literal[7] = 7
     show_sessions: bool = False
     session_id: str | None = Field(default=None, min_length=1, max_length=64)
-    retired_session_id: str | None = Field(default=None, min_length=1, max_length=64)
     pending_run: SearchRun | None = None
     latest_run: SearchRun | None = None
 

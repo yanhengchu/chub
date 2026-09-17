@@ -165,8 +165,12 @@ class PluginLifecycleService:
                         str((artifact or {}).get("reason") or "插件制品当前不可用，无法启用。"),
                     )
         extension_updated = False
+        runtime_preferences = None
         if plugin_id == "runtime":
             implementation_id = self._runtime_implementation_id(artifact_id)
+            runtime_preferences = (
+                self.ai_session_manager.runtime_implementation_preferences.read()
+            )
             self.ai_session_manager.update_runtime_implementation_enabled(implementation_id, enabled)
             extension_updated = True
         elif plugin_id == "weixin-orchestration":
@@ -176,21 +180,46 @@ class PluginLifecycleService:
                 self.weixin_chub_mode.set_orchestration_implementation("module", artifact_id.removeprefix("orchestration:"))
             self.weixin_chub_mode.set_orchestration_enabled(enabled)
             extension_updated = True
-        with self._lock:
-            state = self._read_after_extension_action(extension_updated)
-            current = self._enabled_ids(state, plugin_id)
-            if enabled and plugin_id in {"weixin-orchestration", "deliveryline"}:
-                current = [artifact_id]
-            elif enabled and artifact_id not in current:
-                current.append(artifact_id)
-            if not enabled and artifact_id in current:
-                current.remove(artifact_id)
-            if current:
-                state.setdefault("enabled", {})[plugin_id] = current
-            else:
-                state.setdefault("enabled", {}).pop(plugin_id, None)
-            self._write_after_extension_action(state, extension_updated)
-            return self._status(request, plugin_id, state)
+        lifecycle_state_written = False
+        try:
+            with self._lock:
+                state = self._read_after_extension_action(extension_updated)
+                current = self._enabled_ids(state, plugin_id)
+                if enabled and plugin_id in {"weixin-orchestration", "deliveryline"}:
+                    current = [artifact_id]
+                elif enabled and artifact_id not in current:
+                    current.append(artifact_id)
+                if not enabled and artifact_id in current:
+                    current.remove(artifact_id)
+                if current:
+                    state.setdefault("enabled", {})[plugin_id] = current
+                else:
+                    state.setdefault("enabled", {}).pop(plugin_id, None)
+                self._write_after_extension_action(state, extension_updated)
+                lifecycle_state_written = True
+                return self._status(request, plugin_id, state)
+        except ApiError as exc:
+            if (
+                runtime_preferences is None
+                or not extension_updated
+                or lifecycle_state_written
+            ):
+                raise
+            try:
+                self.ai_session_manager.restore_runtime_implementation_preferences(
+                    runtime_preferences
+                )
+            except Exception as rollback_error:
+                raise ApiError(
+                    503,
+                    "runtime_lifecycle_state_unconfirmed",
+                    "Runtime 启停状态无法确认，请恢复本机状态存储后重试。",
+                ) from rollback_error
+            raise ApiError(
+                503,
+                "runtime_lifecycle_state_rolled_back",
+                "Runtime 启停未完成，原有 Runtime 状态已恢复。",
+            ) from exc
 
     def _status(self, request: Request, plugin_id: str, state: dict[str, object]) -> dict[str, object]:
         imports = list(state.setdefault("imports", {}).setdefault(plugin_id, []))

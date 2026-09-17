@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Literal
 
@@ -10,6 +10,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 AiUsageStatus = Literal["available", "unavailable"]
 AiUsageSource = Literal["account_login", "sub2api"]
 AiTokenScope = Literal["account", "local_device"]
+QuotaStatus = Literal["available", "unavailable"]
+
+
+def utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 class _StrictModel(BaseModel):
@@ -68,3 +73,28 @@ class AiUsageData(_StrictModel):
     five_hour: AiFiveHourUsage | None = None
     today: AiTodayUsage | None = None
     display: AiUsageDisplay = Field(default_factory=AiUsageDisplay)
+
+
+class CodexQuotaWindow(_StrictModel):
+    remaining_percent: int = Field(ge=0, le=100)
+    window_duration_minutes: int = Field(ge=1)
+    resets_at: datetime
+
+
+class CodexQuotaData(_StrictModel):
+    status: QuotaStatus
+    message: str | None = None
+    checked_at: datetime = Field(default_factory=utc_now)
+    windows: list[CodexQuotaWindow] = Field(default_factory=list)
+
+
+class CodexDailyTokenUsage(_StrictModel):
+    start_date: date
+    tokens: int = Field(ge=0)
+
+
+class CodexTokenUsageData(_StrictModel):
+    status: QuotaStatus
+    message: str | None = None
+    checked_at: datetime = Field(default_factory=utc_now)
+    daily_usage: list[CodexDailyTokenUsage] = Field(default_factory=list)

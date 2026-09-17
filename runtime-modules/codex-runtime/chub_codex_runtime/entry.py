@@ -13,6 +13,7 @@ from app.ai_runtime import (
 from app.core.config import Settings
 
 from .runtime_adapter import CODEX_RUNTIME_DESCRIPTOR, CodexRuntimeAdapter
+from .weixin_commands import parse_weixin_command
 from .worker_runtime import CodexWorkerRuntime
 
 
@@ -47,6 +48,9 @@ class CodexRuntimeModule:
 
     def build_adapter(self) -> CodexRuntimeAdapter:
         return CodexRuntimeAdapter(self._settings, descriptor=self._descriptor)
+
+    def parse_weixin_command(self, prompt: str) -> object | None:
+        return parse_weixin_command(prompt)
 
     def configure_worker_adapter(
         self,

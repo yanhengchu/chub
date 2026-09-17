@@ -14,7 +14,16 @@ Runtime 是 Chub 的受控本机执行实现。客户端、页面、微信和其
 
 新建 Session 固定提供 `chub`、`home` 与 `workspace` 三个内置工作目录。选择 `workspace` 后，任务可在该受信根目录及其全部子目录内工作，无需将每个项目子目录登记为独立工作区。只有需要把某个目录单独展示并作为 Session 的默认工作目录时，维护者才在本机 `settings.local.yaml` 的 `ai_runtime.shared.extra_workspaces` 显式登记；每项使用固定 ID、名称和路径，ID 不得覆盖内置目录。页面与 API 只接受后端已加载的目录 ID，不能传入任意路径；已创建 Session 继续保存其创建时的工作目录，移除已使用的额外目录前必须先处理关联 Session。Quick Worker 重载后才会使用新增或移除的额外目录映射执行新任务。
 
-AI Agent 应先按问题范围选择文档：共享 Runtime 能力、Adapter/Runner 与 Native 兼容规则看本文；Codex 私有行为看[Chub Codex Runtime 设计](CHUB_CODEX_RUNTIME_DESIGN.md)；Runtime 插件模块 ZIP 的导入、覆盖、删除及开发源码发现/刷新看[Chub AI Runtime 插件模块设计](CHUB_RUNTIME_PLUGIN_DESIGN.md)；Session 与 Worker 领域状态分别看对应专项设计。
+AI Agent 应先按问题范围选择文档，不把任一单篇当作完整的 Runtime 实现说明：
+
+| 当前任务 | 必须先读 | 再读 |
+| --- | --- | --- |
+| 判断共享能力、Adapter/Runner 边界、实现兼容性或多 Runtime 路由 | 本文 | 涉及 Session、Worker 或微信时，进入对应专项设计。 |
+| 新接入一个 Runtime | 本文的共享契约与验收边界 | [Runtime 插件模块设计](CHUB_RUNTIME_PLUGIN_DESIGN.md)的交付/生命周期/检查表，以及该 Runtime 的私有专项设计。 |
+| 导入、启用、覆盖、刷新或移除 Runtime 制品 | [Runtime 插件模块设计](CHUB_RUNTIME_PLUGIN_DESIGN.md) | 本文仅用于核对 Descriptor、能力与兼容规则。 |
+| 修改 Codex 的认证、Native 数据、用量、缓存或私有展示 | [Chub Codex Runtime 设计](CHUB_CODEX_RUNTIME_DESIGN.md) | 本文用于核对不变的共享边界。 |
+
+Session 与 Worker 的领域状态分别以对应专项设计为准；Runtime 文档不替代其任务恢复或用户可见通知契约。
 
 Runtime 的 `implementation_id` 是可维护的**实现槽位**：默认实现只影响新建 Session，Session 创建后固定该槽位。它不是任务编排插件模块 ZIP 的 `implementation_ref`；后者是包含内容摘要的**不可变产物引用**，只用于编排请求快照，并由[Chub 任务编排插件模块架构设计](CHUB_TASK_ORCHESTRATION_PLUGIN_DESIGN.md)定义。两者不得跨领域复用或互相替代。
 
@@ -34,12 +43,12 @@ Runtime 的 `implementation_id` 是可维护的**实现槽位**：默认实现�
 当前实现仍只有 Codex；本节定义 Chub 同时装载多个 Runtime 时必须保持的共享语义。自动化以 Codex 和最小测试 Runtime 验证这些规则，不将测试 Runtime 作为产品能力或正式交付。插件 ZIP、开发加载和生命周期调整以[Chub AI Runtime 插件模块设计](CHUB_RUNTIME_PLUGIN_DESIGN.md)为准；任何具体 Runtime 的私有实现计划不在本文定义。
 
 1. **三个独立选择层级**：全局默认 `runtime_id` 决定新建 Session 的逻辑 Runtime；每个逻辑 Runtime 各自保存默认 `implementation_id`；Session 创建时固定保存二者。没有已保存默认时，后端只能从健康且具备新建 Session 所需能力的候选中稳定选取并立即持久化，不能由注册顺序决定。插件导入和启用状态在新任务提交时验证，避免生命周期切换期间丢失既有默认槽位。非 Codex Runtime 按 `runtime_id`、`implementation_id` 的固定升序选择；Codex 保留既有开发实现优先规则，避免升级时改变当前新建 Session 的默认槽位。
-2. **调用方不选择 Runtime**：页面、微信、自动化和 OpenClaw 继续只提交受控 Session/任务用例。维护者只能在受保护设置中改变后续新 Session 的默认 Runtime 或默认实现；翻译设置不得覆盖该默认 Runtime。请求正文、路由参数和外部指令不得携带任意 Runtime、实现、命令、路径、环境或 Native ID。
+2. **调用方不选择 Runtime**：页面、微信、自动化和 OpenClaw 继续只提交受控 Session/任务用例。维护者只能在受保护设置中改变后续新 Session 的默认 Runtime 或默认实现；翻译设置不得覆盖该默认 Runtime。切换默认 Runtime 时，通用默认模型和推理等级立即重置为“跟随目标 Runtime 默认”，再按目标 Runtime 的模型目录重绘；不得把前一 Runtime 的模型 ID 或推理等级带入新 Runtime。它们是当前默认 Runtime 的一组配置，不保留为各 Runtime 的历史偏好。请求正文、路由参数和外部指令不得携带任意 Runtime、实现、命令、路径、环境或 Native ID。
 3. **Session 是唯一执行路由依据**：已有 Session 的 Runtime 归属不能由当前默认 Runtime、当前活动 Adapter、页面分组或历史任务推断。模型目录校验、Runner 提交、Native discovery、writer probe、resume、归档和删除必须按 Session 固定的 Runtime 与实现槽位路由；另一 Runtime 的不可用、停用或刷新不得改变其行为。
-4. **能力决定可选性**：只有同时通过 Runtime 健康、插件生命周期、Runtime 启用状态和新建 Session 所需能力校验的候选才可进入默认 Runtime 选择。可选模型、用量、登录页和 Runtime 专属设置仍由 capability 声明控制；缺少这些可选能力的 Runtime 不得伪造 Codex 行为。提供用量快照的 Runtime 必须显式写入自己的 `runtime_id`，共享模型不提供 Runtime 身份默认值。
+4. **能力决定可选性**：只有同时通过 Runtime 健康、插件生命周期、Runtime 启用状态和新建 Session 所需能力校验的候选才可进入默认 Runtime 选择。用量快照、登录页和 Runtime 专属设置由 capability 声明控制；缺少这些可选能力的 Runtime 不得伪造 Codex 行为。`GET /api/ai/usage` 只读取当前默认实现的实际快照；目标 Runtime 未声明 `usage_snapshot` 或读取失败时，如实返回不可用状态。Runtime 的账户切换同样是其私有能力：`codex auth` 和 Codex 账户卡片固定指向 Codex 的默认实现，不随全局默认 Runtime 切换；其他 Runtime 如需账户切换或额度，必须自行提供对应私有实现与专项验收。提供用量快照的 Runtime 必须显式写入自己的 `runtime_id`，共享模型不提供 Runtime 身份默认值。
 5. **共享工作区不等于 Runtime 私有配置**：`chub`、`home`、`workspace` 与维护者登记的额外工作区是 Chub 对新 Session 的受控公共映射；Session、Quick Worker 的共享状态和通用超时同样不属于任一 Runtime 私有配置。具体 Runtime 的命令、认证、私有缓存、Native 数据源和专属运行目录继续由该 Runtime 自己定义。
 
-共享配置固定为 `ai_runtime.shared`：其 `workspace`、`extra_workspaces`、`state_dir`、`runtime_dir`、并发上限和快速交互超时由 Chub 拥有。旧 `ai_runtime.codex` 中同名字段仅在未设置 `shared` 时作一次只读升级映射，既不写回也不覆盖本机配置；旧状态文件只作为系统升级清理的固定输入，不能继续成为活跃运行态。维护者应在下一次本机配置维护时迁移到 `shared`。Codex 配置只保留 Runtime 是否启用及其私有依赖、认证和 Native 数据定义。
+共享配置固定为 `ai_runtime.shared`：其 `workspace`、`extra_workspaces`、`state_dir`、`runtime_dir`、并发上限和快速交互超时由 Chub 拥有。当前共享状态目录为 `data/local/state/ai-runtime`，当前 Worker 运行目录为 `data/local/runtime/ai-runtime`。旧 Codex Session、Quick Worker 和 `data/local/state/codex`、`data/local/runtime/codex` 均是升级恢复的固定删除输入；升级恢复先验证类型、所有者和权限，再直接删除，不迁移、不交接也不恢复。新 Web、Worker 和恢复后的实例都不得读取其中内容。`scripts/chub-data-migrate` 不处理 AI Runtime 运行态。旧 `ai_runtime.codex` 共享字段和 `shared.legacy_*` 已从配置契约移除；本机配置含有这些字段时必须失败关闭，由维护者删除后再使用当前标准配置。旧通用 Runtime 设置和旧实现偏好属于退役运行态，读取时直接丢弃。Codex 活跃配置只保留 Runtime 是否启用及其私有依赖、认证和 Native 数据定义。
 
 共享契约验收要求至少以 Codex 与一个最小测试 Runtime 并存验证：默认选择可持久化且稳定，临时健康失败不改写已保存偏好；两个 Runtime 的 Session 以及具备 `background_turn` 的新翻译 Session 均按固定归属执行；一个 Runtime 的故障或维护不会影响另一 Runtime 已受理任务；以及 Worker、Native 映射、页面分组和外部入口不会将任一 Session 投递到当前默认以外的 Runtime。通过该验收只表示共享底座可用；任一候选 Runtime 仍须按自己的专项设计完成私有实现和验收。
 

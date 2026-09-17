@@ -1,10 +1,13 @@
 from types import SimpleNamespace
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 import httpx
 import pytest
 
 from app.application import create_app
 from app.api import runtime_plugins
+from app.ai_session.api_models import RuntimeImplementationData
+from app.core.response import ApiError
 
 
 @pytest.mark.anyio
@@ -108,6 +111,81 @@ async def test_legacy_codex_runtime_writes_do_not_bypass_plugin_lifecycle(settin
     assert implementation.json()["error"]["code"] == "plugin_not_imported"
     assert default.status_code == 409
     assert default.json()["error"]["code"] == "runtime_plugin_not_imported"
+
+
+@pytest.mark.anyio
+async def test_runtime_implementation_enable_uses_any_development_artifact(settings) -> None:
+    app = create_app(settings)
+    manager = app.state.ai_session_manager
+    manager.development_runtime_implementation_ids = MagicMock(
+        return_value=("second-runtime-dev",)
+    )
+    manager.runtime_id_for_implementation = MagicMock(return_value="second")
+    manager.read_runtime_implementations = MagicMock(
+        return_value=RuntimeImplementationData(
+            runtime_id="codex",
+            default_implementation_id=None,
+            implementations=[],
+        )
+    )
+    app.state.plugin_lifecycle.set_enabled = AsyncMock()
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.put(
+            "/api/ai/runtime-implementations/second-runtime-dev/enabled",
+            json={"enabled": True},
+        )
+
+    assert response.status_code == 200
+    app.state.plugin_lifecycle.set_enabled.assert_awaited_once_with(
+        ANY,
+        "runtime",
+        "development:second-runtime-dev",
+        True,
+    )
+    manager.read_runtime_implementations.assert_called_once_with("second")
+
+
+@pytest.mark.anyio
+async def test_runtime_enable_rolls_back_preferences_when_lifecycle_write_fails(
+    settings, monkeypatch
+) -> None:
+    app = create_app(settings)
+    lifecycle = app.state.plugin_lifecycle
+    manager = app.state.ai_session_manager
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        imported = await client.post(
+            "/api/plugins/runtime/imports",
+            json={"artifact_id": "development:codex-runtime-dev"},
+        )
+
+    assert imported.status_code == 200
+    before = manager.runtime_implementation_preferences.read()
+
+    def fail_write(_state):
+        raise ApiError(
+            503,
+            "plugin_lifecycle_state_unavailable",
+            "插件生命周期状态不可写。",
+        )
+
+    monkeypatch.setattr(lifecycle, "_write", fail_write)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.put(
+            "/api/plugins/runtime/enabled",
+            json={"artifact_id": "development:codex-runtime-dev", "enabled": True},
+        )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "runtime_lifecycle_state_rolled_back"
+    assert manager.runtime_implementation_preferences.read() == before
+    assert lifecycle.runtime_implementation_lifecycle_state("codex-runtime-dev") == (
+        True,
+        False,
+    )
 
 
 @pytest.mark.anyio

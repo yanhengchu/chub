@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tests.session_fixtures import CodexSession
+from tests.session_fixtures import AiSessionFixture
 
 import json
 import re
@@ -19,15 +19,23 @@ from app.ai_usage.models import (
     AiUsageDisplay,
     AiWeeklyUsage,
 )
-from app.codex.models import (
-    CodexModelCatalogData,
-    CodexModelInfo,
+from app.ai_session.api_models import (
+    WorkspaceInfo,
+)
+from app.ai_interactions.models import (
+    QuickInteractionWeixinRoute,
+)
+from app.ai_usage.models import (
     CodexQuotaData,
     CodexQuotaWindow,
-    CodexReasoningLevel,
     CodexTokenUsageData,
-    QuickInteractionWeixinRoute,
-    WorkspaceInfo,
+)
+from app.ai_runtime.contracts import (
+    RuntimeModelCatalogData,
+    RuntimeModelInfoData,
+    RuntimeModelReasoningLevelData,
+)
+from app.ai_session.models import (
     utc_now,
 )
 from app.core.config import Settings
@@ -44,12 +52,102 @@ from app.services.openclaw_weixin_chub_models import (
 )
 
 from tests.openclaw_weixin_chub_mode_helpers import (
-    configured_manager,
+    configured_manager as _configured_manager,
     delivery_route,
     enable_restart_command,
     inject_default_delivery_route,
     submitted_task_message,
 )
+
+
+def configured_manager(settings: Settings):
+    """This module exercises the imported, enabled refinement command family."""
+    manager, ai_session_manager, quick_interactions = _configured_manager(settings)
+    manager._state.orchestration_implementation = "weixin-orchestration-dev"
+    manager._state.orchestration_enabled = True
+    return manager, ai_session_manager, quick_interactions
+
+
+def test_unimported_text_command_group_is_not_submitted_as_a_normal_task(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = _configured_manager(settings)
+    manager._state.orchestration_implementation = "disabled"
+    manager.orchestration_plugin_service.list_artifacts = MagicMock(
+        return_value=()
+    )
+
+    result = manager.dispatch(
+        message_id="text-without-module",
+        prompt="text list",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.disposition == "reply"
+    assert result.message == (
+        "Text: The Weixin refinement module is not imported. "
+        "Import and enable it in Settings."
+    )
+    quick_interactions.submit.assert_not_called()
+
+
+def test_text_command_does_not_fall_back_to_a_task_when_active_module_is_unavailable(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    manager.development_stage.command_parser = MagicMock(
+        side_effect=ApiError(
+            503,
+            "weixin_orchestration_plugin_development_unavailable",
+            "微信开发编排实现当前不可用。",
+        )
+    )
+
+    result = manager.dispatch(
+        message_id="text-module-unavailable",
+        prompt="text list",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == (
+        "Text: The Weixin refinement module is unavailable. Try again later."
+    )
+    quick_interactions.submit.assert_not_called()
+
+
+def test_disabled_refinement_module_direct_submits_new_text_but_drains_confirmations(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    manager._state.orchestration_enabled = False
+    manager.translation_manager = MagicMock()
+    manager.translation_manager.active_confirmation.return_value = SimpleNamespace()
+    manager.translation_manager.confirm.return_value = SimpleNamespace(
+        handled=True, action="cancel", entry=None, message="Translation confirmation cancelled."
+    )
+    manager.translation_manager.processing_queue.return_value = []
+
+    status = manager.dispatch(
+        message_id="text-disabled-status", prompt="text", message_type="text",
+        correlation_id=None, source_ip="100.64.0.21", delivery_route=delivery_route(),
+    )
+    cancelled = manager.dispatch(
+        message_id="text-disabled-cancel", prompt="text cancel", message_type="text",
+        correlation_id=None, source_ip="100.64.0.21", delivery_route=delivery_route(),
+    )
+
+    assert status.message == (
+        "Text: The Weixin refinement module is disabled. New messages are submitted unchanged."
+    )
+    assert cancelled.message == "Translation confirmation cancelled.\n\nText processing: None."
+    manager.translation_manager.confirm.assert_called_once()
+    quick_interactions.submit.assert_not_called()
 
 
 def test_dispatch_immediately_acknowledges_text_task(
@@ -145,27 +243,27 @@ def test_text_mode_uses_the_same_translation_manager_setting(
     translation_manager.set_processing_mode.assert_called_once()
 
 
-def _text_model_catalog() -> CodexModelCatalogData:
-    return CodexModelCatalogData(
+def _text_model_catalog() -> RuntimeModelCatalogData:
+    return RuntimeModelCatalogData(
         models=[
-            CodexModelInfo(
+            RuntimeModelInfoData(
                 id="translation-model",
                 name="Translation Model",
                 description="",
                 default_level="medium",
                 levels=[
-                    CodexReasoningLevel(id="low", description="Fast"),
-                    CodexReasoningLevel(id="medium", description="Balanced"),
+                    RuntimeModelReasoningLevelData(id="low", description="Fast"),
+                    RuntimeModelReasoningLevelData(id="medium", description="Balanced"),
                 ],
             ),
-            CodexModelInfo(
+            RuntimeModelInfoData(
                 id="other-model",
                 name="Other Model",
                 description="",
                 default_level="high",
                 levels=[
-                    CodexReasoningLevel(id="low", description="Fast"),
-                    CodexReasoningLevel(id="high", description="Deep"),
+                    RuntimeModelReasoningLevelData(id="low", description="Fast"),
+                    RuntimeModelReasoningLevelData(id="high", description="Deep"),
                 ],
             ),
         ],
@@ -177,7 +275,7 @@ def _text_model_catalog() -> CodexModelCatalogData:
 def test_text_model_status_is_included_in_the_text_summary(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     translation_manager = MagicMock()
     translation_manager.status.return_value = SimpleNamespace(
         mode="confirm",
@@ -186,7 +284,7 @@ def test_text_model_status_is_included_in_the_text_summary(
     )
     translation_manager.active_confirmation.return_value = None
     manager.translation_manager = translation_manager
-    codex_manager.read_model_catalog.return_value = _text_model_catalog()
+    ai_session_manager.read_model_catalog.return_value = _text_model_catalog()
 
     result = manager.dispatch(
         message_id="text-model-status",
@@ -204,7 +302,7 @@ def test_text_model_status_is_included_in_the_text_summary(
         "Current confirmation: None."
     )
     translation_manager.status.assert_called_once_with()
-    codex_manager.read_model_catalog.assert_called_once_with(
+    ai_session_manager.read_model_catalog.assert_called_once_with(
         implementation_id="codex-runtime-dev"
     )
     quick_interactions.update_session_model.assert_not_called()
@@ -213,7 +311,7 @@ def test_text_model_status_is_included_in_the_text_summary(
 def test_text_uses_task_reasoning_before_session_default(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
     translation_manager = MagicMock()
     translation_manager.status.return_value = SimpleNamespace(
         mode="auto",
@@ -222,7 +320,7 @@ def test_text_uses_task_reasoning_before_session_default(
     )
     translation_manager.active_confirmation.return_value = None
     manager.translation_manager = translation_manager
-    codex_manager.read_model_catalog.return_value = _text_model_catalog()
+    ai_session_manager.read_model_catalog.return_value = _text_model_catalog()
 
     result = manager.dispatch(
         message_id="text-task-reasoning",
@@ -244,7 +342,7 @@ def test_text_uses_task_reasoning_before_session_default(
 def test_text_fails_closed_when_the_default_model_cannot_be_resolved(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
     translation_manager = MagicMock()
     translation_manager.status.return_value = SimpleNamespace(
         mode="confirm",
@@ -252,7 +350,7 @@ def test_text_fails_closed_when_the_default_model_cannot_be_resolved(
         reasoning_effort=None,
     )
     manager.translation_manager = translation_manager
-    codex_manager.read_model_catalog.side_effect = ApiError(
+    ai_session_manager.read_model_catalog.side_effect = ApiError(
         503,
         "codex_model_catalog_unavailable",
         "Catalog unavailable",
@@ -282,14 +380,14 @@ def test_text_fails_closed_when_the_default_model_cannot_be_resolved(
 def test_text_model_list_fails_closed_without_a_task_specific_model(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
     translation_manager = MagicMock()
     translation_manager.status.return_value = SimpleNamespace(
         model=None,
         reasoning_effort=None,
     )
     manager.translation_manager = translation_manager
-    codex_manager.read_model_catalog.return_value = _text_model_catalog()
+    ai_session_manager.read_model_catalog.return_value = _text_model_catalog()
 
     result = manager.dispatch(
         message_id="text-model-list-unavailable",
@@ -308,15 +406,15 @@ def test_text_model_list_fails_closed_without_a_task_specific_model(
 def test_text_model_list_fails_closed_when_the_configured_level_is_no_longer_supported(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
     translation_manager = MagicMock()
     translation_manager.status.return_value = SimpleNamespace(
         model="translation-model",
         reasoning_effort="high",
     )
     manager.translation_manager = translation_manager
-    codex_manager.read_model_catalog.return_value = _text_model_catalog()
-    codex_manager.validate_model.side_effect = ApiError(
+    ai_session_manager.read_model_catalog.return_value = _text_model_catalog()
+    ai_session_manager.validate_model.side_effect = ApiError(
         422,
         "invalid_model_reasoning_effort",
         "The model does not support the selected reasoning level.",
@@ -334,7 +432,7 @@ def test_text_model_list_fails_closed_when_the_configured_level_is_no_longer_sup
     assert result.message == (
         "Text model list: Unavailable. The translation configuration could not be read."
     )
-    assert codex_manager.validate_model.call_args_list[-1].args == (
+    assert ai_session_manager.validate_model.call_args_list[-1].args == (
         "translation-model",
         "high",
     )
@@ -343,7 +441,7 @@ def test_text_model_list_fails_closed_when_the_configured_level_is_no_longer_sup
 def test_text_fails_closed_when_the_configured_level_is_no_longer_supported(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
     translation_manager = MagicMock()
     translation_manager.status.return_value = SimpleNamespace(
         mode="confirm",
@@ -351,8 +449,8 @@ def test_text_fails_closed_when_the_configured_level_is_no_longer_supported(
         reasoning_effort="high",
     )
     manager.translation_manager = translation_manager
-    codex_manager.read_model_catalog.return_value = _text_model_catalog()
-    codex_manager.validate_model.side_effect = ApiError(
+    ai_session_manager.read_model_catalog.return_value = _text_model_catalog()
+    ai_session_manager.validate_model.side_effect = ApiError(
         422,
         "invalid_model_reasoning_effort",
         "The model does not support the selected reasoning level.",
@@ -368,7 +466,7 @@ def test_text_fails_closed_when_the_configured_level_is_no_longer_supported(
     )
 
     assert result.message == "Text: Model and level are unavailable."
-    assert codex_manager.validate_model.call_args_list[-1].args == (
+    assert ai_session_manager.validate_model.call_args_list[-1].args == (
         "translation-model",
         "high",
     )
@@ -377,7 +475,7 @@ def test_text_fails_closed_when_the_configured_level_is_no_longer_supported(
 def test_text_model_list_and_levels_use_the_current_translation_defaults(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     translation_manager = MagicMock()
     translation_manager.status.return_value = SimpleNamespace(
         model="translation-model",
@@ -388,7 +486,7 @@ def test_text_model_list_and_levels_use_the_current_translation_defaults(
         reasoning_effort="high",
     )
     manager.translation_manager = translation_manager
-    codex_manager.read_model_catalog.return_value = _text_model_catalog()
+    ai_session_manager.read_model_catalog.return_value = _text_model_catalog()
 
     with patch(
         "app.services.openclaw_weixin_chub_mode.write_operation"
@@ -443,7 +541,7 @@ def test_text_model_list_and_levels_use_the_current_translation_defaults(
 def test_text_model_use_updates_translation_defaults_only_for_future_tasks(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     translation_manager = MagicMock()
     translation_manager.status.return_value = SimpleNamespace(
         model="translation-model",
@@ -454,7 +552,7 @@ def test_text_model_use_updates_translation_defaults_only_for_future_tasks(
         reasoning_effort="high",
     )
     manager.translation_manager = translation_manager
-    codex_manager.read_model_catalog.return_value = _text_model_catalog()
+    ai_session_manager.read_model_catalog.return_value = _text_model_catalog()
 
     result = manager.dispatch(
         message_id="text-model-use",
@@ -477,14 +575,14 @@ def test_text_model_use_updates_translation_defaults_only_for_future_tasks(
 def test_text_model_use_level_requires_a_configured_translation_model(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     translation_manager = MagicMock()
     translation_manager.status.return_value = SimpleNamespace(
         model=None,
         reasoning_effort=None,
     )
     manager.translation_manager = translation_manager
-    codex_manager.read_model_catalog.return_value = _text_model_catalog()
+    ai_session_manager.read_model_catalog.return_value = _text_model_catalog()
 
     result = manager.dispatch(
         message_id="text-model-use-level-without-model",
@@ -503,7 +601,7 @@ def test_text_model_use_level_requires_a_configured_translation_model(
 def test_text_returns_current_mode_and_actionable_confirmation(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager._state.session_slots = [
         WeixinChubModeSessionSlot(slot=1, session_id="session-1")
     ]
@@ -521,7 +619,7 @@ def test_text_returns_current_mode_and_actionable_confirmation(
         english="Please confirm the complete English wording.",
     )
     manager.translation_manager = translation_manager
-    codex_manager.read_model_catalog.return_value = _text_model_catalog()
+    ai_session_manager.read_model_catalog.return_value = _text_model_catalog()
 
     result = manager.dispatch(
         message_id="text-current-confirmation",
@@ -751,7 +849,7 @@ def test_dispatch_routes_chub_status_to_live_overview(
     settings: Settings,
     prompt: str,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     quick_interactions.running_standard_task_summaries.return_value = SimpleNamespace(
         running_count=2,
         pending_notification_count=1,
@@ -777,7 +875,7 @@ def test_dispatch_routes_chub_status_to_live_overview(
     )
     assert "Sessions\n\nNo sessions" not in result.message
     assert "执行中 2" not in result.message
-    codex_manager.list_sessions.assert_called_once()
+    ai_session_manager.list_sessions.assert_called_once()
     quick_interactions.submit.assert_not_called()
 
 
@@ -872,7 +970,7 @@ def test_dispatch_returns_compact_chub_help(
     prompt: str,
     expected_message: str,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
 
     result = manager.dispatch(
         message_id=f"help-{prompt}",
@@ -884,14 +982,14 @@ def test_dispatch_returns_compact_chub_help(
     )
 
     assert result.message == expected_message
-    codex_manager.list_sessions.assert_not_called()
+    ai_session_manager.list_sessions.assert_not_called()
     quick_interactions.submit.assert_not_called()
 
 
 def test_dispatch_runs_read_only_chub_check(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager.system_status_reader = lambda: SimpleNamespace(
         system=SimpleNamespace(memory_percent=77.1, disk_percent=30.1)
     )
@@ -907,7 +1005,7 @@ def test_dispatch_runs_read_only_chub_check(
             "available_runtime_ids": ["codex"],
         },
     }
-    codex_manager.read_runtime_management.return_value = SimpleNamespace(
+    ai_session_manager.read_runtime_management.return_value = SimpleNamespace(
         runtimes=[
             SimpleNamespace(name="Codex Runtime", enabled=True, healthy=True),
         ]
@@ -966,7 +1064,7 @@ def test_dispatch_runs_read_only_chub_check(
 def test_check_keeps_core_services_healthy_when_runtime_is_disabled(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager.system_status_reader = lambda: SimpleNamespace(
         system=SimpleNamespace(memory_percent=30.0, disk_percent=20.0)
     )
@@ -981,7 +1079,7 @@ def test_check_keeps_core_services_healthy_when_runtime_is_disabled(
             "corrupt_tasks": 0,
         },
     }
-    codex_manager.read_runtime_management.return_value = SimpleNamespace(
+    ai_session_manager.read_runtime_management.return_value = SimpleNamespace(
         runtimes=[
             SimpleNamespace(name="Codex Runtime", enabled=False, healthy=False),
         ]
@@ -1012,12 +1110,12 @@ def test_check_keeps_core_services_healthy_when_runtime_is_disabled(
 def test_model_command_reports_model_and_reasoning_effort(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
     manager._state.session_slots = [
         WeixinChubModeSessionSlot(slot=1, session_id="session-1")
     ]
-    codex_manager.get_session.return_value = CodexSession(
+    ai_session_manager.get_session.return_value = AiSessionFixture(
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",
@@ -1053,9 +1151,9 @@ def test_model_command_reports_model_and_reasoning_effort(
 def test_model_command_reports_only_the_changed_next_field(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
-    codex_manager.get_session.return_value = CodexSession(
+    ai_session_manager.get_session.return_value = AiSessionFixture(
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",
@@ -1085,12 +1183,12 @@ def test_model_command_reports_only_the_changed_next_field(
 def test_model_command_uses_default_when_session_has_no_explicit_values(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
     manager._state.session_slots = [
         WeixinChubModeSessionSlot(slot=1, session_id="session-1")
     ]
-    codex_manager.get_session.return_value = CodexSession(
+    ai_session_manager.get_session.return_value = AiSessionFixture(
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",
@@ -1099,14 +1197,14 @@ def test_model_command_uses_default_when_session_has_no_explicit_values(
         status="stopped",
         activity="idle",
     )
-    codex_manager.read_model_catalog.return_value = CodexModelCatalogData(
+    ai_session_manager.read_model_catalog.return_value = RuntimeModelCatalogData(
         models=[
-            CodexModelInfo(
+            RuntimeModelInfoData(
                 id="default-model",
                 name="Default Model",
                 description="",
                 default_level="medium",
-                levels=[CodexReasoningLevel(id="medium", description="")],
+                levels=[RuntimeModelReasoningLevelData(id="medium", description="")],
             )
         ],
         default_model="default-model",
@@ -1134,12 +1232,12 @@ def test_model_command_uses_default_when_session_has_no_explicit_values(
 def test_model_command_uses_selected_model_default_level(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
     manager._state.session_slots = [
         WeixinChubModeSessionSlot(slot=1, session_id="session-1")
     ]
-    codex_manager.get_session.return_value = CodexSession(
+    ai_session_manager.get_session.return_value = AiSessionFixture(
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",
@@ -1149,14 +1247,14 @@ def test_model_command_uses_selected_model_default_level(
         activity="idle",
         model="selected-model",
     )
-    codex_manager.read_model_catalog.return_value = CodexModelCatalogData(
+    ai_session_manager.read_model_catalog.return_value = RuntimeModelCatalogData(
         models=[
-            CodexModelInfo(
+            RuntimeModelInfoData(
                 id="selected-model",
                 name="Selected Model",
                 description="",
                 default_level="high",
-                levels=[CodexReasoningLevel(id="high", description="")],
+                levels=[RuntimeModelReasoningLevelData(id="high", description="")],
             )
         ],
         default_model="other-model",
@@ -1179,12 +1277,12 @@ def test_model_command_uses_selected_model_default_level(
 def test_model_levels_command_reports_levels_for_model(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
     manager._state.session_slots = [
         WeixinChubModeSessionSlot(slot=1, session_id="session-1")
     ]
-    codex_manager.get_session.return_value = CodexSession(
+    ai_session_manager.get_session.return_value = AiSessionFixture(
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",
@@ -1195,17 +1293,17 @@ def test_model_levels_command_reports_levels_for_model(
         model="active-model",
         reasoning_effort="high",
     )
-    codex_manager.read_model_catalog.return_value = CodexModelCatalogData(
+    ai_session_manager.read_model_catalog.return_value = RuntimeModelCatalogData(
         models=[
-            CodexModelInfo(
+            RuntimeModelInfoData(
                 id="active-model",
                 name="Active Model",
                 description="",
                 default_level="medium",
                 levels=[
-                    CodexReasoningLevel(id="low", description="Fast"),
-                    CodexReasoningLevel(id="medium", description="Balanced"),
-                    CodexReasoningLevel(id="high", description="Deep"),
+                    RuntimeModelReasoningLevelData(id="low", description="Fast"),
+                    RuntimeModelReasoningLevelData(id="medium", description="Balanced"),
+                    RuntimeModelReasoningLevelData(id="high", description="Deep"),
                 ],
             )
         ],
@@ -1238,12 +1336,12 @@ def test_model_levels_command_reports_levels_for_model(
 def test_model_list_command_reports_current_and_available_models(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
     manager._state.session_slots = [
         WeixinChubModeSessionSlot(slot=1, session_id="session-1")
     ]
-    codex_manager.get_session.return_value = CodexSession(
+    ai_session_manager.get_session.return_value = AiSessionFixture(
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",
@@ -1253,21 +1351,21 @@ def test_model_list_command_reports_current_and_available_models(
         activity="idle",
         model="active-model",
     )
-    codex_manager.read_model_catalog.return_value = CodexModelCatalogData(
+    ai_session_manager.read_model_catalog.return_value = RuntimeModelCatalogData(
         models=[
-            CodexModelInfo(
+            RuntimeModelInfoData(
                 id="active-model",
                 name="Active Model",
                 description="",
                 default_level="medium",
-                levels=[CodexReasoningLevel(id="medium", description="")],
+                levels=[RuntimeModelReasoningLevelData(id="medium", description="")],
             ),
-            CodexModelInfo(
+            RuntimeModelInfoData(
                 id="other-model",
                 name="Other Model",
                 description="",
                 default_level="low",
-                levels=[CodexReasoningLevel(id="low", description="")],
+                levels=[RuntimeModelReasoningLevelData(id="low", description="")],
             ),
         ],
         default_model="active-model",
@@ -1291,8 +1389,8 @@ def test_model_list_command_reports_current_and_available_models(
         "M1 · active-model\n"
         "M2 · other-model"
     )
-    codex_manager.session_implementation_id.assert_called_once_with("session-1")
-    codex_manager.read_model_catalog.assert_called_once_with(
+    ai_session_manager.session_implementation_id.assert_called_once_with("session-1")
+    ai_session_manager.read_model_catalog.assert_called_once_with(
         implementation_id="codex-runtime-dev"
     )
     quick_interactions.submit.assert_not_called()
@@ -1301,12 +1399,12 @@ def test_model_list_command_reports_current_and_available_models(
 def test_model_levels_for_index_resolves_from_current_catalog(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
     manager._state.session_slots = [
         WeixinChubModeSessionSlot(slot=1, session_id="session-1")
     ]
-    codex_manager.get_session.return_value = CodexSession(
+    ai_session_manager.get_session.return_value = AiSessionFixture(
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",
@@ -1317,23 +1415,23 @@ def test_model_levels_for_index_resolves_from_current_catalog(
         model="active-model",
         reasoning_effort="medium",
     )
-    codex_manager.read_model_catalog.return_value = CodexModelCatalogData(
+    ai_session_manager.read_model_catalog.return_value = RuntimeModelCatalogData(
         models=[
-            CodexModelInfo(
+            RuntimeModelInfoData(
                 id="active-model",
                 name="Active Model",
                 description="",
                 default_level="medium",
-                levels=[CodexReasoningLevel(id="medium", description="")],
+                levels=[RuntimeModelReasoningLevelData(id="medium", description="")],
             ),
-            CodexModelInfo(
+            RuntimeModelInfoData(
                 id="other-model",
                 name="Other Model",
                 description="",
                 default_level="low",
                 levels=[
-                    CodexReasoningLevel(id="low", description=""),
-                    CodexReasoningLevel(id="high", description=""),
+                    RuntimeModelReasoningLevelData(id="low", description=""),
+                    RuntimeModelReasoningLevelData(id="high", description=""),
                 ],
             ),
         ],
@@ -1364,9 +1462,9 @@ def test_model_levels_for_index_resolves_from_current_catalog(
 def test_model_use_updates_both_model_and_level_from_current_catalog(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
-    codex_manager.get_session.return_value = CodexSession(
+    ai_session_manager.get_session.return_value = AiSessionFixture(
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",
@@ -1377,26 +1475,26 @@ def test_model_use_updates_both_model_and_level_from_current_catalog(
         model="active-model",
         reasoning_effort="medium",
     )
-    codex_manager.read_model_catalog.return_value = CodexModelCatalogData(
+    ai_session_manager.read_model_catalog.return_value = RuntimeModelCatalogData(
         models=[
-            CodexModelInfo(
+            RuntimeModelInfoData(
                 id="active-model",
                 name="Active Model",
                 description="",
                 default_level="medium",
                 levels=[
-                    CodexReasoningLevel(id="low", description=""),
-                    CodexReasoningLevel(id="medium", description=""),
+                    RuntimeModelReasoningLevelData(id="low", description=""),
+                    RuntimeModelReasoningLevelData(id="medium", description=""),
                 ],
             ),
-            CodexModelInfo(
+            RuntimeModelInfoData(
                 id="other-model",
                 name="Other Model",
                 description="",
                 default_level="low",
                 levels=[
-                    CodexReasoningLevel(id="low", description=""),
-                    CodexReasoningLevel(id="high", description=""),
+                    RuntimeModelReasoningLevelData(id="low", description=""),
+                    RuntimeModelReasoningLevelData(id="high", description=""),
                 ],
             ),
         ],
@@ -1425,9 +1523,9 @@ def test_model_use_updates_both_model_and_level_from_current_catalog(
 def test_model_use_level_resolves_from_current_model_catalog(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
-    codex_manager.get_session.return_value = CodexSession(
+    ai_session_manager.get_session.return_value = AiSessionFixture(
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",
@@ -1438,16 +1536,16 @@ def test_model_use_level_resolves_from_current_model_catalog(
         model="active-model",
         reasoning_effort="medium",
     )
-    codex_manager.read_model_catalog.return_value = CodexModelCatalogData(
+    ai_session_manager.read_model_catalog.return_value = RuntimeModelCatalogData(
         models=[
-            CodexModelInfo(
+            RuntimeModelInfoData(
                 id="active-model",
                 name="Active Model",
                 description="",
                 default_level="medium",
                 levels=[
-                    CodexReasoningLevel(id="low", description=""),
-                    CodexReasoningLevel(id="medium", description=""),
+                    RuntimeModelReasoningLevelData(id="low", description=""),
+                    RuntimeModelReasoningLevelData(id="medium", description=""),
                 ],
             )
         ],
@@ -1485,9 +1583,9 @@ def test_model_use_updates_one_dimension_from_current_catalog(
     expected_model: str,
     expected_level: str,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
-    codex_manager.get_session.return_value = CodexSession(
+    ai_session_manager.get_session.return_value = AiSessionFixture(
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",
@@ -1498,24 +1596,24 @@ def test_model_use_updates_one_dimension_from_current_catalog(
         model="active-model",
         reasoning_effort="medium",
     )
-    codex_manager.read_model_catalog.return_value = CodexModelCatalogData(
+    ai_session_manager.read_model_catalog.return_value = RuntimeModelCatalogData(
         models=[
-            CodexModelInfo(
+            RuntimeModelInfoData(
                 id="active-model",
                 name="Active Model",
                 description="",
                 default_level="medium",
                 levels=[
-                    CodexReasoningLevel(id="low", description=""),
-                    CodexReasoningLevel(id="medium", description=""),
+                    RuntimeModelReasoningLevelData(id="low", description=""),
+                    RuntimeModelReasoningLevelData(id="medium", description=""),
                 ],
             ),
-            CodexModelInfo(
+            RuntimeModelInfoData(
                 id="other-model",
                 name="Other Model",
                 description="",
                 default_level="low",
-                levels=[CodexReasoningLevel(id="low", description="")],
+                levels=[RuntimeModelReasoningLevelData(id="low", description="")],
             ),
         ],
         default_model="active-model",
@@ -1544,9 +1642,9 @@ def test_model_use_updates_one_dimension_from_current_catalog(
 def test_model_levels_command_fails_when_model_is_not_catalogued(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
-    codex_manager.get_session.return_value = CodexSession(
+    ai_session_manager.get_session.return_value = AiSessionFixture(
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",
@@ -1556,7 +1654,7 @@ def test_model_levels_command_fails_when_model_is_not_catalogued(
         activity="idle",
         model="missing-model",
     )
-    codex_manager.read_model_catalog.return_value = CodexModelCatalogData(
+    ai_session_manager.read_model_catalog.return_value = RuntimeModelCatalogData(
         models=[],
         default_model=None,
         default_reasoning_effort=None,
@@ -1580,9 +1678,9 @@ def test_model_levels_command_fails_when_model_is_not_catalogued(
 def test_model_levels_command_fails_when_current_level_is_unavailable(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
-    codex_manager.get_session.return_value = CodexSession(
+    ai_session_manager.get_session.return_value = AiSessionFixture(
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",
@@ -1592,14 +1690,14 @@ def test_model_levels_command_fails_when_current_level_is_unavailable(
         activity="idle",
         model="active-model",
     )
-    codex_manager.read_model_catalog.return_value = CodexModelCatalogData(
+    ai_session_manager.read_model_catalog.return_value = RuntimeModelCatalogData(
         models=[
-            CodexModelInfo(
+            RuntimeModelInfoData(
                 id="active-model",
                 name="Active Model",
                 description="",
                 default_level=None,
-                levels=[CodexReasoningLevel(id="medium", description="")],
+                levels=[RuntimeModelReasoningLevelData(id="medium", description="")],
             )
         ],
         default_model="active-model",
@@ -1624,7 +1722,7 @@ def test_model_levels_command_fails_when_current_level_is_unavailable(
 def test_usage_returns_complete_usage_without_session_status(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager.ai_usage_reader = MagicMock()
     manager.ai_usage_reader.read.return_value = AiUsageData(
         runtime_id="codex",
@@ -1675,7 +1773,7 @@ def test_usage_returns_complete_usage_without_session_status(
         "Today · $181.02 Used · 100M tokens"
     )
     manager.ai_usage_reader.read.assert_called_once_with(force=False)
-    codex_manager.list_sessions.assert_not_called()
+    ai_session_manager.list_sessions.assert_not_called()
     quick_interactions.submit.assert_not_called()
 
 
@@ -1764,7 +1862,7 @@ def test_chub_overview_failure_completes_ephemeral_dedup(
     assert duplicate == first
 
 
-def test_bare_codex_is_submitted_as_normal_task(settings: Settings) -> None:
+def test_bare_codex_returns_runtime_usage(settings: Settings) -> None:
     manager, _codex_manager, quick_interactions = configured_manager(settings)
 
     result = manager.dispatch(
@@ -1777,13 +1875,13 @@ def test_bare_codex_is_submitted_as_normal_task(settings: Settings) -> None:
     )
 
     assert result.disposition == "reply"
-    assert result.message == submitted_task_message(settings, "codex")
-    quick_interactions.submit.assert_called_once()
+    assert result.message == "Codex: Usage: codex auth | codex auth switch"
+    quick_interactions.submit.assert_not_called()
 
 def test_chub_refreshes_status_on_every_query(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager.system_status_reader = MagicMock(
         return_value=SimpleNamespace(
             system=SimpleNamespace(memory_percent=42, disk_percent=86)
@@ -1794,7 +1892,7 @@ def test_chub_refreshes_status_on_every_query(
         CodexQuotaData(status="unavailable"),
         CodexTokenUsageData(status="unavailable"),
     )
-    codex_manager.list_sessions.return_value = []
+    ai_session_manager.list_sessions.return_value = []
 
     first = manager.dispatch(
         message_id="chub-query-1",
@@ -1819,13 +1917,13 @@ def test_chub_refreshes_status_on_every_query(
     assert manager.system_status_reader.call_count == 2
     assert manager.codex_account_reader.read_account_status.call_count == 2
     manager.codex_account_reader.read_account_status.assert_called_with(force=True)
-    assert codex_manager.list_sessions.call_count == 2
+    assert ai_session_manager.list_sessions.call_count == 2
 
 
 def test_concurrent_chub_queries_share_one_live_collection(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
     collection_started = threading.Event()
     release_collection = threading.Event()
 
@@ -1842,7 +1940,7 @@ def test_concurrent_chub_queries_share_one_live_collection(
         CodexQuotaData(status="unavailable"),
         CodexTokenUsageData(status="unavailable"),
     )
-    codex_manager.list_sessions.return_value = []
+    ai_session_manager.list_sessions.return_value = []
     results: list[object] = []
 
     def query(message_id: str) -> None:
@@ -1873,7 +1971,7 @@ def test_concurrent_chub_queries_share_one_live_collection(
     )
     manager.system_status_reader.assert_called_once()
     manager.codex_account_reader.read_account_status.assert_called_once()
-    codex_manager.list_sessions.assert_called_once()
+    ai_session_manager.list_sessions.assert_called_once()
 
 
 @pytest.mark.parametrize("prompt", ["chub refresh", "chub -f", "刷新状态"])
@@ -1881,7 +1979,7 @@ def test_removed_chub_refresh_commands_are_normal_tasks(
     settings: Settings,
     prompt: str,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
 
     result = manager.dispatch(
         message_id=f"removed-refresh-{prompt}",
@@ -1900,7 +1998,7 @@ def test_removed_chub_refresh_commands_are_normal_tasks(
 def test_failed_account_refresh_preserves_last_success_timestamp(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
     checked_at = utc_now() - timedelta(minutes=10)
     manager._status_cache["account"] = (
         (
@@ -1932,7 +2030,7 @@ def test_failed_account_refresh_preserves_last_success_timestamp(
             message="refresh failed",
         ),
     )
-    codex_manager.list_sessions.return_value = []
+    ai_session_manager.list_sessions.return_value = []
 
     result = manager.dispatch(
         message_id="failed-account-refresh",
@@ -1952,13 +2050,13 @@ def test_failed_account_refresh_preserves_last_success_timestamp(
 def test_chub_overview_shows_running_task_on_refreshed_session(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
     manager._state.session_slots = [
         WeixinChubModeSessionSlot(slot=1, session_id="session-1")
     ]
-    codex_manager.list_sessions.return_value = [
-        CodexSession(
+    ai_session_manager.list_sessions.return_value = [
+        AiSessionFixture(
             id="session-1",
             workspace_id="chub",
             workspace_name="Chub",
@@ -2091,13 +2189,13 @@ def test_chub_overview_uses_configured_task_name_limit(settings: Settings) -> No
 def test_chub_overview_shows_web_task_summary(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
     manager._state.session_slots = [
         WeixinChubModeSessionSlot(slot=1, session_id="session-1")
     ]
-    codex_manager.list_sessions.return_value = [
-        CodexSession(
+    ai_session_manager.list_sessions.return_value = [
+        AiSessionFixture(
             id="session-1",
             workspace_id="chub",
             workspace_name="Chub",
@@ -2169,11 +2267,11 @@ def test_chub_overview_formats_elapsed_time_compactly(
 def test_chub_sync_failure_does_not_commit_partial_slots(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
     manager._state.session_slots = [
         WeixinChubModeSessionSlot(slot=1, session_id="missing")
     ]
-    codex_manager.list_sessions.return_value = []
+    ai_session_manager.list_sessions.return_value = []
     original_write = manager._write_state
     manager._write_state = MagicMock(side_effect=OSError("write failed"))
 
@@ -2298,7 +2396,7 @@ def test_chub_overview_separates_codex_heading_and_shortens_token_label(
     assert "Daily tokens" not in message
 
 
-def test_codex_status_route_requires_exact_prompt(settings: Settings) -> None:
+def test_codex_status_route_returns_runtime_usage(settings: Settings) -> None:
     manager, _codex_manager, quick_interactions = configured_manager(settings)
 
     result = manager.dispatch(
@@ -2311,15 +2409,15 @@ def test_codex_status_route_requires_exact_prompt(settings: Settings) -> None:
     )
 
     assert result.disposition == "reply"
-    assert result.message == submitted_task_message(settings, "codex status")
-    quick_interactions.submit.assert_called_once()
+    assert result.message == "Codex: Usage: codex auth | codex auth switch"
+    quick_interactions.submit.assert_not_called()
 
 
 @pytest.mark.parametrize(
     "prompt",
-    ["codex help", "Codex Help。", "《CODEX HELP》", "codex help me review this"],
+    ["codex help", "Codex Help。", "codex help me review this"],
 )
-def test_removed_codex_help_is_submitted_as_normal_task(
+def test_unrecognized_codex_command_returns_runtime_usage(
     settings: Settings,
     prompt: str,
 ) -> None:
@@ -2335,8 +2433,8 @@ def test_removed_codex_help_is_submitted_as_normal_task(
     )
 
     assert result.disposition == "reply"
-    assert result.message == submitted_task_message(settings, prompt)
-    quick_interactions.submit.assert_called_once()
+    assert result.message == "Codex: Usage: codex auth | codex auth switch"
+    quick_interactions.submit.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -2350,12 +2448,6 @@ def test_removed_codex_help_is_submitted_as_normal_task(
         "session archive 2",
         "session retry",
         "session new retry",
-        "codex switch",
-        "codex switch 2",
-        "codex archive 2",
-        "codex new",
-        "codex retry",
-        "codex new retry",
     ],
 )
 def test_removed_or_unregistered_commands_are_normal_tasks(
@@ -2383,7 +2475,7 @@ def test_out_of_range_numbered_commands_fall_back_to_normal_tasks(
     settings: Settings,
     prompt: str,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
 
     result = manager.dispatch(
         message_id=f"malformed-numbered-command-{prompt}",

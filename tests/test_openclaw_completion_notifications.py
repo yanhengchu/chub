@@ -5,9 +5,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from app.codex.models import (
+from app.ai_interactions.models import (
     QuickInteractionTask,
     QuickInteractionWeixinRoute,
+)
+from app.ai_session.models import (
     utc_now,
 )
 from app.core.config import OpenClawCompletionNotificationConfig
@@ -356,7 +358,7 @@ def test_notification_uses_task_status_heading(
     assert notifier._messages_for(failed_task) == [expected]
 
 
-def test_notification_labels_runtime_error_source() -> None:
+def test_notification_omits_runtime_error_source_from_heading() -> None:
     notifier = OpenClawCompletionNotifier(
         OpenClawCompletionNotificationConfig(max_message_chars=256)
     )
@@ -370,7 +372,7 @@ def test_notification_labels_runtime_error_source() -> None:
     )
 
     assert notifier._messages_for(failed_task) == [
-        "Failed · Upstream Runtime\n\nTask · 检查设备状态\n\nupstream unavailable"
+        "Failed\n\nTask · 检查设备状态\n\nupstream unavailable"
     ]
 
 

@@ -42,13 +42,9 @@ class AiRuntimeSettingsStore:
         data = self._read_raw()
         general = data.get("general", {})
         if isinstance(general, dict):
-            # The former usage timezone is no longer configurable.
+            # Retired general settings must not influence the current Runtime.
             general = {key: value for key, value in general.items() if key != "timezone"}
-            legacy_weekly = general.pop("weekly_report_session", None)
-            if isinstance(legacy_weekly, dict):
-                general.setdefault("default_runtime_id", legacy_weekly.get("runtime_id"))
-                general.setdefault("model", legacy_weekly.get("model"))
-                general.setdefault("reasoning_effort", legacy_weekly.get("reasoning_effort"))
+            general.pop("weekly_report_session", None)
         try:
             return AiRuntimeGeneralSettings.model_validate(general)
         except (ValidationError, ValueError) as exc:

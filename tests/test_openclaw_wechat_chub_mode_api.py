@@ -9,7 +9,7 @@ from pydantic import ValidationError
 
 from app.api.openclaw_wechat_chub_mode import WeixinChubModeDispatchData
 from app.application import create_app
-from app.codex.models import QuickInteractionWeixinRoute
+from app.ai_interactions.models import QuickInteractionWeixinRoute
 from app.core.config import Settings
 
 

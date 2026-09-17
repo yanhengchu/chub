@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Header, Request
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -32,9 +32,6 @@ class TranslationSettingsUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     mode: Literal["direct", "auto", "confirm"] | None = None
-    # Compatibility for the previous settings switch. A boolean request maps
-    # false to direct and true to automatic execution.
-    enabled: bool | None = None
     model: str | None = Field(default=None, max_length=128)
     reasoning_effort: str | None = Field(default=None, max_length=32)
     show_internal_native_session: bool | None = None
@@ -49,25 +46,26 @@ class TranslationSettingsUpdate(BaseModel):
 
     @model_validator(mode="after")
     def validate_mode(self):
-        mode_fields = {"mode", "enabled"} & self.model_fields_set
+        mode_fields = {"mode"} & self.model_fields_set
         execution_fields = {"model", "reasoning_effort"} & self.model_fields_set
         display_fields = {"show_internal_native_session"} & self.model_fields_set
         if not mode_fields and not execution_fields and not display_fields:
             raise ValueError("a translation setting is required")
         if display_fields and self.show_internal_native_session is None:
             raise ValueError("show_internal_native_session must be a boolean")
-        if self.mode is not None and self.enabled is not None:
-            raise ValueError("provide mode only")
         if sum(bool(fields) for fields in (mode_fields, execution_fields, display_fields)) > 1:
             raise ValueError("provide mode or execution settings only")
         return self
 
 
-class DeploymentPackageConfigurationUpdate(BaseModel):
+class DeploymentPackageSettingsUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     release_version: str = Field(pattern=RELEASE_VERSION_PATTERN)
     include_development_sources: bool = False
+
+
+class DeploymentPackageBuildRequest(DeploymentPackageSettingsUpdate):
     release_note: str = Field(default="", max_length=2000)
 
     @field_validator("release_note")
@@ -178,8 +176,6 @@ def update_weixin_translation_settings(
     payload: TranslationSettingsUpdate,
 ) -> ApiResponse[TranslationSettingsStatus]:
     mode = payload.mode
-    if mode is None:
-        mode = "auto" if payload.enabled else "direct"
     model_update = "model" in payload.model_fields_set
     reasoning_update = "reasoning_effort" in payload.model_fields_set
     execution_update = model_update or reasoning_update
@@ -216,6 +212,7 @@ def update_weixin_translation_settings(
                 payload.reasoning_effort if reasoning_update else current.reasoning_effort,
             )
         else:
+            assert mode is not None
             if mode != "direct" and request.app.state.weixin_chub_mode.orchestration_enabled():
                 request.app.state.weixin_chub_mode.require_orchestration_implementation_available()
             result = request.app.state.weixin_translation.set_processing_mode(mode)
@@ -295,8 +292,20 @@ def update_internal_session_visibility(
     "/deployment-package",
     response_model=ApiResponse[DeploymentPackageStatus],
 )
-def get_deployment_package_status(request: Request) -> ApiResponse[DeploymentPackageStatus]:
-    return ApiResponse(data=request.app.state.deployment_package.status())
+def get_deployment_package_status(
+    request: Request,
+    release_note_draft_token: str | None = Header(
+        default=None,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9_-]{16,128}$",
+        alias="X-Chub-Release-Note-Draft-Token",
+    ),
+) -> ApiResponse[DeploymentPackageStatus]:
+    return ApiResponse(
+        data=request.app.state.deployment_package.status(
+            release_note_draft_token=release_note_draft_token
+        )
+    )
 
 
 @router.put(
@@ -304,7 +313,7 @@ def get_deployment_package_status(request: Request) -> ApiResponse[DeploymentPac
     response_model=ApiResponse[DeploymentPackageStatus],
 )
 def update_deployment_package_configuration(
-    payload: DeploymentPackageConfigurationUpdate,
+    payload: DeploymentPackageSettingsUpdate,
     request: Request,
 ) -> ApiResponse[DeploymentPackageStatus]:
     operation_id = log_operation(
@@ -322,7 +331,7 @@ def update_deployment_package_configuration(
                 runtime_description=FORMAL_CODEX_DESCRIPTION,
                 weixin_release_version=payload.release_version,
                 include_development_sources=payload.include_development_sources,
-                release_note=payload.release_note,
+                release_note="",
             )
         )
     except ApiError as exc:
@@ -339,6 +348,12 @@ def update_deployment_package_configuration(
 def generate_deployment_package_release_note(
     payload: DeploymentPackageReleaseNoteRequest,
     request: Request,
+    release_note_draft_token: str = Header(
+        min_length=16,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9_-]{16,128}$",
+        alias="X-Chub-Release-Note-Draft-Token",
+    ),
 ) -> ApiResponse[DeploymentPackageStatus]:
     source_ip = request.client.host if request.client else "unknown"
     operation_id = log_operation(
@@ -360,6 +375,7 @@ def generate_deployment_package_release_note(
             include_development_sources=payload.include_development_sources,
             source_ip=source_ip,
             operation_id=operation_id,
+            release_note_draft_token=release_note_draft_token,
         )
     except ApiError as exc:
         log_operation(
@@ -455,6 +471,23 @@ def open_deployment_package_output(request: Request) -> ApiResponse[dict[str, st
     "/deployment-package/build",
     response_model=ApiResponse[DeploymentPackageStatus],
 )
-def build_deployment_package(request: Request) -> ApiResponse[DeploymentPackageStatus]:
+def build_deployment_package(
+    payload: DeploymentPackageBuildRequest,
+    request: Request,
+) -> ApiResponse[DeploymentPackageStatus]:
     source_ip = request.client.host if request.client else "unknown"
-    return ApiResponse(data=request.app.state.deployment_package.start(source_ip=source_ip))
+    configuration = DeploymentPackageConfiguration(
+        chub_release_version=payload.release_version,
+        runtime_implementation_id=FORMAL_CODEX_IMPLEMENTATION_ID,
+        runtime_release_version=payload.release_version,
+        runtime_description=FORMAL_CODEX_DESCRIPTION,
+        weixin_release_version=payload.release_version,
+        include_development_sources=payload.include_development_sources,
+        release_note=payload.release_note,
+    )
+    return ApiResponse(
+        data=request.app.state.deployment_package.start(
+            source_ip=source_ip,
+            configuration=configuration,
+        )
+    )

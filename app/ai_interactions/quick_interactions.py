@@ -16,7 +16,7 @@ from typing import Callable, Iterator
 
 from app.ai_session.models import AiSession
 from app.ai_session.store import AiSessionStoreUnavailable
-from app.codex.models import (
+from app.ai_interactions.models import (
     QuickInteractionDeferredRestartContext,
     QuickInteractionErrorSource,
     QuickInteractionOperationContext,
@@ -24,6 +24,8 @@ from app.codex.models import (
     QuickInteractionTask,
     QuickInteractionWeixinRoute,
     TASK_SUMMARY_MAX_LENGTH,
+)
+from app.ai_session.models import (
     utc_now,
 )
 from app.core.response import ApiError
@@ -53,6 +55,7 @@ from app.quick_worker_tasks import (
 
 MAX_RESULT_BYTES = 100_000
 MAX_QUICK_INTERACTION_STATE_BYTES = 8 * 1024 * 1024
+QUICK_INTERACTION_STATE_VERSION = 1
 MAX_STORED_TASKS = 30
 MAX_SESSION_TITLE_LENGTH = 48
 # The Worker is authoritative; resident reconciliation is recovery work and must
@@ -142,7 +145,7 @@ class QuickInteractionManager:
         self,
         data_file: Path,
         restart_request_dir: Path,
-        codex_manager,
+        ai_session_manager,
         completion_notifier: Callable[
             [QuickInteractionTask, QuickInteractionWeixinRoute | None],
             object,
@@ -163,7 +166,7 @@ class QuickInteractionManager:
         worker_settings=None,
     ) -> None:
         self.path = data_file.with_name("quick-interactions.json")
-        self.codex_manager = codex_manager
+        self.ai_session_manager = ai_session_manager
         self.completion_notifier = completion_notifier
         self.restart_notifier = restart_notifier
         self.deferred_restart = deferred_restart
@@ -228,29 +231,19 @@ class QuickInteractionManager:
         if not isinstance(payload, list):
             self._local_state_error = "Web quick interaction state has an invalid root"
             return False
+        if any(
+            not isinstance(item, dict)
+            or item.get("_state_version") != QUICK_INTERACTION_STATE_VERSION
+            for item in payload
+        ):
+            LOGGER.warning("Discarded incompatible Web quick interaction state")
+            return True
         recovered_tasks = False
         seen_task_ids: set[str] = set()
         seen_worker_task_ids: set[str] = set()
         for item in payload:
-            if not isinstance(item, dict):
-                recovered_tasks = True
-                LOGGER.warning("Discarded invalid Web quick interaction entry")
-                continue
             task_payload = dict(item)
-            removed_session_display_snapshot = False
-            for field in ("weixin_session_slot", "weixin_session_title"):
-                if field in task_payload:
-                    task_payload.pop(field, None)
-                    removed_session_display_snapshot = True
-            # Older records may contain the removed pin state.
-            removed_legacy_pin_state = "pinned_at" in task_payload
-            task_payload.pop("pinned_at", None)
-            # v12 stored a task-scoped browser capability context. v13 retired
-            # that protocol and its Worker task directory, so a retained v12
-            # task cannot be resumed by the current Worker. Do not let this
-            # known obsolete field make the complete Web state unreadable.
-            retired_task_capabilities = "capability_ids" in task_payload
-            task_payload.pop("capability_ids", None)
+            task_payload.pop("_state_version", None)
             route_payload = task_payload.pop("_notification_route", None)
             restart_context_payload = task_payload.pop(
                 "_deferred_restart_context",
@@ -264,14 +257,6 @@ class QuickInteractionManager:
                 "_worker_delivery_confirmed",
                 False,
             )
-            # Older interrupted writes may leave this optional marker as JSON
-            # null. It has the same safe meaning as an absent marker: delivery
-            # is not confirmed and must be reconciled with the Worker. Do not
-            # turn that recoverable per-task state into a permanent global
-            # Quick Worker write gate.
-            if worker_delivery_confirmed is None:
-                worker_delivery_confirmed = False
-                recovered_tasks = True
             try:
                 task = QuickInteractionTask.model_validate(task_payload)
             except ValueError:
@@ -279,32 +264,6 @@ class QuickInteractionManager:
                 LOGGER.warning("Discarded invalid Web quick interaction task")
                 continue
             discard_reason: str | None = None
-            if task.implementation_id is None and task.status in {"requested", "running"}:
-                # The pre-R1 record had no implementation snapshot. Its Worker
-                # protocol state is intentionally incompatible, so never retry
-                # it through an arbitrary current version.
-                task.status = "failed"
-                task.error = (
-                    "runtime_implementation_snapshot_missing: "
-                    "该任务创建于 Runtime 多版本切换前，无法安全恢复，未重新执行。"
-                )
-                task.error_source = "chub"
-                task.updated_at = utc_now()
-                recovered_tasks = True
-            if retired_task_capabilities and task.status in {"requested", "running"}:
-                task.status = "failed"
-                task.submission_verifying = False
-                task.error = (
-                    "该任务创建于已废弃的 Worker 协议，无法安全恢复，未重新执行。"
-                )
-                task.error_source = "chub"
-                task.updated_at = utc_now()
-                recovered_tasks = True
-            if retired_task_capabilities:
-                # Its Worker directory is deliberately not readable under the
-                # new protocol. This final local outcome is the recovery
-                # boundary, not a delivery that a current Worker can confirm.
-                self._worker_delivery_confirmed.add(task.id)
             if task.id in seen_task_ids or (
                 task.worker_task_id is not None
                 and task.worker_task_id in seen_worker_task_ids
@@ -351,7 +310,6 @@ class QuickInteractionManager:
                 and (
                     task.worker_task_id is not None
                     and worker_delivery_confirmed is not True
-                    and not retired_task_capabilities
                 )
             ):
                 discard_reason = discard_reason or (
@@ -396,14 +354,8 @@ class QuickInteractionManager:
                     operation_context.operation_id,
                     operation_context.source_ip,
                 )
-            if worker_delivery_confirmed is True or retired_task_capabilities:
+            if worker_delivery_confirmed is True:
                 self._worker_delivery_confirmed.add(task.id)
-            if (
-                removed_legacy_pin_state
-                or removed_session_display_snapshot
-                or retired_task_capabilities
-            ):
-                recovered_tasks = True
             if task.notification_status == "sending":
                 recovered_tasks = True
                 if task.notification_route == "weixin-task":
@@ -421,15 +373,6 @@ class QuickInteractionManager:
                 task.notification_status = "skipped"
                 task.notification_error = "页面任务结果仅在 Chub 快速交互页面展示。"
                 task.notification_updated_at = utc_now()
-            if retired_task_capabilities and task.notification_status is None:
-                if task.notification_route == "weixin-task":
-                    if task.kind != "translation" and self.completion_notifier is not None:
-                        task.notification_status = "pending"
-                        task.notification_updated_at = utc_now()
-                else:
-                    task.notification_status = "skipped"
-                    task.notification_error = "页面任务结果仅在 Chub 快速交互页面展示。"
-                    task.notification_updated_at = utc_now()
             if task.deferred_restart_notification_status == "sending":
                 recovered_tasks = True
                 task.deferred_restart_notification_status = "failed"
@@ -460,7 +403,7 @@ class QuickInteractionManager:
                 # Web task list. Restore the durable claimant before worker
                 # reconciliation so a valid result received after a Web
                 # restart is not mistaken for a stale task.
-                self.codex_manager.register_quick_native_claim(
+                self.ai_session_manager.register_quick_native_claim(
                     task.session_id,
                     task.worker_task_id,
                 )
@@ -524,7 +467,7 @@ class QuickInteractionManager:
         self._require_worker_recovery()
         queued_translation = kind == "translation"
         with self._session_lock(session_id):
-            session = self.codex_manager.get_session(session_id)
+            session = self.ai_session_manager.get_session(session_id)
             if session.status == "error" and not queued_translation:
                 raise ApiError(
                     409,
@@ -544,7 +487,7 @@ class QuickInteractionManager:
                         "quick_interaction_in_progress",
                         "该会话已有快速交互任务正在执行。",
                     )
-            selected_implementation_id = self.codex_manager.session_implementation_id(
+            selected_implementation_id = self.ai_session_manager.session_implementation_id(
                 session_id
             )
             if implementation_id is not None and implementation_id != selected_implementation_id:
@@ -555,7 +498,7 @@ class QuickInteractionManager:
                 )
             if (
                 not queued_translation
-                and self.codex_manager.has_active_writer(
+                and self.ai_session_manager.has_active_writer(
                     session.native_session_id,
                     implementation_id=selected_implementation_id,
                 )
@@ -566,14 +509,14 @@ class QuickInteractionManager:
                     ACTIVE_WRITER_ERROR,
                 )
             ensure_compatible = getattr(
-                self.codex_manager,
+                self.ai_session_manager,
                 "ensure_session_implementation_compatible",
                 None,
             )
             if callable(ensure_compatible):
                 ensure_compatible(session_id, selected_implementation_id)
             if not session.native_session_id:
-                self.codex_manager.set_initial_quick_interaction_title(
+                self.ai_session_manager.set_initial_quick_interaction_title(
                     session.id,
                     self._session_title(prompt),
                 )
@@ -669,7 +612,7 @@ class QuickInteractionManager:
         self._log_status(task.id, "requested", session.id)
         try:
             if not queued_translation:
-                self.codex_manager.register_quick_native_claim(
+                self.ai_session_manager.register_quick_native_claim(
                     session.id,
                     task.worker_task_id,
                 )
@@ -812,7 +755,7 @@ class QuickInteractionManager:
             health = WorkerHealth.model_validate(payload.get("data"))
             if health.status != "ready":
                 raise OSError("Quick Worker is not ready")
-            implementation_id = self.codex_manager.default_submission_implementation_id()
+            implementation_id = self.ai_session_manager.default_submission_implementation_id()
             if implementation_id not in health.available_implementation_ids:
                 raise OSError("Quick Worker cannot execute the default Runtime implementation")
         except (OSError, ValueError) as exc:
@@ -830,7 +773,7 @@ class QuickInteractionManager:
     ):
         """Persist a model choice for the next quick task in this Session."""
         with self._session_lock(session_id):
-            return self.codex_manager.update_session_model(
+            return self.ai_session_manager.update_session_model(
                 session_id,
                 model,
                 reasoning_effort,
@@ -845,7 +788,7 @@ class QuickInteractionManager:
     ):
         """Serialize a persistent configuration update for subsequent tasks."""
         with self._session_lock(session_id):
-            return self.codex_manager.update_session_configuration(
+            return self.ai_session_manager.update_session_configuration(
                 session_id,
                 permission_mode,
                 model,
@@ -1003,7 +946,7 @@ class QuickInteractionManager:
             self._native_claim_restore_errors.clear()
             self._untracked_worker_sessions.clear()
             self._local_state_error = None
-            self.codex_manager.discard_quick_native_claims()
+            self.ai_session_manager.discard_quick_native_claims()
             self._write()
         LOGGER.warning(
             "Discarded unreadable Chub quick interaction state before Worker recovery: %s",
@@ -1089,7 +1032,7 @@ class QuickInteractionManager:
                     # proof, while an explicit rejection is the only safe
                     # reason to release the Session.
                     try:
-                        session = self.codex_manager.get_session(task.session_id)
+                        session = self.ai_session_manager.get_session(task.session_id)
                         if not task.prompt:
                             raise OSError("Verifying Worker task has no prompt")
                         submission = self._worker_submission(task, session, task.prompt)
@@ -1159,7 +1102,7 @@ class QuickInteractionManager:
                     self._worker_delivery_confirmed.add(task_id)
                     self._write()
                 if was_active:
-                    self.codex_manager.set_activity(
+                    self.ai_session_manager.set_activity(
                         current.session_id,
                         "idle",
                         "none",
@@ -1180,13 +1123,13 @@ class QuickInteractionManager:
         ):
             raise OSError("Worker returned mismatched task metadata")
         try:
-            session = self.codex_manager.get_session(task.session_id)
+            session = self.ai_session_manager.get_session(task.session_id)
         except Exception as exc:
             raise OSError("Worker task Session is unavailable") from exc
         if snapshot.native_session_id and claim_restore_error is None:
             try:
                 if task.kind == "translation":
-                    self.codex_manager.bind_quick_interaction_native_session(
+                    self.ai_session_manager.bind_quick_interaction_native_session(
                         task.session_id,
                         snapshot.native_session_id,
                         implementation_id=task.implementation_id,
@@ -1194,7 +1137,7 @@ class QuickInteractionManager:
                 else:
                     if snapshot.execution_id is None:
                         raise OSError("Worker native Session is missing execution identity")
-                    self.codex_manager.bind_quick_interaction_native_session(
+                    self.ai_session_manager.bind_quick_interaction_native_session(
                         task.session_id,
                         snapshot.native_session_id,
                         worker_task_id=worker_task_id,
@@ -1251,7 +1194,7 @@ class QuickInteractionManager:
                     self._write()
             if log_started or desired == "running":
                 self._log_status(task_id, "started", task.session_id)
-            self.codex_manager.set_activity(task.session_id, "working", "quick")
+            self.ai_session_manager.set_activity(task.session_id, "working", "quick")
             return
         with self._lock:
             current = self._tasks.get(task_id)
@@ -1277,7 +1220,7 @@ class QuickInteractionManager:
                 done.set()
             self._write()
         if not remaining_for_session:
-            self.codex_manager.set_activity(
+            self.ai_session_manager.set_activity(
                 current.session_id,
                 "idle",
                 "none",
@@ -1471,7 +1414,7 @@ class QuickInteractionManager:
             self._operations.pop(task_id, None)
         if not remaining_for_session:
             try:
-                self.codex_manager.set_activity(
+                self.ai_session_manager.set_activity(
                     session.id,
                     "idle",
                     "none",
@@ -1560,7 +1503,7 @@ class QuickInteractionManager:
         *,
         order: QuickInteractionOrder = "task",
     ) -> list[QuickInteractionTask]:
-        self.codex_manager.get_session(session_id)
+        self.ai_session_manager.get_session(session_id)
         with self._lock:
             tasks = [
                 task.model_copy(deep=True)
@@ -1586,7 +1529,7 @@ class QuickInteractionManager:
         session_id: str,
     ) -> QuickInteractionTask | None:
         """Return the latest deliverable main-task result for one Session."""
-        self.codex_manager.get_session(session_id)
+        self.ai_session_manager.get_session(session_id)
         with self._lock:
             candidates = [
                 task.model_copy(deep=True)
@@ -1994,8 +1937,8 @@ class QuickInteractionManager:
         if self.deferred_restart is not None:
             self.deferred_restart.maybe_schedule()
 
-    def cancel_codex_session(self, session_id: str, *, timeout: float = 5) -> bool:
-        """Cancel the active Codex CLI interaction and wait for state cleanup."""
+    def cancel_session_interactions(self, session_id: str, *, timeout: float = 5) -> bool:
+        """Cancel active interactions for a Session and wait for cleanup."""
         with self._session_lock(session_id):
             with self._lock:
                 task_ids = [
@@ -2142,7 +2085,7 @@ class QuickInteractionManager:
             self._write()
         self._log_status(task_id, "failed", task.session_id)
         if not remaining_for_session:
-            self.codex_manager.set_activity(
+            self.ai_session_manager.set_activity(
                 task.session_id,
                 "idle",
                 "none",
@@ -2154,7 +2097,7 @@ class QuickInteractionManager:
 
     @contextmanager
     def stop_operation_guard(self, session_id: str) -> Iterator[None]:
-        """Serialize stop with submit while allowing stop to cancel Codex work."""
+        """Serialize stop with submission while allowing active work to cancel."""
         with self._session_lock(session_id):
             self._require_worker_recovery()
             yield
@@ -2202,7 +2145,7 @@ class QuickInteractionManager:
                                 current.updated_at = utc_now()
                                 self._write()
                         self._log_status(task_id, "started", session.id)
-                        self.codex_manager.set_activity(
+                        self.ai_session_manager.set_activity(
                             session.id,
                             "working",
                             "quick",
@@ -2210,7 +2153,7 @@ class QuickInteractionManager:
                         started_logged = True
                 if snapshot.native_session_id:
                     if task.kind == "translation":
-                        self.codex_manager.bind_quick_interaction_native_session(
+                        self.ai_session_manager.bind_quick_interaction_native_session(
                             session.id,
                             snapshot.native_session_id,
                             implementation_id=task.implementation_id,
@@ -2218,7 +2161,7 @@ class QuickInteractionManager:
                     else:
                         if snapshot.execution_id is None:
                             raise OSError("Worker native Session is missing execution identity")
-                        self.codex_manager.bind_quick_interaction_native_session(
+                        self.ai_session_manager.bind_quick_interaction_native_session(
                             session.id,
                             snapshot.native_session_id,
                             worker_task_id=worker_task_id,
@@ -2260,7 +2203,7 @@ class QuickInteractionManager:
                 if done is not None:
                     done.set()
             if not remaining_for_session:
-                self.codex_manager.set_activity(
+                self.ai_session_manager.set_activity(
                     session.id,
                     "idle",
                     "none",
@@ -2292,7 +2235,7 @@ class QuickInteractionManager:
         if not isinstance(implementation_id, str):
             raise OSError("Task Runtime implementation identity is unavailable")
         resolve_implementation = getattr(
-            self.codex_manager,
+            self.ai_session_manager,
             "session_implementation_id",
             None,
         )
@@ -2675,7 +2618,7 @@ class QuickInteractionManager:
     ) -> None:
         claim = (session_id, worker_task_id)
         try:
-            self.codex_manager.clear_quick_native_claim(*claim)
+            self.ai_session_manager.clear_quick_native_claim(*claim)
         except Exception:
             with self._lock:
                 self._pending_native_claim_clears.add(claim)
@@ -2894,6 +2837,7 @@ class QuickInteractionManager:
         payload = []
         for item in self._tasks.values():
             serialized = item.model_dump(mode="json")
+            serialized["_state_version"] = QUICK_INTERACTION_STATE_VERSION
             route = self._notification_routes.get(item.id)
             if route is not None:
                 serialized["_notification_route"] = route.model_dump(mode="json")

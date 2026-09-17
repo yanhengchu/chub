@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
-from app.codex.models import CodexQuotaData, CodexQuotaWindow, CodexTokenUsageData
+from app.ai_usage.models import CodexQuotaData, CodexQuotaWindow, CodexTokenUsageData
 from chub_codex_runtime.rate_limits import CodexRateLimitService
 
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tests.session_fixtures import CodexSession
+from tests.session_fixtures import AiSessionFixture
 
 import json
 import re
@@ -12,12 +12,18 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.codex.models import (
+from app.ai_session.api_models import (
+    WorkspaceInfo,
+)
+from app.ai_interactions.models import (
+    QuickInteractionWeixinRoute,
+)
+from app.ai_usage.models import (
     CodexQuotaData,
     CodexQuotaWindow,
     CodexTokenUsageData,
-    QuickInteractionWeixinRoute,
-    WorkspaceInfo,
+)
+from app.ai_session.models import (
     utc_now,
 )
 from app.core.config import Settings
@@ -114,7 +120,7 @@ def test_removed_new_retry_is_submitted_as_a_normal_task(
     settings: Settings,
     command: str,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
     quick_interactions.is_running.return_value = True
     manager.dispatch(
@@ -126,8 +132,8 @@ def test_removed_new_retry_is_submitted_as_a_normal_task(
         delivery_route=delivery_route(),
     )
 
-    codex_manager.create_session.return_value = SimpleNamespace(id="session-2")
-    codex_manager.get_session.return_value = CodexSession(
+    ai_session_manager.create_session.return_value = SimpleNamespace(id="session-2")
+    ai_session_manager.get_session.return_value = AiSessionFixture(
         id="session-2",
         workspace_id="chub",
         workspace_name="Chub",
@@ -150,20 +156,20 @@ def test_removed_new_retry_is_submitted_as_a_normal_task(
     assert result.message.endswith(f"Task · {command.strip()}")
     assert manager.session_id() == "session-1"
     assert quick_interactions.submit.call_args.args[1] == command
-    codex_manager.create_session.assert_not_called()
+    ai_session_manager.create_session.assert_not_called()
 
 
 def test_removed_switch_retry_is_submitted_as_a_normal_task(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
     manager._state.session_slots = [
         WeixinChubModeSessionSlot(slot=1, session_id="session-1"),
         WeixinChubModeSessionSlot(slot=2, session_id="session-2"),
     ]
     sessions = [
-        CodexSession(
+        AiSessionFixture(
             id=f"session-{slot}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -176,8 +182,8 @@ def test_removed_switch_retry_is_submitted_as_a_normal_task(
         for slot in (1, 2)
     ]
     by_id = {session.id: session for session in sessions}
-    codex_manager.list_sessions.return_value = sessions
-    codex_manager.get_session.side_effect = lambda session_id: by_id[session_id]
+    ai_session_manager.list_sessions.return_value = sessions
+    ai_session_manager.get_session.side_effect = lambda session_id: by_id[session_id]
     quick_interactions.is_running.return_value = True
     manager.dispatch(
         message_id="busy-before-switch-retry",
@@ -221,14 +227,14 @@ def test_removed_switch_retry_is_submitted_as_a_normal_task(
 def test_removed_switch_retry_does_not_switch_or_retry(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
     manager._state.session_slots = [
         WeixinChubModeSessionSlot(slot=1, session_id="session-1"),
         WeixinChubModeSessionSlot(slot=2, session_id="session-2"),
     ]
     sessions = [
-        CodexSession(
+        AiSessionFixture(
             id="session-1",
             workspace_id="chub",
             workspace_name="Chub",
@@ -238,7 +244,7 @@ def test_removed_switch_retry_does_not_switch_or_retry(
             status="stopped",
             activity="idle",
         ),
-        CodexSession(
+        AiSessionFixture(
             id="session-2",
             workspace_id="chub",
             workspace_name="Chub",
@@ -250,8 +256,8 @@ def test_removed_switch_retry_does_not_switch_or_retry(
             activity_source="quick",
         ),
     ]
-    codex_manager.list_sessions.return_value = sessions
-    codex_manager.get_session.side_effect = lambda session_id: next(
+    ai_session_manager.list_sessions.return_value = sessions
+    ai_session_manager.get_session.side_effect = lambda session_id: next(
         session for session in sessions if session.id == session_id
     )
     quick_interactions.is_running.return_value = True
@@ -285,12 +291,12 @@ def test_removed_switch_retry_does_not_switch_or_retry(
 def test_removed_switch_retry_does_not_consume_pending_retry(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
     manager._state.session_slots = [
         WeixinChubModeSessionSlot(slot=1, session_id="session-1")
     ]
-    session = CodexSession(
+    session = AiSessionFixture(
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",
@@ -300,8 +306,8 @@ def test_removed_switch_retry_does_not_consume_pending_retry(
         status="stopped",
         activity="idle",
     )
-    codex_manager.list_sessions.return_value = [session]
-    codex_manager.get_session.return_value = session
+    ai_session_manager.list_sessions.return_value = [session]
+    ai_session_manager.get_session.return_value = session
     quick_interactions.is_running.return_value = True
     manager.dispatch(
         message_id="busy-current-before-switch-retry",
@@ -344,10 +350,10 @@ def test_switch_continuation_resumes_after_final_state_write_is_interrupted(
     pending_prompt: str | None,
     expected_status: str,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
     sessions = [
-        CodexSession(
+        AiSessionFixture(
             id=f"session-{slot}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -374,8 +380,8 @@ def test_switch_continuation_resumes_after_final_state_write_is_interrupted(
             expires_at=now + timedelta(minutes=10),
         )
     by_id = {session.id: session for session in sessions}
-    codex_manager.list_sessions.return_value = sessions
-    codex_manager.get_session.side_effect = lambda session_id: by_id[session_id]
+    ai_session_manager.list_sessions.return_value = sessions
+    ai_session_manager.get_session.side_effect = lambda session_id: by_id[session_id]
     manager._finish_codex_switch = MagicMock(side_effect=KeyboardInterrupt)
 
     with pytest.raises(KeyboardInterrupt):
@@ -437,7 +443,7 @@ def test_busy_task_replaces_previous_pending_retry(
 def test_codex_retry_rejects_expired_or_different_route_without_side_effects(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
     quick_interactions.is_running.return_value = True
     manager.dispatch(
@@ -466,14 +472,14 @@ def test_codex_retry_rejects_expired_or_different_route_without_side_effects(
         "\n\nNo sessions\n\n"
     )
     assert result.message.endswith("Usage unavailable")
-    codex_manager.create_session.assert_not_called()
+    ai_session_manager.create_session.assert_not_called()
     quick_interactions.submit.assert_not_called()
 
 
 def test_codex_retry_cannot_claim_task_from_different_route(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
     quick_interactions.is_running.return_value = True
     manager.dispatch(
@@ -500,7 +506,7 @@ def test_codex_retry_cannot_claim_task_from_different_route(
         "\n\nNo sessions\n\n"
     )
     assert result.message.endswith("Usage unavailable")
-    codex_manager.create_session.assert_not_called()
+    ai_session_manager.create_session.assert_not_called()
     quick_interactions.submit.assert_not_called()
     assert manager._state.pending_retry is not None
     assert manager._state.pending_retry.prompt == "私有待继续任务"
@@ -509,7 +515,7 @@ def test_codex_retry_cannot_claim_task_from_different_route(
 def test_duplicate_codex_retry_does_not_create_or_submit_twice(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
     quick_interactions.is_running.return_value = True
     manager.dispatch(
@@ -541,7 +547,7 @@ def test_duplicate_codex_retry_does_not_create_or_submit_twice(
 
     assert "The task was resubmitted." in (first.message or "")
     assert duplicate.message == first.message
-    codex_manager.create_session.assert_not_called()
+    ai_session_manager.create_session.assert_not_called()
     quick_interactions.submit.assert_called_once()
 
 

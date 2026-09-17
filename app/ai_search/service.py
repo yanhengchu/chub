@@ -19,7 +19,6 @@ from app.ai_search.models import (
     SearchResultPayload,
     SearchRun,
 )
-from app.ai_session.operations import delete_session
 from app.automations.browser import (
     DebugChromePageContent,
     DebugChromePageReadError,
@@ -74,7 +73,6 @@ class AiSearchService:
     def current(self, manager, quick_interactions) -> AiSearchData:
         with self._lock:
             self._require_available()
-            self._retire_legacy_session(manager, quick_interactions)
             if self._recover_pending_run(quick_interactions):
                 self._refresh(quick_interactions)
             return self._data()
@@ -99,7 +97,6 @@ class AiSearchService:
                 session_id
                 for session_id in (
                     self._state.session_id,
-                    self._state.retired_session_id,
                 )
                 if session_id is not None
             }
@@ -107,7 +104,6 @@ class AiSearchService:
     def refresh(self, manager, quick_interactions, *, source_ip: str) -> AiSearchData:
         with self._lock:
             self._require_available()
-            self._retire_legacy_session(manager, quick_interactions)
             if self._recover_pending_run(quick_interactions):
                 self._refresh(quick_interactions)
             if self._active_run() is not None:
@@ -295,31 +291,6 @@ class AiSearchService:
             LOGGER.warning("Today focus Session creation failed exception_type=%s", type(exc).__name__)
             raise ApiError(503, "today_focus_refresh_failed", "今日关注未能更新，可再次刷新。") from exc
 
-    def _retire_legacy_session(self, manager, quick_interactions) -> None:
-        session_id = self._state.retired_session_id
-        if session_id is None:
-            return
-        try:
-            delete_session(session_id, manager=manager, quick_interactions=quick_interactions)
-        except ApiError as exc:
-            raise ApiError(
-                503,
-                "today_focus_legacy_session_cleanup_failed",
-                "旧今日关注 Session 尚未清理，暂时无法继续使用今日关注。",
-            ) from exc
-        except Exception as exc:
-            LOGGER.warning(
-                "Today focus legacy Session cleanup failed session_id=%s exception_type=%s",
-                session_id,
-                type(exc).__name__,
-            )
-            raise ApiError(
-                503,
-                "today_focus_legacy_session_cleanup_failed",
-                "旧今日关注 Session 尚未清理，暂时无法继续使用今日关注。",
-            ) from exc
-        self._commit(self._state.model_copy(update={"retired_session_id": None}))
-
     def _read_source_snapshots(self) -> tuple[DebugChromePageContent | DebugChromePageReadError, ...]:
         async def read_all() -> tuple[DebugChromePageContent | DebugChromePageReadError, ...]:
             outcomes = await asyncio.gather(
@@ -426,14 +397,10 @@ class AiSearchService:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
             if not isinstance(payload, dict):
                 return AiSearchState()
-            if payload.get("version") == 6:
+            if payload.get("version") == 7:
                 return AiSearchState.model_validate(payload)
-            legacy_session_id = payload.get("session_id")
-            return AiSearchState(
-                retired_session_id=legacy_session_id
-                if isinstance(legacy_session_id, str) and legacy_session_id
-                else None
-            )
+            self._commit(AiSearchState())
+            return AiSearchState()
         except (OSError, ValueError, json.JSONDecodeError):
             self._state_error = "今日关注本机状态不可读取。"
             return AiSearchState()

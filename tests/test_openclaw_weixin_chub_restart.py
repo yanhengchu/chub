@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tests.session_fixtures import CodexSession
+from tests.session_fixtures import AiSessionFixture
 
 import json
 import re
@@ -12,12 +12,18 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.codex.models import (
+from app.ai_session.api_models import (
+    WorkspaceInfo,
+)
+from app.ai_interactions.models import (
+    QuickInteractionWeixinRoute,
+)
+from app.ai_usage.models import (
     CodexQuotaData,
     CodexQuotaWindow,
     CodexTokenUsageData,
-    QuickInteractionWeixinRoute,
-    WorkspaceInfo,
+)
+from app.ai_session.models import (
     utc_now,
 )
 from app.core.config import Settings
@@ -181,10 +187,10 @@ def test_system_upgrade_rejected_by_shared_preconditions(settings: Settings) -> 
 def test_chub_restart_initial_reply_does_not_list_sessions_or_usage(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     enable_restart_command(manager)
     sessions = [
-        CodexSession(
+        AiSessionFixture(
             id=f"session-{slot}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -201,7 +207,7 @@ def test_chub_restart_initial_reply_does_not_list_sessions_or_usage(
         WeixinChubModeSessionSlot(slot=slot, session_id=f"session-{slot}")
         for slot in (1, 2)
     ]
-    codex_manager.list_sessions.return_value = sessions
+    ai_session_manager.list_sessions.return_value = sessions
     quick_interactions.is_running.side_effect = (
         lambda session_id: session_id == "session-2"
     )
@@ -554,7 +560,7 @@ def test_chub_restart_interrupted_notification_is_not_retried(
 
     recovered = WeixinChubModeManager(
         settings,
-        manager.codex_manager,
+        manager.ai_session_manager,
         manager.quick_interactions,
         manager.route_validator,
         restart_coordinator=coordinator,

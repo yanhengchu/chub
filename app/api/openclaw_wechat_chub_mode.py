@@ -5,12 +5,9 @@ from typing import Literal, Self
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.codex.models import QuickInteractionWeixinRoute
+from app.ai_interactions.models import QuickInteractionWeixinRoute
 from app.core.response import ApiError, ApiResponse
 from app.core.security import _allows_loopback_request
-from app.services.openclaw_weixin_chub_commands import (
-    parse_weixin_chub_command,
-)
 from app.services.system_upgrade import SystemUpgradeBusy
 
 
@@ -102,8 +99,6 @@ def dispatch_wechat_chub_mode_message(
             "weixin_chub_mode_protocol_mismatch",
             "OpenClaw 与 Chub 微信调度协议版本不匹配。",
         )
-    command = parse_weixin_chub_command(payload.content)
-
     def dispatch() -> object:
         return request.app.state.weixin_chub_mode.dispatch(
             message_id=payload.message_id,
@@ -117,7 +112,7 @@ def dispatch_wechat_chub_mode_message(
             ),
         )
 
-    if request.app.state.weixin_chub_mode.requires_system_upgrade_write_guard(command):
+    if request.app.state.weixin_chub_mode.requires_system_upgrade_write_guard_for_prompt(payload.content):
         try:
             with request.app.state.system_upgrade.mutation_guard():
                 result = dispatch()

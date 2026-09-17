@@ -7,8 +7,8 @@ from typing import Iterable, Mapping
 from zoneinfo import ZoneInfo
 
 from app.ai_usage.models import AiUsageData
-from app.codex.models import CodexQuotaData, CodexTokenUsageData
-from app.codex.quick_interactions import build_task_summary
+from app.ai_usage.models import CodexQuotaData, CodexTokenUsageData
+from app.ai_interactions.quick_interactions import build_task_summary
 from app.core.response import ApiError
 from app.services.openclaw_weixin_chub_models import (
     MAX_WEIXIN_TASK_SUMMARY_CHARS,

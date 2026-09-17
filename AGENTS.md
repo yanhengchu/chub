@@ -70,7 +70,9 @@ AI Agent 处理任何需求前先用下面的规则建立判断基线，详细�
 - `app/requests/`：轻量需求储备和请求命令。
 - `app/services/`：可复用服务逻辑。
 - `app/tasks/`：白名单维护任务及平台实现。
-- `app/codex/`：Codex Session、Quick Worker 任务与页面/API 入口。
+- `app/api/ai.py`：`/api/ai/*` 路由与 AI Session 页面入口。
+- `app/ai_interactions/`：Quick Interaction、Worker 协调、恢复与通知。
+- `app/ai_session/`：逻辑 AI Session、Activity、入口和 Session Manager。
 - `app/quick_worker*.py`：Quick Worker 服务入口、任务、Runner 和本机协议。
 - `app/automations/`：配置驱动的浏览器自动化、Runner、状态和跨进程锁。
 - `app/web/templates/`：Jinja2 页面模板。

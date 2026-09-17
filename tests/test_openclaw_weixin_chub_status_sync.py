@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tests.session_fixtures import CodexSession
+from tests.session_fixtures import AiSessionFixture
 
 import json
 import re
@@ -13,12 +13,18 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.codex.models import (
+from app.ai_session.api_models import (
+    WorkspaceInfo,
+)
+from app.ai_interactions.models import (
+    QuickInteractionWeixinRoute,
+)
+from app.ai_usage.models import (
     CodexQuotaData,
     CodexQuotaWindow,
     CodexTokenUsageData,
-    QuickInteractionWeixinRoute,
-    WorkspaceInfo,
+)
+from app.ai_session.models import (
     utc_now,
 )
 from app.core.config import ExtraWorkspaceConfig, Settings
@@ -71,7 +77,7 @@ def test_chub_status_ignores_trailing_punctuation(
     "prompt",
     ["CODEX status", "Codex status", "codex status"],
 )
-def test_codex_status_near_match_remains_a_normal_task_case_insensitively(
+def test_codex_status_near_match_returns_runtime_usage_case_insensitively(
     settings: Settings,
     prompt: str,
 ) -> None:
@@ -87,8 +93,8 @@ def test_codex_status_near_match_remains_a_normal_task_case_insensitively(
     )
 
     assert result.disposition == "reply"
-    assert result.message == submitted_task_message(settings, prompt)
-    quick_interactions.submit.assert_called_once()
+    assert result.message == "Codex: Usage: codex auth | codex auth switch"
+    quick_interactions.submit.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -158,7 +164,7 @@ def test_chub_sync_lists_compatible_sessions_and_marks_current(
     settings: Settings,
     sync_prompt: str,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager._state.session_id = "current-session"
     account_reader = MagicMock()
     account_reader.read_account_status.return_value = (
@@ -166,8 +172,8 @@ def test_chub_sync_lists_compatible_sessions_and_marks_current(
         CodexTokenUsageData(status="unavailable"),
     )
     manager.codex_account_reader = account_reader
-    codex_manager.list_sessions.return_value = [
-        CodexSession(
+    ai_session_manager.list_sessions.return_value = [
+        AiSessionFixture(
             id="available-session",
             workspace_id="chub",
             workspace_name="Chub",
@@ -177,18 +183,18 @@ def test_chub_sync_lists_compatible_sessions_and_marks_current(
             status="stopped",
             activity="idle",
         ),
-        CodexSession(
+        AiSessionFixture(
             id="current-session",
             workspace_id="chub",
             workspace_name="Chub",
             cwd="/project",
             title="微信 Chub",
-            codex_session_id="native-current",
+            native_session_id="native-current",
             permission_mode="full-access",
             status="stopped",
             activity="idle",
         ),
-        CodexSession(
+        AiSessionFixture(
             id="busy-session",
             workspace_id="chub",
             workspace_name="Chub",
@@ -199,7 +205,7 @@ def test_chub_sync_lists_compatible_sessions_and_marks_current(
             activity="working",
             activity_source="quick",
         ),
-        CodexSession(
+        AiSessionFixture(
             id="wrong-workspace",
             workspace_id="home",
             workspace_name="用户目录",
@@ -209,7 +215,7 @@ def test_chub_sync_lists_compatible_sessions_and_marks_current(
             status="stopped",
             activity="idle",
         ),
-        CodexSession(
+        AiSessionFixture(
             id="wrong-permission",
             workspace_id="chub",
             workspace_name="Chub",
@@ -259,7 +265,7 @@ def test_chub_sync_lists_compatible_sessions_and_marks_current(
 def test_chub_sync_limits_id_sorted_sessions_without_reordering_current(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
     manager._state.session_id = "z-current-session"
     manager.codex_account_reader = MagicMock()
     manager.codex_account_reader.read_account_status.return_value = (
@@ -267,7 +273,7 @@ def test_chub_sync_limits_id_sorted_sessions_without_reordering_current(
         CodexTokenUsageData(status="unavailable"),
     )
     sessions = [
-        CodexSession(
+        AiSessionFixture(
             id=f"session-{index}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -281,7 +287,7 @@ def test_chub_sync_limits_id_sorted_sessions_without_reordering_current(
         for index in range(10)
     ]
     sessions.append(
-        CodexSession(
+        AiSessionFixture(
             id="z-current-session",
             workspace_id="chub",
             workspace_name="Chub",
@@ -293,7 +299,7 @@ def test_chub_sync_limits_id_sorted_sessions_without_reordering_current(
             updated_at="2026-07-01T00:00:00Z",
         )
     )
-    codex_manager.list_sessions.return_value = sessions
+    ai_session_manager.list_sessions.return_value = sessions
 
     result = manager.dispatch(
         message_id="codex-status-limit",
@@ -313,14 +319,14 @@ def test_chub_sync_limits_id_sorted_sessions_without_reordering_current(
 
 
 def test_chub_sync_hides_unavailable_sessions(settings: Settings) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
     manager.codex_account_reader = MagicMock()
     manager.codex_account_reader.read_account_status.return_value = (
         CodexQuotaData(status="unavailable"),
         CodexTokenUsageData(status="unavailable"),
     )
-    codex_manager.list_sessions.return_value = [
-        CodexSession(
+    ai_session_manager.list_sessions.return_value = [
+        AiSessionFixture(
             id="broken",
             workspace_id="chub",
             workspace_name="Chub",
@@ -352,7 +358,7 @@ def test_chub_sync_hides_unavailable_sessions(settings: Settings) -> None:
 def test_chub_sync_includes_each_configured_workspace(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
     settings.ai_runtime.shared.extra_workspaces = [
         ExtraWorkspaceConfig(
             id="deliveryline",
@@ -360,7 +366,7 @@ def test_chub_sync_includes_each_configured_workspace(
             path=Path("/workspace/deliveryline"),
         )
     ]
-    codex_manager.workspaces.return_value = [
+    ai_session_manager.workspaces.return_value = [
         WorkspaceInfo(id="chub", name="Chub", path="/project", available=True),
         WorkspaceInfo(
             id="deliveryline",
@@ -374,8 +380,8 @@ def test_chub_sync_includes_each_configured_workspace(
         CodexQuotaData(status="unavailable"),
         CodexTokenUsageData(status="unavailable"),
     )
-    codex_manager.list_sessions.return_value = [
-        CodexSession(
+    ai_session_manager.list_sessions.return_value = [
+        AiSessionFixture(
             id="deliveryline-session",
             workspace_id="deliveryline",
             workspace_name="Deliveryline",
@@ -404,7 +410,7 @@ def test_chub_sync_includes_each_configured_workspace(
 def test_chub_sync_keeps_slot_when_an_extra_workspace_is_temporarily_unavailable(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
     settings.ai_runtime.shared.extra_workspaces = [
         ExtraWorkspaceConfig(
             id="deliveryline",
@@ -412,7 +418,7 @@ def test_chub_sync_keeps_slot_when_an_extra_workspace_is_temporarily_unavailable
             path=Path("/workspace/deliveryline"),
         )
     ]
-    deliveryline = CodexSession(
+    deliveryline = AiSessionFixture(
         id="deliveryline-session",
         workspace_id="deliveryline",
         workspace_name="Deliveryline",
@@ -422,8 +428,8 @@ def test_chub_sync_keeps_slot_when_an_extra_workspace_is_temporarily_unavailable
         status="stopped",
         activity="idle",
     )
-    codex_manager.list_sessions.return_value = [deliveryline]
-    codex_manager.workspaces.return_value = [
+    ai_session_manager.list_sessions.return_value = [deliveryline]
+    ai_session_manager.workspaces.return_value = [
         WorkspaceInfo(id="chub", name="Chub", path="/project", available=True),
         WorkspaceInfo(
             id="deliveryline",
@@ -443,7 +449,7 @@ def test_chub_sync_keeps_slot_when_an_extra_workspace_is_temporarily_unavailable
     )
     assert manager.session_slot_matches(1, "deliveryline-session")
 
-    codex_manager.workspaces.return_value[1] = WorkspaceInfo(
+    ai_session_manager.workspaces.return_value[1] = WorkspaceInfo(
         id="deliveryline",
         name="Deliveryline",
         path="/workspace/deliveryline",
@@ -466,13 +472,13 @@ def test_chub_sync_keeps_slot_when_an_extra_workspace_is_temporarily_unavailable
 def test_chub_sync_does_not_implicitly_include_the_home_workspace(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
-    codex_manager.workspaces.return_value = [
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
+    ai_session_manager.workspaces.return_value = [
         WorkspaceInfo(id="chub", name="Chub", path="/project", available=True),
         WorkspaceInfo(id="home", name="用户目录", path="/users/test", available=True),
     ]
-    codex_manager.list_sessions.return_value = [
-        CodexSession(
+    ai_session_manager.list_sessions.return_value = [
+        AiSessionFixture(
             id="home-session",
             workspace_id="home",
             workspace_name="用户目录",
@@ -501,7 +507,7 @@ def test_chub_sync_does_not_implicitly_include_the_home_workspace(
 def test_chub_sync_removes_session_when_its_extra_workspace_is_removed_from_settings(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
     settings.ai_runtime.shared.extra_workspaces = [
         ExtraWorkspaceConfig(
             id="deliveryline",
@@ -509,7 +515,7 @@ def test_chub_sync_removes_session_when_its_extra_workspace_is_removed_from_sett
             path=Path("/workspace/deliveryline"),
         )
     ]
-    deliveryline = CodexSession(
+    deliveryline = AiSessionFixture(
         id="deliveryline-session",
         workspace_id="deliveryline",
         workspace_name="Deliveryline",
@@ -519,8 +525,8 @@ def test_chub_sync_removes_session_when_its_extra_workspace_is_removed_from_sett
         status="stopped",
         activity="idle",
     )
-    codex_manager.list_sessions.return_value = [deliveryline]
-    codex_manager.workspaces.return_value = [
+    ai_session_manager.list_sessions.return_value = [deliveryline]
+    ai_session_manager.workspaces.return_value = [
         WorkspaceInfo(id="chub", name="Chub", path="/project", available=True),
         WorkspaceInfo(
             id="deliveryline",
@@ -557,13 +563,13 @@ def test_chub_sync_removes_session_when_its_extra_workspace_is_removed_from_sett
 def test_chub_sync_keeps_success_when_usage_lookup_fails(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
     manager.codex_account_reader = MagicMock()
     manager.codex_account_reader.read_account_status.side_effect = RuntimeError(
         "unavailable"
     )
-    codex_manager.list_sessions.return_value = [
-        CodexSession(
+    ai_session_manager.list_sessions.return_value = [
+        AiSessionFixture(
             id="available-session",
             workspace_id="chub",
             workspace_name="Chub",
@@ -597,7 +603,7 @@ def test_chub_sync_keeps_success_when_usage_lookup_fails(
 def test_chub_sync_retains_configured_unavailable_slot(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
     manager._state.session_slots = [
         WeixinChubModeSessionSlot(slot=3, session_id="broken")
     ]
@@ -606,7 +612,7 @@ def test_chub_sync_retains_configured_unavailable_slot(
         CodexQuotaData(status="unavailable"),
         CodexTokenUsageData(status="unavailable"),
     )
-    broken = CodexSession(
+    broken = AiSessionFixture(
         id="broken",
         workspace_id="chub",
         workspace_name="Chub",
@@ -619,7 +625,7 @@ def test_chub_sync_retains_configured_unavailable_slot(
     candidate = broken.model_copy(
         update={"id": "candidate", "title": "等待候选", "status": "stopped", "activity": "idle"}
     )
-    codex_manager.list_sessions.return_value = [broken, candidate]
+    ai_session_manager.list_sessions.return_value = [broken, candidate]
 
     result = manager.dispatch(
         message_id="codex-status-retain-unavailable",
@@ -637,13 +643,13 @@ def test_chub_sync_retains_configured_unavailable_slot(
 def test_codex_new_rejects_before_creation_when_nine_slots_are_full(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
     manager._state.session_slots = [
         WeixinChubModeSessionSlot(slot=slot, session_id=f"session-{slot}")
         for slot in range(1, 10)
     ]
-    codex_manager.list_sessions.return_value = [
-        CodexSession(
+    ai_session_manager.list_sessions.return_value = [
+        AiSessionFixture(
             id=f"session-{slot}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -666,19 +672,19 @@ def test_codex_new_rejects_before_creation_when_nine_slots_are_full(
 
     assert result.message is not None
     assert "Create: Failed. The default AI Runtime could not create a Session." in result.message
-    codex_manager.create_session.assert_not_called()
+    ai_session_manager.create_session.assert_not_called()
 
 
 def test_chub_refresh_keeps_cached_overview_when_session_lookup_fails(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
     manager.codex_account_reader = MagicMock()
     manager.codex_account_reader.read_account_status.return_value = (
         CodexQuotaData(status="unavailable"),
         CodexTokenUsageData(status="unavailable"),
     )
-    codex_manager.list_sessions.side_effect = RuntimeError("unavailable")
+    ai_session_manager.list_sessions.side_effect = RuntimeError("unavailable")
 
     result = manager.dispatch(
         message_id="codex-status-session-failure",
@@ -695,7 +701,7 @@ def test_chub_refresh_keeps_cached_overview_when_session_lookup_fails(
 
 def test_codex_status_session_matching_uses_the_allowed_workspace() -> None:
     configuration = WeixinChubModeRuntimeConfig(enabled=True, workspace_id="chub")
-    matching = CodexSession(
+    matching = AiSessionFixture(
         id="matching",
         workspace_id="chub",
         workspace_name="Chub",
@@ -718,18 +724,18 @@ def test_codex_status_session_matching_uses_the_allowed_workspace() -> None:
 def test_codex_status_distinguishes_writer_error_and_unknown_running_session(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
-    writer_session = CodexSession(
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
+    writer_session = AiSessionFixture(
         id="writer",
         workspace_id="chub",
         workspace_name="Chub",
         cwd="/project",
-        codex_session_id="native-writer",
+        native_session_id="native-writer",
         permission_mode="full-access",
         status="stopped",
         activity="idle",
     )
-    codex_manager.has_active_writer.return_value = True
+    ai_session_manager.has_active_writer.return_value = True
 
     assert manager._session_dispatch_state(writer_session) == "Busy"
     assert manager._session_dispatch_state(
@@ -740,7 +746,7 @@ def test_codex_status_distinguishes_writer_error_and_unknown_running_session(
             }
         )
     ) == "Unavailable"
-    codex_manager.has_active_writer.return_value = False
+    ai_session_manager.has_active_writer.return_value = False
     assert manager._session_dispatch_state(
         writer_session.model_copy(
             update={
@@ -846,7 +852,7 @@ def test_codex_status_keeps_sessions_available_while_restart_is_pending(
     manager, _codex_manager, quick_interactions = configured_manager(settings)
     quick_interactions.deferred_restart = MagicMock()
     quick_interactions.deferred_restart.pending.return_value = True
-    session = CodexSession(
+    session = AiSessionFixture(
         id="available",
         workspace_id="chub",
         workspace_name="Chub",
@@ -862,7 +868,7 @@ def test_codex_status_keeps_sessions_available_while_restart_is_pending(
 def test_chub_refresh_bounds_slow_session_lookup(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
     manager.codex_account_reader = MagicMock()
     manager.codex_account_reader.read_account_status.return_value = (
         CodexQuotaData(status="unavailable"),
@@ -870,11 +876,11 @@ def test_chub_refresh_bounds_slow_session_lookup(
     )
     blocker = threading.Event()
 
-    def slow_sessions() -> list[CodexSession]:
+    def slow_sessions() -> list[AiSessionFixture]:
         blocker.wait(1)
         return []
 
-    codex_manager.list_sessions.side_effect = slow_sessions
+    ai_session_manager.list_sessions.side_effect = slow_sessions
 
     try:
         with patch(

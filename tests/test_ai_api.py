@@ -1,4 +1,4 @@
-from tests.session_fixtures import CodexSession
+from tests.session_fixtures import AiSessionFixture
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -10,20 +10,24 @@ from pydantic import ValidationError
 
 from app.ai_runtime.enablement import RuntimeEnablement
 from app.application import create_app
-from app.codex.models import (
-    CodexModelCatalogData,
-    CodexModelInfo,
-    CodexReasoningLevel,
-    CodexQuotaData,
-    CodexQuotaWindow,
+from app.ai_session.api_models import (
     NativeSessionInfo,
-    QuickInteractionTask,
     RuntimeManagementData,
     RuntimeManagementItem,
     SessionInfo,
     SessionListData,
     SessionRenameRequest,
     WorkspaceInfo,
+)
+from app.ai_interactions.models import (
+    QuickInteractionTask,
+)
+from app.ai_runtime.contracts import (
+    RuntimeModelCatalogData,
+    RuntimeModelInfoData,
+    RuntimeModelReasoningLevelData,
+)
+from app.ai_session.models import (
     utc_now,
 )
 from app.core.config import Settings
@@ -422,14 +426,14 @@ async def test_codex_model_catalog_is_protected_and_filtered_by_manager(
 ) -> None:
     app = create_app(settings)
     manager = MagicMock()
-    manager.read_model_catalog.return_value = CodexModelCatalogData(
+    manager.read_model_catalog.return_value = RuntimeModelCatalogData(
         models=[
-            CodexModelInfo(
+            RuntimeModelInfoData(
                 id="gpt-test",
                 name="GPT Test",
                 description="Test model",
                 default_level="medium",
-                levels=[CodexReasoningLevel(id="medium", description="Balanced")],
+                levels=[RuntimeModelReasoningLevelData(id="medium", description="Balanced")],
             )
         ],
         default_model="gpt-test",
@@ -456,7 +460,7 @@ async def test_model_catalog_for_session_uses_its_pinned_implementation(
 ) -> None:
     app = create_app(settings)
     manager = MagicMock()
-    manager.read_session_model_catalog.return_value = CodexModelCatalogData(models=[])
+    manager.read_session_model_catalog.return_value = RuntimeModelCatalogData(models=[])
     app.state.ai_session_manager = manager
     transport = httpx.ASGITransport(app=app)
 
@@ -566,31 +570,13 @@ async def test_create_session_uses_requested_model_and_reasoning_level(
 
 
 @pytest.mark.anyio
-async def test_codex_quota_is_protected_and_can_be_refreshed(settings: Settings) -> None:
-    app = create_app(settings)
-    rate_limits = MagicMock()
-    rate_limits.read.return_value = CodexQuotaData(
-        status="available",
-        windows=[
-            CodexQuotaWindow(
-                remaining_percent=75,
-                window_duration_minutes=15,
-                resets_at="2026-08-06T10:15:00Z",
-            )
-        ],
-    )
-    app.state.codex_rate_limits = rate_limits
-    transport = httpx.ASGITransport(app=app)
+async def test_legacy_codex_quota_endpoint_is_not_registered(settings: Settings) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get(
-            "/api/codex/quota?refresh=true",
-            headers=authorization(settings),
-        )
+        response = await client.get("/api/codex/quota?refresh=true")
 
-    assert response.status_code == 200
-    assert response.json()["data"]["windows"][0]["remaining_percent"] == 75
-    rate_limits.read.assert_called_once_with(force=True)
+    assert response.status_code == 404
 
 
 @pytest.mark.anyio
@@ -683,7 +669,7 @@ async def test_page_quick_interaction_preserves_bound_weixin_session_context(
 ) -> None:
     app = create_app(settings)
     manager = MagicMock()
-    manager.get_session.return_value = CodexSession(
+    manager.get_session.return_value = AiSessionFixture(
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",
@@ -947,7 +933,7 @@ async def test_stop_cancels_running_quick_interaction_before_session(
     )
     quick_interactions = MagicMock()
     events = []
-    quick_interactions.cancel_codex_session.side_effect = lambda _id: events.append("cancel")
+    quick_interactions.cancel_session_interactions.side_effect = lambda _id: events.append("cancel")
     manager.stop_session.side_effect = lambda _id: (
         events.append("stop") or manager.stop_session.return_value
     )
@@ -996,7 +982,7 @@ async def test_stop_rejects_external_writer_before_cancelling_chub_work(
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "session_writer_active"
     manager.ensure_stop_allowed.assert_called_once_with("session-1")
-    quick_interactions.cancel_codex_session.assert_not_called()
+    quick_interactions.cancel_session_interactions.assert_not_called()
 
 
 @pytest.mark.anyio
@@ -1034,7 +1020,7 @@ async def test_rename_session_allows_running_task_and_logs_lifecycle(
         statuses.append(kwargs["status"])
         return kwargs.get("operation_id") or "rename-operation"
 
-    monkeypatch.setattr("app.codex.routes.log_operation", record_operation)
+    monkeypatch.setattr("app.api.ai.log_operation", record_operation)
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -1071,7 +1057,7 @@ async def test_rename_session_logs_manager_failure(
         statuses.append(kwargs["status"])
         return kwargs.get("operation_id") or "rename-operation"
 
-    monkeypatch.setattr("app.codex.routes.log_operation", record_operation)
+    monkeypatch.setattr("app.api.ai.log_operation", record_operation)
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -1105,7 +1091,7 @@ async def test_rename_session_preserves_external_writer_error(
         statuses.append(kwargs["status"])
         return kwargs.get("operation_id") or "rename-operation"
 
-    monkeypatch.setattr("app.codex.routes.log_operation", record_operation)
+    monkeypatch.setattr("app.api.ai.log_operation", record_operation)
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -1137,7 +1123,7 @@ async def test_archive_session_revokes_access_and_calls_manager(
     manager.archive_native_session.side_effect = lambda _id: events.append(
         "native-archive"
     )
-    app.state.quick_interactions.cancel_codex_session.side_effect = (
+    app.state.quick_interactions.cancel_session_interactions.side_effect = (
         lambda _id: events.append("cancel")
     )
     app.state.quick_interactions.remove_session_tasks.side_effect = (
@@ -1162,7 +1148,7 @@ async def test_archive_session_revokes_access_and_calls_manager(
     assert response.status_code == 200
     manager.archive_native_session.assert_called_once_with("session-1")
     manager.finalize_archive_session.assert_called_once_with("session-1")
-    app.state.quick_interactions.cancel_codex_session.assert_called_once_with(
+    app.state.quick_interactions.cancel_session_interactions.assert_called_once_with(
         "session-1"
     )
     assert events == [
@@ -1189,7 +1175,7 @@ async def test_native_session_actions_use_opaque_reference(
     reference = "native-action-reference-123456"
     operations = []
     monkeypatch.setattr(
-        "app.codex.routes.log_operation",
+        "app.api.ai.log_operation",
         lambda _request, **kwargs: operations.append(kwargs),
     )
 
@@ -1247,7 +1233,7 @@ async def test_archive_session_is_idempotent_when_stale_mapping_is_gone(
         )
 
     assert response.status_code == 200
-    quick_interactions.cancel_codex_session.assert_called_once_with("session-1")
+    quick_interactions.cancel_session_interactions.assert_called_once_with("session-1")
     quick_interactions.remove_session_tasks.assert_called_once_with("session-1")
     manager.finalize_archive_session.assert_called_once_with("session-1")
 
@@ -1260,7 +1246,7 @@ async def test_chub_session_archive_and_delete_log_full_lifecycle(
     app = create_app(settings)
     operations: list[dict[str, object]] = []
     monkeypatch.setattr(
-        "app.codex.routes.log_operation",
+        "app.api.ai.log_operation",
         lambda _request, **kwargs: operations.append(kwargs),
     )
     app.state.ai_session_manager = MagicMock()
@@ -1339,7 +1325,7 @@ async def test_forget_session_only_cleans_chub_state(
     app = create_app(settings)
     operations: list[dict[str, object]] = []
     monkeypatch.setattr(
-        "app.codex.routes.log_operation",
+        "app.api.ai.log_operation",
         lambda _request, **kwargs: operations.append(kwargs),
     )
     manager = MagicMock()
@@ -1358,7 +1344,7 @@ async def test_forget_session_only_cleans_chub_state(
         )
 
     assert response.status_code == 200
-    quick_interactions.cancel_codex_session.assert_called_once_with("session-1")
+    quick_interactions.cancel_session_interactions.assert_called_once_with("session-1")
     quick_interactions.remove_session_tasks.assert_called_once_with("session-1")
     manager.forget_session.assert_called_once_with("session-1")
     manager.archive_native_session.assert_not_called()
@@ -1379,7 +1365,7 @@ async def test_forget_session_logs_failed_lifecycle(
     app = create_app(settings)
     operations: list[dict[str, object]] = []
     monkeypatch.setattr(
-        "app.codex.routes.log_operation",
+        "app.api.ai.log_operation",
         lambda _request, **kwargs: operations.append(kwargs),
     )
     manager = MagicMock()
@@ -1417,7 +1403,7 @@ async def test_archive_session_fails_when_slot_release_cannot_be_confirmed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     write_operation = MagicMock()
-    monkeypatch.setattr("app.codex.routes.write_operation", write_operation)
+    monkeypatch.setattr("app.api.ai.write_operation", write_operation)
     app = create_app(settings)
     allow_session_writes(app)
     manager = MagicMock()
@@ -1458,7 +1444,7 @@ async def test_delete_session_releases_slot_after_destructive_guard(
     guard.__exit__.side_effect = lambda *_args: events.append("guard-exit") or False
     app.state.quick_interactions = MagicMock()
     app.state.quick_interactions.destructive_operation_guard.return_value = guard
-    app.state.quick_interactions.cancel_codex_session.side_effect = (
+    app.state.quick_interactions.cancel_session_interactions.side_effect = (
         lambda _id: events.append("cancel")
     )
     manager = MagicMock()
@@ -1543,7 +1529,7 @@ async def test_archive_session_uses_stop_guard_before_manager_gate(
 
     assert response.status_code == 200
     manager.archive_native_session.assert_called_once_with("session-1")
-    quick_interactions.cancel_codex_session.assert_called_once_with("session-1")
+    quick_interactions.cancel_session_interactions.assert_called_once_with("session-1")
     manager.finalize_archive_session.assert_called_once_with("session-1")
 
 
@@ -1571,7 +1557,7 @@ async def test_archive_session_stops_before_cleaning_when_native_archive_fails(
 
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "session_writer_active"
-    app.state.quick_interactions.cancel_codex_session.assert_not_called()
+    app.state.quick_interactions.cancel_session_interactions.assert_not_called()
     manager.finalize_archive_session.assert_not_called()
 
 
@@ -1583,7 +1569,7 @@ async def test_delete_session_preserves_state_when_quick_cancellation_fails(
     guard = MagicMock()
     app.state.quick_interactions = MagicMock()
     app.state.quick_interactions.destructive_operation_guard.return_value = guard
-    app.state.quick_interactions.cancel_codex_session.side_effect = ApiError(
+    app.state.quick_interactions.cancel_session_interactions.side_effect = ApiError(
         409,
         "quick_interaction_cancel_failed",
         "快速交互停止状态无法确认，请稍后重试。",

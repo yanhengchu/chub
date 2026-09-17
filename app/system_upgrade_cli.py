@@ -16,6 +16,8 @@ from app.services.system_upgrade import (
     SystemUpgradeComponentStatus,
     SystemUpgradeCoordinator,
     record_component_result,
+    retired_ai_runtime_directories,
+    retired_ai_runtime_state_files,
 )
 from app.quick_worker_tasks import (
     worker_leases_dir,
@@ -58,8 +60,21 @@ def _read_operation(operation_id: str) -> SystemUpgradeOperation:
     if re.fullmatch(r"[a-f0-9]{32}", operation_id) is None:
         raise OSError("Invalid system upgrade operation ID")
     settings = load_settings()
-    state_path = settings.ai_runtime.shared.state_dir / "system-upgrade.json"
-    metadata = state_path.lstat()
+    try:
+        _path, state = _read_operation_path(settings, operation_id)
+    except FileNotFoundError as exc:
+        raise OSError("System upgrade operation does not match") from exc
+    return state
+
+
+def _state_path():
+    settings = load_settings()
+    return settings.ai_runtime.shared.state_dir / "system-upgrade.json"
+
+
+def _read_operation_path(settings, operation_id: str):
+    path = _state_path()
+    metadata = path.lstat()
     if (
         not stat.S_ISREG(metadata.st_mode)
         or stat.S_ISLNK(metadata.st_mode)
@@ -68,18 +83,13 @@ def _read_operation(operation_id: str) -> SystemUpgradeOperation:
         or metadata.st_size > MAX_STATE_BYTES
     ):
         raise OSError("Unsafe system upgrade state")
-    content = state_path.read_bytes()
+    content = path.read_bytes()
     if len(content) > MAX_STATE_BYTES:
         raise OSError("System upgrade state exceeds its fixed limit")
     state = SystemUpgradeOperation.model_validate(json.loads(content))
     if state.operation_id != operation_id:
-        raise OSError("System upgrade operation does not match")
-    return state
-
-
-def _state_path():
-    settings = load_settings()
-    return settings.ai_runtime.shared.state_dir / "system-upgrade.json"
+        raise FileNotFoundError("System upgrade operation does not exist")
+    return path, state
 
 
 def _read_current_operation() -> SystemUpgradeOperation:
@@ -183,16 +193,15 @@ def prepare_restart(operation_id: str) -> None:
     # This is the fixed, post-Worker-stop cleanup boundary. It intentionally
     # removes only Chub's local Session mappings and Worker restart requests; native Codex
     # sessions, configuration, logs and other user data are outside this list.
-    for path in tuple(
-        path
-        for path in (
-            settings.ai_runtime.shared.legacy_state_file,
-            settings.ai_runtime.shared.state_dir / "sessions.json",
-            settings.ai_runtime.shared.state_dir / "ai-sessions.json",
-        )
-        if path is not None
+    for path in (
+        settings.ai_runtime.shared.state_dir / "sessions.json",
+        settings.ai_runtime.shared.state_dir / "ai-sessions.json",
     ):
         _remove_private_file(path)
+    for path in retired_ai_runtime_state_files(PROJECT_ROOT):
+        _remove_private_file(path)
+    for path in retired_ai_runtime_directories(PROJECT_ROOT):
+        _remove_private_directory(path)
     for path in (worker_restart_request_dir(settings),):
         _remove_private_directory(path)
 

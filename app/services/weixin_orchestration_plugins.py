@@ -1,9 +1,9 @@
 """Trusted local ZIP implementations for the Weixin refinement stage.
 
 The coordinator owns the registry, activation preference and all Chub state.
-An installed module receives only the one bounded refinement callback for its
-current request; it cannot receive route, Session, Worker or filesystem input
-from the trusted message path.
+An installed module receives either the one bounded refinement callback for its
+current request or a raw prompt solely for its registered command parser; it
+cannot receive route, Session, Worker or filesystem input from the message path.
 """
 
 from __future__ import annotations
@@ -62,6 +62,7 @@ class _Manifest(_StrictModel):
     description: str = Field(min_length=1, max_length=300)
     chub_version: str = Field(min_length=1, max_length=64)
     entry: str = Field(pattern=ENTRY_PATTERN, max_length=200)
+    command_entry: str = Field(pattern=ENTRY_PATTERN, max_length=200)
 
     def validate_supported(self, settings: Settings) -> None:
         if self.protocol_version != MODULE_PROTOCOL_VERSION:
@@ -124,6 +125,13 @@ class _LoadedModule:
     artifact: _RegistryArtifact
     root: Path
     execute_refinement: Callable[..., object]
+    parse_command: Callable[[str], object]
+
+
+@dataclass(frozen=True)
+class WeixinOrchestrationCommandRegistration:
+    implementation_ref: str
+    parse_command: Callable[[str], object]
 
 
 @contextmanager
@@ -172,7 +180,8 @@ class WeixinOrchestrationPluginService:
                 content = self._extract_candidate(candidate, archive)
                 manifest = self._read_manifest(content)
                 content_hash = self._content_hash(content)
-                self._load_entry(content, manifest, content_hash)
+                self._load_entry(content, manifest.entry, content_hash)
+                self._load_entry(content, manifest.command_entry, content_hash)
                 return self._preview(manifest, content_hash)
             finally:
                 shutil.rmtree(candidate, ignore_errors=True)
@@ -193,7 +202,8 @@ class WeixinOrchestrationPluginService:
                 content = self._extract_candidate(candidate, archive)
                 manifest = self._read_manifest(content)
                 content_hash = self._content_hash(content)
-                self._load_entry(content, manifest, content_hash)
+                self._load_entry(content, manifest.entry, content_hash)
+                self._load_entry(content, manifest.command_entry, content_hash)
                 preview = self._preview(manifest, content_hash)
                 registry = self._read_registry()
                 if any(
@@ -255,6 +265,22 @@ class WeixinOrchestrationPluginService:
                         )
                     )
             return tuple(listed)
+
+    def command_registrations(self) -> tuple[WeixinOrchestrationCommandRegistration, ...]:
+        """Load bounded command parsers in persisted import order."""
+        with self._lock:
+            registrations: list[WeixinOrchestrationCommandRegistration] = []
+            for artifact in self._read_registry().artifacts:
+                try:
+                    loaded = self._load_registered(artifact)
+                except ApiError:
+                    continue
+                registrations.append(
+                    WeixinOrchestrationCommandRegistration(
+                        artifact.implementation_ref, loaded.parse_command
+                    )
+                )
+            return tuple(registrations)
 
     def require(self, implementation_ref: str | None) -> _LoadedModule:
         if not isinstance(implementation_ref, str):
@@ -338,7 +364,8 @@ class WeixinOrchestrationPluginService:
         return _LoadedModule(
             artifact=artifact,
             root=root,
-            execute_refinement=self._load_entry(root, manifest, artifact.content_sha256),
+            execute_refinement=self._load_entry(root, manifest.entry, artifact.content_sha256),
+            parse_command=self._load_entry(root, manifest.command_entry, artifact.content_sha256),
         )
 
     def _validate_archive_input(self, archive: bytes, source_name: str) -> str:
@@ -442,10 +469,10 @@ class WeixinOrchestrationPluginService:
     def _load_entry(
         self,
         root: Path,
-        manifest: _Manifest,
+        entry: str,
         content_hash: str,
     ) -> Callable[..., object]:
-        module_name, function_name = manifest.entry.split(":", 1)
+        module_name, function_name = entry.split(":", 1)
         namespace = f"_chub_orchestration_{content_hash[:16]}"
         qualified_name = f"{namespace}.{module_name}"
         try:

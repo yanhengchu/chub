@@ -573,6 +573,36 @@ async def test_internal_session_visibility_bulk_toggle(
     assert page_errors == []
 
 
+async def test_deployment_package_manual_release_note_is_transient(
+    workspace_browser_server: str,
+) -> None:
+    browser_session = session_factory()
+    async with browser_session(ensure_page=False) as chrome:
+        context = await chrome.browser.new_context(viewport={"width": 1280, "height": 900})
+        try:
+            page = await context.new_page()
+            page_errors: list[str] = []
+            page.on("pageerror", lambda error: page_errors.append(str(error)))
+            response = await page.goto(
+                f"{workspace_browser_server}/settings/diagnostics",
+                wait_until="domcontentloaded",
+            )
+            assert response is not None and response.status == 200
+            release_note = page.locator("#deployment-package-release-note")
+            action = page.locator("#deployment-package-build")
+            await expect(release_note).to_have_value("")
+            await expect(action).to_have_text("生成发版说明")
+            await release_note.fill("手工填写的本次发版说明。")
+            await expect(action).to_have_text("发布版本")
+            await page.reload(wait_until="domcontentloaded")
+            await expect(release_note).to_have_value("")
+            await expect(action).to_have_text("生成发版说明")
+        finally:
+            await context.close()
+
+    assert page_errors == []
+
+
 async def test_today_focus_refresh_is_in_ai_digest_heading(
     workspace_browser_server: str,
 ) -> None:
@@ -1084,7 +1114,7 @@ async def test_plugin_removal_failure_keeps_the_confirmation_dialog_open(
 @pytest.mark.parametrize(
     ("plugin_id", "artifact_id", "navigation_name", "version_selector"),
     [
-        ("runtime", "development:codex-runtime-dev", "Codex", "#codex-default-runtime-implementation"),
+        ("runtime", "development:codex-runtime-dev", "Codex", "#runtime-default-implementation"),
         ("weixin-orchestration", "development:weixin-orchestration", "微信任务润色", "#workspace-task-implementation-trigger"),
     ],
 )
@@ -1602,14 +1632,21 @@ async def test_codex_default_runtime_selection_persists_the_selected_implementat
             page_errors: list[str] = []
             page.on("pageerror", lambda error: page_errors.append(str(error)))
             response = await page.goto(
-                f"{workspace_browser_server}/settings/runtime/codex",
+                f"{workspace_browser_server}/settings/diagnostics",
                 wait_until="domcontentloaded",
             )
             assert response is not None and response.status == 200
+            await page.get_by_role("link", name="Codex", exact=True).click()
+            await expect(page).to_have_url(
+                f"{workspace_browser_server}/settings/runtime/codex"
+            )
             await expect(page.locator("#codex-runtime-version-list")).to_have_count(0)
             await expect(page.locator("#codex-builtin-runtime-refresh")).to_have_count(0)
-            select = page.locator("#codex-default-runtime-implementation")
+            select = page.locator("#runtime-default-implementation")
             await expect(select).to_have_value("codex-runtime-dev")
+            await expect(page.locator(".settings-choice-picker-trigger")).to_have_text(
+                "Codex · 开发实现"
+            )
             await page.locator(".settings-choice-picker-trigger").click()
             await page.locator(
                 ".settings-choice-picker-menu [role='option']",

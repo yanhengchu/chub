@@ -32,12 +32,14 @@ def settings(tmp_path: Path) -> Settings:
                 "max_lines": 100,
             },
             "ai_runtime": {
-                "codex": {
-                    "enabled": True,
+                "shared": {
                     "workspace": tmp_path / "workspace",
-                    "data_file": tmp_path / "codex-sessions.json",
+                    "state_dir": tmp_path,
                     "runtime_dir": tmp_path / "codex-runtime",
                     "max_running": 3,
+                },
+                "codex": {
+                    "enabled": True,
                 },
                 "modules": {
                     "install_dir": tmp_path / "runtime-modules",

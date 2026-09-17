@@ -262,7 +262,7 @@ def test_request_during_sensitive_completion_is_preserved_as_next(
     completion_handler.assert_called_once()
 
 
-def test_legacy_waiting_state_is_migrated_without_losing_request(
+def test_legacy_waiting_state_is_discarded_without_restart(
     tmp_path: Path,
 ) -> None:
     state_file = tmp_path / "deferred-restart.json"
@@ -288,9 +288,8 @@ def test_legacy_waiting_state_is_migrated_without_losing_request(
         MagicMock(),
     )
 
-    assert coordinator.state() is not None
-    assert coordinator.state().operation_id == "operation-1"
-    assert coordinator.state().status == "waiting"
+    assert coordinator.state() is None
+    assert state_file.exists() is False
 
 
 def test_new_instance_consumes_restart_satisfied_manually(tmp_path: Path) -> None:

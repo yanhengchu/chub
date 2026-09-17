@@ -108,6 +108,7 @@
       currentDialogs.replaceWith(nextDialogs);
       currentMain.replaceWith(nextMain);
       document.body.dataset.settingsPage = nextDocument.body.dataset.settingsPage || "";
+      document.body.dataset.settingsRuntimeId = nextDocument.body.dataset.settingsRuntimeId || "";
       document.title = nextDocument.title;
       history.replaceState(history.state, "", targetUrl.href);
       updateActiveSettingsNavigation(targetUrl.href);

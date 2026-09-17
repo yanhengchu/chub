@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from tests.session_fixtures import CodexSession
+from tests.session_fixtures import AiSessionFixture
 
 from datetime import timedelta
 
 from app.core.response import ApiError
-from app.codex.models import QuickInteractionTask, utc_now
+from app.ai_interactions.models import QuickInteractionTask
+from app.ai_session.models import utc_now
 from app.services import openclaw_weixin_chub_mode as chub_mode_module
 from app.services.openclaw_weixin_chub_models import WeixinChubModeSessionSlot
 
@@ -16,8 +17,8 @@ from tests.openclaw_weixin_chub_mode_helpers import (
 )
 
 
-def _prepare_current_session(manager, codex_manager) -> None:
-    session = CodexSession(
+def _prepare_current_session(manager, ai_session_manager) -> None:
+    session = AiSessionFixture(
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",
@@ -31,8 +32,8 @@ def _prepare_current_session(manager, codex_manager) -> None:
     manager._state.session_slots = [
         WeixinChubModeSessionSlot(slot=1, session_id=session.id)
     ]
-    codex_manager.list_sessions.return_value = [session]
-    codex_manager.get_session.return_value = session
+    ai_session_manager.list_sessions.return_value = [session]
+    ai_session_manager.get_session.return_value = session
 
 
 def test_request_cat_and_chinese_alias_return_full_saved_request(settings) -> None:

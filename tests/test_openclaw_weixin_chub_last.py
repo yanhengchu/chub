@@ -1,7 +1,8 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from app.codex.models import QuickInteractionTask, utc_now
+from app.ai_interactions.models import QuickInteractionTask
+from app.ai_session.models import utc_now
 from app.core.config import Settings
 
 from tests.openclaw_weixin_chub_mode_helpers import (

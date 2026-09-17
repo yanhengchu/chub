@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.codex.models import (
+from app.ai_interactions.models import (
     QuickInteractionWeixinRoute,
 )
 
@@ -32,14 +32,11 @@ WeixinChubModeSubmissionCode = Literal[
     "submission_failed",
     "submission_interrupted",
     "task_status_checked",
-    # Kept for state-file compatibility with the original route name.
     "codex_usage_checked",
     "weixin_text_mode_checked",
-    # Reused by the current help route and compatible with legacy state files.
     "codex_help_checked",
     "chub_check_checked",
     "codex_model_checked",
-    # Kept for state-file compatibility with the retired status route.
     "codex_status_checked",
     "codex_switch_checked",
     "codex_auth_checked",
@@ -240,7 +237,7 @@ class WeixinChubModeStopOperation(_StrictModel):
 
 
 class WeixinChubModeState(_StrictModel):
-    version: Literal[1] = 1
+    version: Literal[2] = 2
     configuration: WeixinChubModeRuntimeConfig
     orchestration_implementation: Literal[
         "internal", "disabled", "weixin-orchestration-dev", "module"

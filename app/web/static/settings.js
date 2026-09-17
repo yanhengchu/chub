@@ -10,12 +10,13 @@ const settingsMessage = document.querySelector("#settings-message");
 const generalRuntimeSettingsPanel = document.querySelector(
   "#ai-runtime-general-settings",
 );
-const codexDefaultRuntimeImplementation = document.querySelector(
-  "#codex-default-runtime-implementation",
+const runtimeDefaultImplementation = document.querySelector(
+  "#runtime-default-implementation",
 );
-const codexRuntimeSettingsMessage = document.querySelector(
-  "#codex-runtime-settings-message",
+const runtimeSettingsMessage = document.querySelector(
+  "#runtime-settings-message",
 );
+const settingsRuntimeId = document.body.dataset.settingsRuntimeId || "";
 const quickInteractionCore = window.QuickInteractionCore;
 const settingsOpenClawIntegrationList = document.querySelector(
   "#settings-openclaw-integration-list",
@@ -232,12 +233,12 @@ function renderFontSizeSelection(fontSize) {
 }
 
 
-let codexRuntimeSaving = false;
+let runtimeImplementationSaving = false;
 
-function setCodexRuntimeSettingsMessage(text, kind = "") {
-  if (!(codexRuntimeSettingsMessage instanceof HTMLElement)) return;
-  codexRuntimeSettingsMessage.textContent = text;
-  codexRuntimeSettingsMessage.className = kind === "error" ? "message message-error" : "message";
+function setRuntimeSettingsMessage(text, kind = "") {
+  if (!(runtimeSettingsMessage instanceof HTMLElement)) return;
+  runtimeSettingsMessage.textContent = text;
+  runtimeSettingsMessage.className = kind === "error" ? "message message-error" : "message";
 }
 
 function formalVersion(version) {
@@ -250,76 +251,84 @@ function formalImplementationTitle(name, version) {
 }
 
 function versionTitle(item) {
-  const name = item.name || "Codex";
-  return item.implementation_id === "codex-runtime-dev"
+  const name = item.name || "Runtime";
+  return item.version === "dev"
     ? `${name} · 开发实现`
     : formalImplementationTitle(name, item.version);
 }
 
 function versionDescription(item) {
   const version = formalVersion(item.version);
-  return item.implementation_id === "codex-runtime-dev"
+  return item.version === "dev"
     ? "使用仓库固定的开发实现；仅影响之后新建的 Session 和任务。"
     : `使用正式插件包 ${version}；仅影响之后新建的 Session 和任务。`;
 }
 
-function renderCodexRuntimeVersions(implementations) {
+function renderRuntimeImplementations(implementations) {
   const versions = Array.isArray(implementations?.implementations)
     ? implementations.implementations
     : [];
-  if (codexDefaultRuntimeImplementation instanceof HTMLSelectElement) {
+  if (runtimeDefaultImplementation instanceof HTMLSelectElement) {
     const availableVersions = versions.filter(
       (item) => item.imported !== false && item.healthy === true,
     );
     const selectedVersion = availableVersions.find((item) => item.is_default === true)
       || availableVersions[0];
-    codexDefaultRuntimeImplementation.replaceChildren();
+    runtimeDefaultImplementation.replaceChildren();
     availableVersions.forEach((item) => {
         const option = document.createElement("option");
         option.value = item.implementation_id;
         option.textContent = versionTitle(item);
         option.dataset.description = versionDescription(item);
         option.selected = item === selectedVersion;
-        codexDefaultRuntimeImplementation.append(option);
+        runtimeDefaultImplementation.append(option);
       });
-    codexDefaultRuntimeImplementation.disabled = codexRuntimeSaving
+    runtimeDefaultImplementation.disabled = runtimeImplementationSaving
       || !selectedVersion
       || selectedVersion.enabled !== true;
+    const picker = settingsChoicePickers.get(runtimeDefaultImplementation);
+    if (picker) renderSettingsChoicePicker(picker);
   }
 }
 
-async function saveCodexDefaultRuntimeImplementation() {
-  if (!(codexDefaultRuntimeImplementation instanceof HTMLSelectElement) || codexRuntimeSaving) return;
-  const implementationId = codexDefaultRuntimeImplementation.value;
+async function saveRuntimeDefaultImplementation() {
+  if (!(runtimeDefaultImplementation instanceof HTMLSelectElement) || runtimeImplementationSaving) return;
+  const implementationId = runtimeDefaultImplementation.value;
   if (!implementationId) return;
-  codexRuntimeSaving = true;
-  renderCodexRuntimeVersions();
-  setCodexRuntimeSettingsMessage("");
+  runtimeImplementationSaving = true;
+  renderRuntimeImplementations();
+  setRuntimeSettingsMessage("");
   try {
-    await fetchSettingsApi("/api/ai/runtime-implementations/default", {
+    const query = settingsRuntimeId
+      ? `?runtime_id=${encodeURIComponent(settingsRuntimeId)}`
+      : "";
+    await fetchSettingsApi(`/api/ai/runtime-implementations/default${query}`, {
       method: "PUT",
       body: JSON.stringify({ implementation_id: implementationId }),
       headers: { "Content-Type": "application/json" },
     });
     await loadRuntimePlugins();
   } catch (error) {
-    setCodexRuntimeSettingsMessage(
+    setRuntimeSettingsMessage(
       error instanceof Error ? error.message : "默认 Runtime 版本未能更新。",
       "error",
     );
   } finally {
-    codexRuntimeSaving = false;
+    runtimeImplementationSaving = false;
     await loadRuntimePlugins();
   }
 }
 
 async function loadRuntimePlugins() {
+  if (!settingsRuntimeId) return;
   try {
-    const implementations = await fetchSettingsApi("/api/ai/runtime-implementations");
-    renderCodexRuntimeVersions(implementations);
-    setCodexRuntimeSettingsMessage("");
+    const implementations = await fetchSettingsApi(
+      `/api/ai/runtime-implementations?runtime_id=${encodeURIComponent(settingsRuntimeId)}`,
+    );
+    renderRuntimeImplementations(implementations);
+    setRuntimeSettingsMessage("");
   } catch (_error) {
-    setCodexRuntimeSettingsMessage("暂时无法读取 Codex Runtime 版本状态。", "error");
+    setRuntimeSettingsMessage("暂时无法读取 Runtime 版本状态。", "error");
   }
 }
 
@@ -436,7 +445,15 @@ function renderGeneralRuntimeSettings(data, catalog = null) {
         input.dataset.settingsPicker = "";
       }
       input.addEventListener("change", () => {
-        if (field.id === "session-default-model") {
+        if (field.id === "session-default-runtime") {
+          // Model identifiers and reasoning levels belong to the selected
+          // Runtime. Do not carry a Codex or another Runtime's value across
+          // this boundary; the successful save reloads the target catalog.
+          const model = form.querySelector("[data-runtime-setting='session-default-model']");
+          const reasoning = form.querySelector("[data-runtime-setting='session-default-reasoning']");
+          if (model instanceof HTMLSelectElement) model.value = "__default__";
+          if (reasoning instanceof HTMLSelectElement) reasoning.value = "__default__";
+        } else if (field.id === "session-default-model") {
           const reasoning = form.querySelector("[data-runtime-setting='session-default-reasoning']");
           if (reasoning instanceof HTMLSelectElement) reasoning.value = "__default__";
         }
@@ -651,9 +668,15 @@ function initializeDeploymentPackageSettings() {
     deploymentPackageIncludeDevelopment,
     deploymentPackageReleaseNote,
   ].filter((item) => item instanceof HTMLInputElement || item instanceof HTMLTextAreaElement);
-  let noteDirty = false;
   let latestGeneration = null;
   let latestOperation = null;
+  let generationRequested = false;
+  let generatedForVersion = null;
+  const releaseNoteDraftToken = crypto.randomUUID();
+  const releaseNoteDraftHeaders = (includeJson = false) => ({
+    ...settingsHeaders(includeJson),
+    "X-Chub-Release-Note-Draft-Token": releaseNoteDraftToken,
+  });
 
   const generationActive = () => (
     latestGeneration?.status === "requested" || latestGeneration?.status === "running"
@@ -661,10 +684,7 @@ function initializeDeploymentPackageSettings() {
   const publishActive = () => (
     latestOperation?.status === "requested" || latestOperation?.status === "started"
   );
-  const generationRequired = () => (
-    deploymentPackageReleaseNote.value.trim() === ""
-    || (latestGeneration?.status === "stale" && !noteDirty)
-  );
+  const generationRequired = () => deploymentPackageReleaseNote.value.trim() === "";
   const updateAction = () => {
     if (!(deploymentPackageBuild instanceof HTMLButtonElement)) return;
     const busy = publishActive() || generationActive();
@@ -699,8 +719,13 @@ function initializeDeploymentPackageSettings() {
     deploymentPackageCurrentAppVersion.textContent = `已提交版本：Chub v${sourceVersions.chub || "未知"}；Runtime v${sourceVersions.runtime || "未知"}；微信编排 v${sourceVersions.weixin || "未知"}。发布版本必须一致。`;
     deploymentPackageChubVersion.value = configuration.chub_release_version || "";
     deploymentPackageIncludeDevelopment.checked = configuration.include_development_sources === true;
-    deploymentPackageReleaseNote.value = configuration.release_note || "";
-    noteDirty = false;
+    if (generationRequested
+      && latestGeneration?.status === "succeeded"
+      && typeof data.generated_release_note === "string"
+      && data.generated_release_note.trim()) {
+      deploymentPackageReleaseNote.value = data.generated_release_note;
+      generatedForVersion = latestGeneration.target_version || deploymentPackageChubVersion.value.trim();
+    }
     updateAction();
     updatePolling();
     if (publishActive()) {
@@ -711,7 +736,7 @@ function initializeDeploymentPackageSettings() {
       setSettingsMessage(deploymentPackageMessage, latestGeneration?.message || "正在生成发版说明。", latestGeneration?.status === "failed" ? "error" : "");
       return;
     }
-    if (latestGeneration?.status === "succeeded") {
+    if (generationRequested && latestGeneration?.status === "succeeded") {
       setSettingsMessage(deploymentPackageMessage, latestGeneration.message || "发版说明已生成，可编辑后发布。", "");
     }
     if (latestOperation?.status === "succeeded") {
@@ -738,7 +763,12 @@ function initializeDeploymentPackageSettings() {
     }
   };
   const load = async () => {
-    try { render(await fetchSettingsApi("/api/settings/deployment-package")); }
+    try {
+      render(await fetchSettingsApi(
+        "/api/settings/deployment-package",
+        { headers: releaseNoteDraftHeaders() },
+      ));
+    }
     catch (_error) { setSettingsMessage(deploymentPackageMessage, "暂时无法读取版本发布配置。", "error"); }
   };
   const runAction = async () => {
@@ -747,9 +777,12 @@ function initializeDeploymentPackageSettings() {
     deploymentPackageBuild.disabled = true;
     try {
       if (generating) {
+        generationRequested = true;
+        generatedForVersion = null;
+        deploymentPackageReleaseNote.value = "";
         render(await fetchSettingsApi("/api/settings/deployment-package/release-note", {
           method: "POST",
-          headers: settingsHeaders(true),
+          headers: releaseNoteDraftHeaders(true),
           body: JSON.stringify({
             release_version: deploymentPackageChubVersion.value.trim(),
             include_development_sources: deploymentPackageIncludeDevelopment.checked,
@@ -762,8 +795,11 @@ function initializeDeploymentPackageSettings() {
         include_development_sources: deploymentPackageIncludeDevelopment.checked,
         release_note: deploymentPackageReleaseNote.value.trim(),
       };
-      await fetchSettingsApi("/api/settings/deployment-package", { method: "PUT", headers: settingsHeaders(true), body: JSON.stringify(configuration) });
-      render(await fetchSettingsApi("/api/settings/deployment-package/build", { method: "POST", headers: settingsHeaders(true) }));
+      render(await fetchSettingsApi("/api/settings/deployment-package/build", {
+        method: "POST",
+        headers: settingsHeaders(true),
+        body: JSON.stringify(configuration),
+      }));
     } catch (error) {
       inputs.forEach((input) => { input.disabled = false; });
       updateAction();
@@ -775,8 +811,15 @@ function initializeDeploymentPackageSettings() {
     void runAction();
   });
   deploymentPackageBuild.addEventListener("click", () => void runAction());
+  deploymentPackageChubVersion.addEventListener("input", () => {
+    if (generatedForVersion && deploymentPackageChubVersion.value.trim() !== generatedForVersion) {
+      generatedForVersion = null;
+      deploymentPackageReleaseNote.value = "";
+    }
+    updateAction();
+  });
   deploymentPackageReleaseNote.addEventListener("input", () => {
-    noteDirty = true;
+    generatedForVersion = null;
     updateAction();
   });
   deploymentPackageOpenOutput.addEventListener("click", async () => {
@@ -890,11 +933,11 @@ if (settingsPage === "appearance") {
   initializeDiagnosticsSettings();
 } else if (settingsPage === "runtime-detail") {
   window.initializeWorkspacePluginLifecycle?.();
-  if (codexDefaultRuntimeImplementation instanceof HTMLSelectElement) {
+  if (runtimeDefaultImplementation instanceof HTMLSelectElement) {
     initializeSettingsChoicePickers();
-    codexDefaultRuntimeImplementation.addEventListener(
+    runtimeDefaultImplementation.addEventListener(
       "change",
-      () => void saveCodexDefaultRuntimeImplementation(),
+      () => void saveRuntimeDefaultImplementation(),
     );
     void loadRuntimePlugins();
   }

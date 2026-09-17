@@ -1,6 +1,5 @@
-from tests.session_fixtures import CodexSession
-
 import asyncio
+import json
 import sqlite3
 import time
 from datetime import UTC, datetime
@@ -31,7 +30,10 @@ from app.ai_runtime import (
 )
 from app.ai_session.models import AiSession
 from app.ai_runtime.runtime_plugin_packages import RuntimePluginService
-from app.ai_runtime.implementation_preferences import RuntimeImplementationPreferences
+from app.ai_runtime.implementation_preferences import (
+    RuntimeImplementationPreferences,
+    RuntimeImplementationPreferencesStore,
+)
 from app.ai_runtime.enablement import RuntimeEnablement
 from app.ai_session.manager import AiSessionManager
 from app.application import create_app
@@ -39,11 +41,13 @@ from app.ai_runtime.general_settings import (
     AiRuntimeSettingsStore,
     RuntimeSettingsStoreUnavailable,
 )
-from app.codex.models import (
-    CodexModelCatalogData,
-    CodexModelInfo,
-    CodexReasoningLevel,
+from app.ai_session.api_models import (
     SessionCreateRequest,
+)
+from app.ai_runtime.contracts import (
+    RuntimeModelCatalogData,
+    RuntimeModelInfoData,
+    RuntimeModelReasoningLevelData,
 )
 from app.core.config import ExtraWorkspaceConfig
 from app.quick_worker import production_runtime_workspaces
@@ -467,6 +471,56 @@ def test_runtime_wiring_rejects_capability_mismatch() -> None:
     assert invalid.value.code == "runtime_wiring_invalid"
 
 
+@pytest.mark.parametrize(
+    ("adapter_descriptor", "runner_descriptor"),
+    [
+        (
+            RuntimeDescriptor(
+                runtime_id="second-runtime",
+                implementation_id="second-runtime-a",
+                native_session_compatibility_id="second-v1",
+                capabilities=frozenset({"runtime_status"}),
+            ),
+            RuntimeDescriptor(
+                runtime_id="second-runtime",
+                implementation_id="second-runtime-b",
+                native_session_compatibility_id="second-v1",
+                capabilities=frozenset({"runtime_status"}),
+            ),
+        ),
+        (
+            RuntimeDescriptor(
+                runtime_id="second-runtime",
+                implementation_id="second-runtime-a",
+                native_session_compatibility_id="second-v1",
+                capabilities=frozenset({"runtime_status"}),
+            ),
+            RuntimeDescriptor(
+                runtime_id="second-runtime",
+                implementation_id="second-runtime-a",
+                native_session_compatibility_id="second-v2",
+                capabilities=frozenset({"runtime_status"}),
+            ),
+        ),
+    ],
+)
+def test_runtime_wiring_rejects_implementation_or_native_compatibility_mismatch(
+    adapter_descriptor: RuntimeDescriptor,
+    runner_descriptor: RuntimeDescriptor,
+) -> None:
+    class DescriptorOnly:
+        def __init__(self, descriptor: RuntimeDescriptor) -> None:
+            self.descriptor = descriptor
+
+    with pytest.raises(RuntimeOperationError) as invalid:
+        validate_runtime_wiring(
+            DescriptorOnly(adapter_descriptor),
+            DescriptorOnly(runner_descriptor),
+        )
+
+    assert invalid.value.code == "runtime_wiring_invalid"
+
+
 def test_runtime_plugin_registry_requires_one_unique_default() -> None:
     registry = RuntimePluginRegistry(
         [StubRuntimePlugin("codex", is_default=True)]
@@ -646,7 +700,7 @@ def test_session_manager_pins_sessions_to_their_runtime_and_implementation(
 ) -> None:
     manager = AiSessionManager(settings)
     settings_store = AiRuntimeSettingsStore(
-        settings.ai_runtime.codex.data_file.with_name("ai-runtimes.local.yaml")
+        settings.ai_runtime.shared.state_dir / "ai-runtimes.local.yaml"
     )
     test_adapter = SessionRuntime("test", "test-runtime-dev", settings_store)
     modules = RuntimePluginRegistry(
@@ -682,6 +736,37 @@ def test_session_manager_pins_sessions_to_their_runtime_and_implementation(
     )
 
 
+def test_session_manager_manages_a_non_default_runtime_implementation(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    settings_store = AiRuntimeSettingsStore(
+        settings.ai_runtime.shared.state_dir / "test-runtime-settings.yaml"
+    )
+    test_adapter = SessionRuntime("test", "test-runtime-dev", settings_store)
+    modules = RuntimePluginRegistry(
+        [manager.runtime_plugins.require("codex"), SessionRuntimePlugin(test_adapter)]
+    )
+    manager.runtime_plugin_service.build_registry = MagicMock(return_value=(modules, ()))
+
+    manager.refresh_runtime_plugins()
+    active_default = manager.default_implementation_id
+    data = manager.read_runtime_implementations("test")
+    updated = manager.update_default_implementation(
+        "test-runtime-dev",
+        runtime_id="test",
+    )
+
+    assert data.runtime_id == "test"
+    assert data.default_implementation_id == "test-runtime-dev"
+    assert [item.implementation_id for item in data.implementations] == [
+        "test-runtime-dev"
+    ]
+    assert updated.runtime_id == "test"
+    assert manager.default_implementation_id == active_default
+    assert manager.default_implementation_ids["test"] == "test-runtime-dev"
+
+
 def test_general_session_defaults_do_not_follow_active_runtime_adapter(
     settings: Settings,
     tmp_path: Path,
@@ -711,6 +796,30 @@ def test_general_session_defaults_do_not_follow_active_runtime_adapter(
     assert private_runtime_store.read_general().default_runtime_id is None
 
 
+def test_codex_private_quota_stays_with_codex_when_default_runtime_changes(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    manager = AiSessionManager(settings)
+    settings_store = AiRuntimeSettingsStore(tmp_path / "general-runtime.yaml")
+    test_adapter = SessionRuntime("test", "test-runtime-dev", settings_store)
+    modules = RuntimePluginRegistry(
+        [manager.runtime_plugins.require("codex"), SessionRuntimePlugin(test_adapter)]
+    )
+    manager.runtime_plugin_service.build_registry = MagicMock(return_value=(modules, ()))
+    manager.runtime_settings_store = settings_store
+    manager.refresh_runtime_plugins()
+    codex_rate_limits = manager.runtime_adapters["codex-runtime-dev"].rate_limits
+
+    settings_store.save_general(
+        settings_store.read_general().model_copy(update={"default_runtime_id": "test"})
+    )
+    manager.sync_default_runtime_selection()
+
+    assert manager.runtime_adapter is test_adapter
+    assert manager.codex_rate_limits is codex_rate_limits
+
+
 def test_unreadable_general_settings_never_fall_back_to_codex_runtime(
     settings: Settings,
 ) -> None:
@@ -729,7 +838,7 @@ def test_unavailable_runtime_only_blocks_its_default_new_session(
 ) -> None:
     manager = AiSessionManager(settings)
     settings_store = AiRuntimeSettingsStore(
-        settings.ai_runtime.codex.data_file.with_name("ai-runtimes.local.yaml")
+        settings.ai_runtime.shared.state_dir / "ai-runtimes.local.yaml"
     )
     test_adapter = SessionRuntime(
         "test",
@@ -762,7 +871,7 @@ def test_unavailable_runtime_only_blocks_its_default_new_session(
 def test_runtime_default_implementation_cannot_cross_runtime(settings: Settings) -> None:
     manager = AiSessionManager(settings)
     settings_store = AiRuntimeSettingsStore(
-        settings.ai_runtime.codex.data_file.with_name("ai-runtimes.local.yaml")
+        settings.ai_runtime.shared.state_dir / "ai-runtimes.local.yaml"
     )
     test_adapter = SessionRuntime("test", "test-runtime-dev", settings_store)
     modules = RuntimePluginRegistry(
@@ -784,7 +893,7 @@ def test_non_default_runtime_lifecycle_updates_its_own_preferences(
 ) -> None:
     manager = AiSessionManager(settings)
     settings_store = AiRuntimeSettingsStore(
-        settings.ai_runtime.codex.data_file.with_name("ai-runtimes.local.yaml")
+        settings.ai_runtime.shared.state_dir / "ai-runtimes.local.yaml"
     )
     test_adapter = SessionRuntime("test", "test-runtime-dev", settings_store)
     modules = RuntimePluginRegistry(
@@ -808,12 +917,28 @@ def test_non_default_runtime_lifecycle_updates_its_own_preferences(
     assert restored.default_implementation_ids["test"] == "test-runtime-dev"
 
 
+def test_runtime_implementation_enable_restores_preferences_after_refresh_failure(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    before = manager.runtime_implementation_preferences.read()
+    manager.read_runtime_implementations = MagicMock(
+        side_effect=ApiError(503, "runtime_list_unavailable", "Runtime 列表不可读取。")
+    )
+
+    with pytest.raises(ApiError) as rejected:
+        manager.update_runtime_implementation_enabled("codex-runtime-dev", False)
+
+    assert rejected.value.code == "runtime_list_unavailable"
+    assert manager.runtime_implementation_preferences.read() == before
+
+
 def test_non_default_runtime_enablement_uses_its_default_implementation(
     settings: Settings,
 ) -> None:
     manager = AiSessionManager(settings)
     settings_store = AiRuntimeSettingsStore(
-        settings.ai_runtime.codex.data_file.with_name("ai-runtimes.local.yaml")
+        settings.ai_runtime.shared.state_dir / "ai-runtimes.local.yaml"
     )
     test_adapter = SessionRuntime("test", "test-runtime-dev", settings_store)
     modules = RuntimePluginRegistry(
@@ -837,7 +962,7 @@ def test_saved_runtime_default_survives_transient_unavailability(
 ) -> None:
     manager = AiSessionManager(settings)
     settings_store = AiRuntimeSettingsStore(
-        settings.ai_runtime.codex.data_file.with_name("ai-runtimes.local.yaml")
+        settings.ai_runtime.shared.state_dir / "ai-runtimes.local.yaml"
     )
     test_adapter = SessionRuntime("test", "test-runtime-dev", settings_store)
     modules = RuntimePluginRegistry(
@@ -871,7 +996,7 @@ def test_translation_session_uses_live_default_runtime_with_background_turn(
 ) -> None:
     manager = AiSessionManager(settings)
     settings_store = AiRuntimeSettingsStore(
-        settings.ai_runtime.codex.data_file.with_name("ai-runtimes.local.yaml")
+        settings.ai_runtime.shared.state_dir / "ai-runtimes.local.yaml"
     )
     test_adapter = SessionRuntime(
         "test",
@@ -1364,6 +1489,39 @@ def test_codex_runtime_usage_uses_default_timezone_despite_legacy_general_settin
     assert adapter._read_usage_settings().timezone == "Asia/Shanghai"
 
 
+def test_runtime_general_settings_discard_legacy_weekly_session(tmp_path: Path) -> None:
+    settings_path = tmp_path / "ai-runtimes.local.yaml"
+    store = AiRuntimeSettingsStore(settings_path)
+    settings_path.write_text(
+        "general:\n  weekly_report_session:\n    runtime_id: codex\n    model: gpt-test\n    reasoning_effort: high\n",
+        encoding="utf-8",
+    )
+
+    assert store.read_general().model is None
+    assert store.read_general().reasoning_effort is None
+    assert store.read_general().default_runtime_id is None
+
+
+def test_runtime_implementation_preferences_clear_legacy_single_default(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "runtime-implementation-preferences.json"
+    path.write_text(
+        '{"version":1,"default_implementation_id":"codex-runtime-dev",'
+        '"disabled_implementation_ids":["test-runtime-dev"]}',
+        encoding="utf-8",
+    )
+    preferences = RuntimeImplementationPreferencesStore(path).read()
+
+    assert preferences.default_implementation_ids == {}
+    assert preferences.disabled_implementation_ids == []
+    assert json.loads(path.read_text(encoding="utf-8")) == {
+        "version": 2,
+        "default_implementation_ids": {},
+        "disabled_implementation_ids": [],
+    }
+
+
 @pytest.mark.parametrize(
     ("permission_profile", "expected"),
     [
@@ -1594,27 +1752,26 @@ def test_codex_adapter_normalizes_discovery_and_model_catalog(
     tmp_path: Path,
 ) -> None:
     adapter = CodexRuntimeAdapter(settings, codex_home=tmp_path)
-    native = CodexSession(
-        id="native-1",
-        workspace_id="codex",
-        workspace_name="workspace",
+    native = SimpleNamespace(
         cwd=tmp_path,
         title="x" * 501,
         codex_session_id="native-1",
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
     )
     adapter.discovery = MagicMock()
     adapter.discovery.discover.return_value = [native]
     adapter.discovery.session_archive_states.return_value = {"native-1": False}
     adapter.model_catalog = MagicMock()
-    adapter.model_catalog.data.return_value = CodexModelCatalogData(
+    adapter.model_catalog.data.return_value = RuntimeModelCatalogData(
         models=[
-            CodexModelInfo(
+            RuntimeModelInfoData(
                 id="gpt-test",
                 name="GPT Test",
                 description="Test model",
                 default_level="high",
                 levels=[
-                    CodexReasoningLevel(id="high", description="Thorough")
+                    RuntimeModelReasoningLevelData(id="high", description="Thorough")
                 ],
             )
         ],
@@ -1709,12 +1866,12 @@ def test_codex_archive_state_read_failure_does_not_prevent_discovery(
     tmp_path: Path,
 ) -> None:
     adapter = CodexRuntimeAdapter(settings, codex_home=tmp_path)
-    native = CodexSession(
-        id="native-1",
-        workspace_id="codex",
-        workspace_name="workspace",
+    native = SimpleNamespace(
         cwd=tmp_path,
+        title=None,
         codex_session_id="native-1",
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
     )
     adapter.discovery = MagicMock()
     adapter.discovery.discover.return_value = [native]
@@ -1868,7 +2025,7 @@ def test_native_list_hides_internal_translation_session_unless_requested(
 ) -> None:
     manager = AiSessionManager(settings)
     now = datetime(2026, 9, 8, 10, tzinfo=UTC)
-    translation_cwd = settings.ai_runtime.codex.runtime_dir / "translation-workspace"
+    translation_cwd = settings.ai_runtime.shared.runtime_dir / "translation-workspace"
     manager.store.list = MagicMock(return_value=[])
     manager._sync_bound_native_sessions = MagicMock(
         return_value=(
@@ -1900,7 +2057,7 @@ def test_translation_native_cleanup_removes_all_unbound_idle_sessions(
 ) -> None:
     manager = AiSessionManager(settings)
     now = datetime(2026, 9, 8, 10, tzinfo=UTC)
-    translation_cwd = settings.ai_runtime.codex.runtime_dir / "translation-workspace"
+    translation_cwd = settings.ai_runtime.shared.runtime_dir / "translation-workspace"
     current_native_id = "11111111-1111-4111-8111-111111111111"
     stale_native_id = "22222222-2222-4222-8222-222222222222"
     manager.store.list = MagicMock(return_value=[
@@ -1947,7 +2104,7 @@ def test_translation_native_cleanup_keeps_a_session_with_an_active_writer(
 ) -> None:
     manager = AiSessionManager(settings)
     now = datetime(2026, 9, 8, 10, tzinfo=UTC)
-    translation_cwd = settings.ai_runtime.codex.runtime_dir / "translation-workspace"
+    translation_cwd = settings.ai_runtime.shared.runtime_dir / "translation-workspace"
     stale_native_id = "22222222-2222-4222-8222-222222222222"
     manager.store.list = MagicMock(return_value=[])
     manager.runtime_adapter = MagicMock()

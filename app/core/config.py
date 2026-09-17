@@ -4,7 +4,6 @@ from functools import lru_cache
 from pathlib import Path
 import re
 from typing import Any, Literal
-import warnings
 
 import yaml
 from pydantic import (
@@ -82,15 +81,6 @@ class ExtraWorkspaceConfig(StrictModel):
 
 class CodexRuntimeConfig(StrictModel):
     enabled: bool = True
-    # Kept only while existing local configuration is upgraded to shared.
-    workspace: Path | None = None
-    extra_workspaces: list[ExtraWorkspaceConfig] | None = None
-    data_file: Path | None = None
-    runtime_dir: Path | None = None
-    max_running: int | None = Field(default=None, ge=1, le=10)
-    quick_interaction_timeout_seconds: int | None = Field(
-        default=None, ge=10 * 60, le=24 * 60 * 60
-    )
 
 
 class AiRuntimeSharedConfig(StrictModel):
@@ -98,9 +88,7 @@ class AiRuntimeSharedConfig(StrictModel):
 
     workspace: Path = Path("~/workspace")
     extra_workspaces: list[ExtraWorkspaceConfig] = Field(default_factory=list)
-    state_dir: Path = Path("data/local/state/codex")
-    # Fixed upgrade input only; never used as active Runtime state.
-    legacy_state_file: Path | None = None
+    state_dir: Path = Path("data/local/state/ai-runtime")
     runtime_dir: Path = Path("data/local/runtime/ai-runtime")
     max_running: int = Field(default=3, ge=1, le=10)
     quick_interaction_timeout_seconds: int = Field(
@@ -147,48 +135,6 @@ class AiRuntimeConfig(StrictModel):
     shared: AiRuntimeSharedConfig = AiRuntimeSharedConfig()
     codex: CodexRuntimeConfig = CodexRuntimeConfig()
     modules: RuntimePluginsConfig = RuntimePluginsConfig()
-
-    @model_validator(mode="after")
-    def migrate_legacy_codex_shared_fields(self) -> "AiRuntimeConfig":
-        """Map the retired Codex-owned shared fields without rewriting local config."""
-        legacy = self.codex
-        shared_explicit = "shared" in self.model_fields_set
-        if shared_explicit:
-            return self
-        legacy_shared_fields = (
-            legacy.workspace,
-            legacy.extra_workspaces,
-            legacy.data_file,
-            legacy.runtime_dir,
-            legacy.max_running,
-            legacy.quick_interaction_timeout_seconds,
-        )
-        if any(value is not None for value in legacy_shared_fields):
-            warnings.warn(
-                "ai_runtime.codex shared fields are retired; move them to "
-                "ai_runtime.shared before the next configuration update.",
-                UserWarning,
-                stacklevel=2,
-            )
-        if legacy.workspace is not None:
-            self.shared.workspace = legacy.workspace
-        if legacy.extra_workspaces is not None:
-            self.shared.extra_workspaces = legacy.extra_workspaces
-        if legacy.data_file is not None:
-            self.shared.state_dir = legacy.data_file.parent
-            self.shared.legacy_state_file = legacy.data_file
-        if legacy.runtime_dir is not None:
-            self.shared.runtime_dir = legacy.runtime_dir
-        if legacy.max_running is not None:
-            self.shared.max_running = legacy.max_running
-        if legacy.quick_interaction_timeout_seconds is not None:
-            self.shared.quick_interaction_timeout_seconds = (
-                legacy.quick_interaction_timeout_seconds
-            )
-        # Legacy values enter after Pydantic has validated the default shared
-        # object, so validate the merged mapping once before it is used.
-        self.shared = AiRuntimeSharedConfig.model_validate(self.shared.model_dump())
-        return self
 
 
 class MaintenanceTerminalConfig(StrictModel):
@@ -332,10 +278,7 @@ class OpenClawWeixinChubModeConfig(StrictModel):
     session_name_max_width: int = Field(default=30, ge=4, le=96)
     task_name_max_width: int = Field(default=64, ge=4, le=96)
     # Translation runs an LLM over untrusted message text and must be opted in.
-    translation_enabled: bool = False
-    # When set, this supersedes the legacy boolean above.  Keeping the boolean
-    # lets an existing local configuration retain its direct/automatic meaning.
-    translation_mode: Literal["direct", "auto", "confirm"] | None = None
+    translation_mode: Literal["direct", "auto", "confirm"] = "direct"
     translation_queue_limit: int = Field(default=10, ge=1, le=50)
     translation_max_wait_seconds: int = Field(default=1800, ge=60, le=7200)
     translation_max_input_chars: int = Field(default=8000, ge=256, le=8000)
@@ -371,14 +314,6 @@ class Settings(StrictModel):
     network_recovery: NetworkRecoveryConfig = NetworkRecoveryConfig()
     openclaw: OpenClawConfig = OpenClawConfig()
 
-    @model_validator(mode="before")
-    @classmethod
-    def discard_legacy_tasks_config(cls, value: object) -> object:
-        if isinstance(value, dict):
-            value = dict(value)
-            value.pop("tasks", None)
-        return value
-
     def resolve_runtime_paths(self) -> "Settings":
         if not self.logs.file.is_absolute():
             self.logs.file = PROJECT_ROOT / self.logs.file
@@ -393,15 +328,18 @@ class Settings(StrictModel):
             workspace.path = workspace.path.expanduser().resolve()
         if not self.ai_runtime.shared.state_dir.is_absolute():
             self.ai_runtime.shared.state_dir = PROJECT_ROOT / self.ai_runtime.shared.state_dir
-        if (
-            self.ai_runtime.shared.legacy_state_file is not None
-            and not self.ai_runtime.shared.legacy_state_file.is_absolute()
-        ):
-            self.ai_runtime.shared.legacy_state_file = (
-                PROJECT_ROOT / self.ai_runtime.shared.legacy_state_file
-            )
         if not self.ai_runtime.shared.runtime_dir.is_absolute():
             self.ai_runtime.shared.runtime_dir = PROJECT_ROOT / self.ai_runtime.shared.runtime_dir
+        retired_state_dir = PROJECT_ROOT / "data/local/state/codex"
+        retired_runtime_dir = PROJECT_ROOT / "data/local/runtime/codex"
+        if self.ai_runtime.shared.state_dir == retired_state_dir:
+            raise RuntimeError(
+                "ai_runtime.shared.state_dir must not use retired data/local/state/codex"
+            )
+        if self.ai_runtime.shared.runtime_dir == retired_runtime_dir:
+            raise RuntimeError(
+                "ai_runtime.shared.runtime_dir must not use retired data/local/runtime/codex"
+            )
         if not self.ai_runtime.modules.install_dir.is_absolute():
             self.ai_runtime.modules.install_dir = (
                 PROJECT_ROOT / self.ai_runtime.modules.install_dir
@@ -505,12 +443,6 @@ def load_settings(config_file: str | Path | None = None) -> Settings:
         path = PROJECT_ROOT / path
     path = path.resolve()
     data = _read_yaml(path)
-    openclaw = data.get("openclaw")
-    if isinstance(openclaw, dict):
-        weixin_chub_mode = openclaw.get("weixin_chub_mode")
-        if isinstance(weixin_chub_mode, dict):
-            for retired_field in ("permission_mode", "model", "reasoning_effort"):
-                weixin_chub_mode.pop(retired_field, None)
     security = data.setdefault("security", {})
     if not isinstance(security, dict):
         raise RuntimeError("Configuration field 'security' must be a mapping")

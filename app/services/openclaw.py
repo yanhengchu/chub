@@ -13,7 +13,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from app.codex.models import utc_now
+from app.ai_session.models import utc_now
 from app.core.config import OpenClawConfig
 from app.core.response import ApiError
 from app.services.openclaw_recovery import (

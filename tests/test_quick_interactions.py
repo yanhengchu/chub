@@ -1,4 +1,4 @@
-from tests.session_fixtures import CodexSession
+from tests.session_fixtures import AiSessionFixture
 
 import json
 import asyncio
@@ -12,15 +12,18 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.ai_session.store import AiSessionStoreUnavailable
-from app.codex.models import (
+from app.ai_interactions.models import (
     QuickInteractionDeferredRestartContext,
     QuickInteractionOperationContext,
     QuickInteractionTask,
     QuickInteractionWeixinRoute,
+)
+from app.ai_session.models import (
     utc_now,
 )
-from app.codex.quick_interactions import (
+from app.ai_interactions.quick_interactions import (
     MAX_QUICK_INTERACTION_STATE_BYTES,
+    QUICK_INTERACTION_STATE_VERSION,
     QUICK_INTERACTION_INSTRUCTIONS,
     QuickInteractionManager,
     build_task_summary,
@@ -38,23 +41,23 @@ def manager(
     deferred_restart=None,
     restart_notifier=None,
 ) -> QuickInteractionManager:
-    codex_manager = MagicMock()
-    codex_manager.get_session.return_value = CodexSession(
+    ai_session_manager = MagicMock()
+    ai_session_manager.get_session.return_value = AiSessionFixture(
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",
         cwd=tmp_path,
-        codex_session_id="11111111-1111-4111-8111-111111111111",
+        native_session_id="11111111-1111-4111-8111-111111111111",
         status="stopped",
         permission_mode="auto-review",
     )
-    codex_manager.has_active_writer.return_value = False
-    codex_manager.default_submission_implementation_id.return_value = "codex-runtime-dev"
-    codex_manager.session_implementation_id.return_value = "codex-runtime-dev"
+    ai_session_manager.has_active_writer.return_value = False
+    ai_session_manager.default_submission_implementation_id.return_value = "codex-runtime-dev"
+    ai_session_manager.session_implementation_id.return_value = "codex-runtime-dev"
     quick_interactions = QuickInteractionManager(
         tmp_path / "codex-sessions.json",
         tmp_path / "runtime",
-        codex_manager,
+        ai_session_manager,
         completion_notifier,
         deferred_restart,
         restart_notifier=restart_notifier,
@@ -116,7 +119,7 @@ def test_quick_interaction_timeout_is_configurable(tmp_path: Path) -> None:
     configured = QuickInteractionManager(
         tmp_path / "custom-codex-sessions.json",
         tmp_path / "runtime",
-        quick_interactions.codex_manager,
+        quick_interactions.ai_session_manager,
         timeout_seconds=7_200,
     )
 
@@ -126,7 +129,7 @@ def test_quick_interaction_timeout_is_configurable(tmp_path: Path) -> None:
 
 def test_worker_submission_uses_the_session_runtime_snapshot(tmp_path: Path) -> None:
     quick_interactions = manager(tmp_path)
-    quick_interactions.codex_manager.session_implementation_id.return_value = "test-runtime-dev"
+    quick_interactions.ai_session_manager.session_implementation_id.return_value = "test-runtime-dev"
     task = QuickInteractionTask(
         id="task-1",
         worker_task_id=f"qw-1750000000000-{'a' * 32}",
@@ -159,7 +162,7 @@ def test_model_update_is_serialized_with_quick_session_tasks(tmp_path: Path) -> 
 
     quick_interactions.update_session_model("session-1", "gpt-test", "high")
 
-    quick_interactions.codex_manager.update_session_model.assert_called_once_with(
+    quick_interactions.ai_session_manager.update_session_model.assert_called_once_with(
         "session-1",
         "gpt-test",
         "high",
@@ -172,7 +175,7 @@ def test_model_update_allows_running_quick_session_for_the_next_task(tmp_path: P
 
     quick_interactions.update_session_model("session-1", "gpt-test", "high")
 
-    quick_interactions.codex_manager.update_session_model.assert_called_once_with(
+    quick_interactions.ai_session_manager.update_session_model.assert_called_once_with(
         "session-1",
         "gpt-test",
         "high",
@@ -192,7 +195,7 @@ def test_configuration_update_allows_running_quick_session_for_the_next_task(
         "high",
     )
 
-    quick_interactions.codex_manager.update_session_configuration.assert_called_once_with(
+    quick_interactions.ai_session_manager.update_session_configuration.assert_called_once_with(
         "session-1",
         "full-access",
         "gpt-test",
@@ -289,11 +292,11 @@ def test_submit_allows_new_session_without_runtime_profile_mutation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     quick_interactions = manager(tmp_path)
-    session = quick_interactions.codex_manager.get_session.return_value
-    session.codex_session_id = None
+    session = quick_interactions.ai_session_manager.get_session.return_value
+    session.native_session_id = None
     thread = MagicMock()
     monkeypatch.setattr(
-        "app.codex.quick_interactions.threading.Thread",
+        "app.ai_interactions.quick_interactions.threading.Thread",
         MagicMock(return_value=thread),
     )
 
@@ -307,8 +310,8 @@ def test_submit_allows_new_session_without_runtime_profile_mutation(
     assert task.status == "requested"
     assert task.prompt == "执行第一条任务"
     assert task.summary == "执行第一条任务"
-    quick_interactions.codex_manager.prepare_quick_interaction.assert_not_called()
-    quick_interactions.codex_manager.set_initial_quick_interaction_title.assert_called_once_with(
+    quick_interactions.ai_session_manager.prepare_quick_interaction.assert_not_called()
+    quick_interactions.ai_session_manager.set_initial_quick_interaction_title.assert_called_once_with(
         session.id,
         "执行第一条任务",
     )
@@ -320,10 +323,10 @@ def test_submit_accepts_configured_weixin_summary_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     quick_interactions = manager(tmp_path)
-    session = quick_interactions.codex_manager.get_session.return_value
+    session = quick_interactions.ai_session_manager.get_session.return_value
     thread = MagicMock()
     monkeypatch.setattr(
-        "app.codex.quick_interactions.threading.Thread",
+        "app.ai_interactions.quick_interactions.threading.Thread",
         MagicMock(return_value=thread),
     )
 
@@ -343,11 +346,11 @@ def test_submit_thread_start_failure_rolls_back_registration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     quick_interactions = manager(tmp_path)
-    session = quick_interactions.codex_manager.get_session.return_value
+    session = quick_interactions.ai_session_manager.get_session.return_value
     thread = MagicMock()
     thread.start.side_effect = RuntimeError("thread unavailable")
     monkeypatch.setattr(
-        "app.codex.quick_interactions.threading.Thread",
+        "app.ai_interactions.quick_interactions.threading.Thread",
         MagicMock(return_value=thread),
     )
 
@@ -402,7 +405,7 @@ def test_submit_persistence_failure_rolls_back_registration(
     tmp_path: Path,
 ) -> None:
     quick_interactions = manager(tmp_path)
-    session = quick_interactions.codex_manager.get_session.return_value
+    session = quick_interactions.ai_session_manager.get_session.return_value
     quick_interactions._write = MagicMock(side_effect=OSError("write failed"))
 
     with pytest.raises(OSError):
@@ -423,7 +426,7 @@ def test_isolated_worker_maps_page_weixin_and_translation_to_one_protocol(
 ) -> None:
     quick_interactions = manager(tmp_path)
     quick_interactions.worker_settings = SimpleNamespace()
-    quick_interactions.codex_manager.get_session.return_value.codex_session_id = (
+    quick_interactions.ai_session_manager.get_session.return_value.native_session_id = (
         "11111111-1111-4111-8111-111111111111"
     )
     submissions: list[dict[str, object]] = []
@@ -438,11 +441,11 @@ def test_isolated_worker_maps_page_weixin_and_translation_to_one_protocol(
     quick_interactions._worker_call = MagicMock(side_effect=worker_call)
     thread = MagicMock()
     monkeypatch.setattr(
-        "app.codex.quick_interactions.threading.Thread",
+        "app.ai_interactions.quick_interactions.threading.Thread",
         MagicMock(return_value=thread),
     )
-    session = quick_interactions.codex_manager.get_session.return_value
-    session.codex_session_id = "11111111-1111-4111-8111-111111111111"
+    session = quick_interactions.ai_session_manager.get_session.return_value
+    session.native_session_id = "11111111-1111-4111-8111-111111111111"
     session.model = "gpt-page"
     session.reasoning_effort = "high"
 
@@ -507,13 +510,13 @@ def test_isolated_worker_unavailable_fails_without_web_runner(
 ) -> None:
     quick_interactions = manager(tmp_path)
     quick_interactions.worker_settings = SimpleNamespace()
-    quick_interactions.codex_manager.get_session.return_value.codex_session_id = (
+    quick_interactions.ai_session_manager.get_session.return_value.native_session_id = (
         "11111111-1111-4111-8111-111111111111"
     )
     quick_interactions._worker_call = MagicMock(
         side_effect=WorkerRequestNotSent("worker down")
     )
-    monkeypatch.setattr("app.codex.quick_interactions.time.sleep", lambda _delay: None)
+    monkeypatch.setattr("app.ai_interactions.quick_interactions.time.sleep", lambda _delay: None)
     with pytest.raises(ApiError) as error:
         quick_interactions.submit(
             "session-1",
@@ -531,7 +534,7 @@ def test_discovered_session_outside_fixed_workspace_is_submitted_to_worker(
     tmp_path: Path,
 ) -> None:
     quick_interactions = manager(tmp_path)
-    quick_interactions.codex_manager.get_session.return_value.workspace_id = "runtime-session"
+    quick_interactions.ai_session_manager.get_session.return_value.workspace_id = "runtime-session"
     quick_interactions._start_worker_observer = MagicMock()
 
     task = quick_interactions.submit(
@@ -551,14 +554,14 @@ def test_worker_connection_failure_retries_before_rejecting_submission(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     quick_interactions = manager(tmp_path)
-    session = quick_interactions.codex_manager.get_session.return_value
+    session = quick_interactions.ai_session_manager.get_session.return_value
     thread = MagicMock()
     monkeypatch.setattr(
-        "app.codex.quick_interactions.threading.Thread",
+        "app.ai_interactions.quick_interactions.threading.Thread",
         MagicMock(return_value=thread),
     )
     sleep = MagicMock()
-    monkeypatch.setattr("app.codex.quick_interactions.time.sleep", sleep)
+    monkeypatch.setattr("app.ai_interactions.quick_interactions.time.sleep", sleep)
     attempts = 0
 
     def submit_after_worker_starts(action: str, **payload: object) -> dict[str, object]:
@@ -595,7 +598,7 @@ def test_failed_sensitive_submission_rechecks_deferred_restart(
     quick_interactions._worker_call = MagicMock(
         side_effect=WorkerRequestNotSent("worker down")
     )
-    monkeypatch.setattr("app.codex.quick_interactions.time.sleep", lambda _delay: None)
+    monkeypatch.setattr("app.ai_interactions.quick_interactions.time.sleep", lambda _delay: None)
 
     with pytest.raises(ApiError):
         quick_interactions.submit(
@@ -614,7 +617,7 @@ def test_isolated_worker_submit_response_loss_adopts_accepted_task(
 ) -> None:
     quick_interactions = manager(tmp_path)
     quick_interactions.worker_settings = SimpleNamespace()
-    quick_interactions.codex_manager.get_session.return_value.codex_session_id = (
+    quick_interactions.ai_session_manager.get_session.return_value.native_session_id = (
         "11111111-1111-4111-8111-111111111111"
     )
     calls = iter(
@@ -675,7 +678,7 @@ def test_isolated_worker_submit_response_loss_adopts_accepted_task(
         "runtime_task_submit",
         "runtime_task_submit",
     ]
-    observer.assert_called_once_with(task, quick_interactions.codex_manager.get_session.return_value, "uncertain submission")
+    observer.assert_called_once_with(task, quick_interactions.ai_session_manager.get_session.return_value, "uncertain submission")
 
 
 def test_uncertain_submission_uses_persisted_recovery_after_bounded_probe(
@@ -684,7 +687,7 @@ def test_uncertain_submission_uses_persisted_recovery_after_bounded_probe(
 ) -> None:
     quick_interactions = manager(tmp_path)
     monkeypatch.setattr(
-        "app.codex.quick_interactions.UNCERTAIN_SUBMISSION_RETRY_SECONDS",
+        "app.ai_interactions.quick_interactions.UNCERTAIN_SUBMISSION_RETRY_SECONDS",
         0,
     )
     initial_calls = iter(
@@ -745,7 +748,7 @@ def test_isolated_worker_accepts_wrapped_8000_character_prompt(
 ) -> None:
     quick_interactions = manager(tmp_path)
     quick_interactions.worker_settings = SimpleNamespace()
-    quick_interactions.codex_manager.get_session.return_value.codex_session_id = (
+    quick_interactions.ai_session_manager.get_session.return_value.native_session_id = (
         "11111111-1111-4111-8111-111111111111"
     )
     quick_interactions._worker_call = MagicMock(
@@ -753,7 +756,7 @@ def test_isolated_worker_accepts_wrapped_8000_character_prompt(
     )
     thread = MagicMock()
     monkeypatch.setattr(
-        "app.codex.quick_interactions.threading.Thread",
+        "app.ai_interactions.quick_interactions.threading.Thread",
         MagicMock(return_value=thread),
     )
 
@@ -776,16 +779,16 @@ def test_isolated_worker_accepts_json_escaped_8000_character_translation(
 ) -> None:
     quick_interactions = manager(tmp_path)
     quick_interactions.worker_settings = SimpleNamespace()
-    quick_interactions.codex_manager.get_session.return_value.codex_session_id = (
+    quick_interactions.ai_session_manager.get_session.return_value.native_session_id = (
         "11111111-1111-4111-8111-111111111111"
     )
-    quick_interactions.codex_manager.get_session.return_value.permission_mode = "read-only"
+    quick_interactions.ai_session_manager.get_session.return_value.permission_mode = "read-only"
     quick_interactions._worker_call = MagicMock(
         side_effect=lambda _action, **payload: accepted_worker_task(payload["task"])
     )
     thread = MagicMock()
     monkeypatch.setattr(
-        "app.codex.quick_interactions.threading.Thread",
+        "app.ai_interactions.quick_interactions.threading.Thread",
         MagicMock(return_value=thread),
     )
     original = "\x00" * 8_000
@@ -981,11 +984,11 @@ result_path.write_text(result, encoding="utf-8")
         quick_interactions = manager(tmp_path)
         quick_interactions.worker_settings = settings
         del quick_interactions._worker_call
-        session = quick_interactions.codex_manager.get_session.return_value
+        session = quick_interactions.ai_session_manager.get_session.return_value
         session.workspace_id = "isolated"
         session.cwd = workspace
-        session.codex_session_id = native_id
-        quick_interactions.codex_manager.bind_quick_interaction_native_session = MagicMock()
+        session.native_session_id = native_id
+        quick_interactions.ai_session_manager.bind_quick_interaction_native_session = MagicMock()
         route = QuickInteractionWeixinRoute(
             account_id="weixin-account",
             recipient="owner@im.wechat",
@@ -1080,9 +1083,9 @@ result_path.write_text(f"recovered:{prompt}", encoding="utf-8")
     )
     await server.start()
 
-    def codex_manager() -> MagicMock:
+    def ai_session_manager() -> MagicMock:
         value = MagicMock()
-        value.get_session.return_value = CodexSession(
+        value.get_session.return_value = AiSessionFixture(
             id="session-1",
             workspace_id="isolated",
             workspace_name="Isolated",
@@ -1099,7 +1102,7 @@ result_path.write_text(f"recovered:{prompt}", encoding="utf-8")
         return QuickInteractionManager(
             tmp_path / "codex-sessions.json",
             tmp_path / "runtime",
-            codex_manager(),
+            ai_session_manager(),
             worker_settings=settings,
         )
 
@@ -1203,7 +1206,7 @@ def test_quick_interaction_completion_notification_is_independent(
             self.target(*self.args)
 
     monkeypatch.setattr(
-        "app.codex.quick_interactions.threading.Thread",
+        "app.ai_interactions.quick_interactions.threading.Thread",
         ImmediateThread,
     )
 
@@ -1241,7 +1244,7 @@ def test_claim_cleanup_failure_does_not_block_completion_or_notification(
     )
     quick_interactions._tasks[task.id] = task
     quick_interactions._operations[task.id] = ("operation-1", "127.0.0.1")
-    quick_interactions.codex_manager.clear_quick_native_claim.side_effect = OSError(
+    quick_interactions.ai_session_manager.clear_quick_native_claim.side_effect = OSError(
         "Session state is temporarily unavailable"
     )
 
@@ -1254,7 +1257,7 @@ def test_claim_cleanup_failure_does_not_block_completion_or_notification(
             self.target(*self.args)
 
     monkeypatch.setattr(
-        "app.codex.quick_interactions.threading.Thread",
+        "app.ai_interactions.quick_interactions.threading.Thread",
         ImmediateThread,
     )
 
@@ -1268,7 +1271,7 @@ def test_claim_cleanup_failure_does_not_block_completion_or_notification(
         (task.session_id, task.worker_task_id)
     }
 
-    quick_interactions.codex_manager.clear_quick_native_claim.side_effect = None
+    quick_interactions.ai_session_manager.clear_quick_native_claim.side_effect = None
     quick_interactions._retry_pending_native_claim_clears()
 
     assert quick_interactions._pending_native_claim_clears == set()
@@ -1303,7 +1306,7 @@ def test_notification_failure_does_not_change_task_result(
             self.target(*self.args)
 
     monkeypatch.setattr(
-        "app.codex.quick_interactions.threading.Thread",
+        "app.ai_interactions.quick_interactions.threading.Thread",
         ImmediateThread,
     )
 
@@ -1430,7 +1433,7 @@ def test_weixin_notification_route_is_private_and_survives_restart(
     first = manager(tmp_path)
     thread = MagicMock()
     monkeypatch.setattr(
-        "app.codex.quick_interactions.threading.Thread",
+        "app.ai_interactions.quick_interactions.threading.Thread",
         MagicMock(return_value=thread),
     )
     route = QuickInteractionWeixinRoute(
@@ -1456,7 +1459,7 @@ def test_weixin_notification_route_is_private_and_survives_restart(
     assert reloaded.get(task.id).notification_route == "weixin-task"
     assert reloaded._notification_routes[task.id] == route
 
-def test_restart_rejects_active_task_without_worker_identity(tmp_path: Path) -> None:
+def test_restart_discards_active_task_without_worker_identity(tmp_path: Path) -> None:
     state = tmp_path / "quick-interactions.json"
     task = QuickInteractionTask(
         id="task-1",
@@ -1466,18 +1469,14 @@ def test_restart_rejects_active_task_without_worker_identity(tmp_path: Path) -> 
         created_at=utc_now(),
         updated_at=utc_now(),
     )
-    state.write_text(
-        json.dumps([task.model_dump(mode="json")]),
-        encoding="utf-8",
-    )
+    serialized = task.model_dump(mode="json")
+    serialized["_state_version"] = QUICK_INTERACTION_STATE_VERSION
+    state.write_text(json.dumps([serialized]), encoding="utf-8")
 
     quick_interactions = manager(tmp_path)
 
-    assert quick_interactions.get("task-1").status == "failed"
+    assert quick_interactions._tasks == {}
     assert quick_interactions.recovery_error is None
-    quick_interactions.start_worker_reconciliation()
-    assert quick_interactions.recovery_ready is False
-    assert quick_interactions.recovery_error is not None
 
 
 def test_restart_marks_incomplete_notification_failed(tmp_path: Path) -> None:
@@ -1493,6 +1492,7 @@ def test_restart_marks_incomplete_notification_failed(tmp_path: Path) -> None:
         updated_at=utc_now(),
     )
     serialized = task.model_dump(mode="json")
+    serialized["_state_version"] = QUICK_INTERACTION_STATE_VERSION
     serialized["_operation_context"] = {
         "operation_id": "operation-1",
         "source_ip": "127.0.0.1",
@@ -1524,17 +1524,18 @@ def test_worker_restart_preserves_active_task_and_pending_notification(
         updated_at=utc_now(),
     )
     serialized = task.model_dump(mode="json")
+    serialized["_state_version"] = QUICK_INTERACTION_STATE_VERSION
     serialized["_operation_context"] = {
         "operation_id": "operation-1",
         "source_ip": "127.0.0.1",
     }
     state.write_text(json.dumps([serialized]), encoding="utf-8")
 
-    codex_manager = MagicMock()
+    ai_session_manager = MagicMock()
     recovered = QuickInteractionManager(
         tmp_path / "codex-sessions.json",
         tmp_path / "runtime",
-        codex_manager,
+        ai_session_manager,
         MagicMock(),
         worker_settings=settings,
     )
@@ -1542,14 +1543,14 @@ def test_worker_restart_preserves_active_task_and_pending_notification(
     assert recovered.get(task.id).status == "running"
     assert recovered.get(task.id).notification_status == "skipped"
     assert recovered.is_running(task.session_id) is True
-    codex_manager.recover_interrupted_quick_interaction.assert_not_called()
-    codex_manager.register_quick_native_claim.assert_called_once_with(
+    ai_session_manager.recover_interrupted_quick_interaction.assert_not_called()
+    ai_session_manager.register_quick_native_claim.assert_called_once_with(
         task.session_id,
         task.worker_task_id,
     )
 
 
-def test_worker_recovery_treats_null_delivery_marker_as_unconfirmed(
+def test_worker_recovery_discards_null_delivery_marker_state(
     settings,
     tmp_path: Path,
 ) -> None:
@@ -1564,10 +1565,6 @@ def test_worker_recovery_treats_null_delivery_marker_as_unconfirmed(
         updated_at=utc_now(),
     )
     serialized = task.model_dump(mode="json")
-    serialized["_operation_context"] = {
-        "operation_id": "operation-1",
-        "source_ip": "127.0.0.1",
-    }
     serialized["_worker_delivery_confirmed"] = None
     state.write_text(json.dumps([serialized]), encoding="utf-8")
 
@@ -1580,8 +1577,8 @@ def test_worker_recovery_treats_null_delivery_marker_as_unconfirmed(
     )
 
     assert recovered._local_state_error is None
-    persisted = json.loads(state.read_text(encoding="utf-8"))
-    assert "_worker_delivery_confirmed" not in persisted[0]
+    assert recovered._tasks == {}
+    assert json.loads(state.read_text(encoding="utf-8")) == []
 
 
 def test_worker_claim_restore_conflict_is_local_and_reconciles_task(
@@ -1600,22 +1597,23 @@ def test_worker_claim_restore_conflict_is_local_and_reconciles_task(
         updated_at=utc_now(),
     )
     serialized = task.model_dump(mode="json")
+    serialized["_state_version"] = QUICK_INTERACTION_STATE_VERSION
     serialized["_operation_context"] = {
         "operation_id": "operation-1",
         "source_ip": "127.0.0.1",
     }
     state.write_text(json.dumps([serialized]), encoding="utf-8")
-    codex_manager = MagicMock()
-    codex_manager.get_session.return_value = CodexSession(
+    ai_session_manager = MagicMock()
+    ai_session_manager.get_session.return_value = AiSessionFixture(
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",
         cwd=tmp_path,
-        codex_session_id=None,
+        native_session_id=None,
         status="stopped",
         permission_mode="auto-review",
     )
-    codex_manager.register_quick_native_claim.side_effect = ApiError(
+    ai_session_manager.register_quick_native_claim.side_effect = ApiError(
         409,
         "quick_interaction_native_session_claim_active",
         "A different Quick Worker task is already claiming this Session.",
@@ -1623,7 +1621,7 @@ def test_worker_claim_restore_conflict_is_local_and_reconciles_task(
     quick_interactions = QuickInteractionManager(
         tmp_path / "codex-sessions.json",
         tmp_path / "runtime",
-        codex_manager,
+        ai_session_manager,
         worker_settings=settings,
     )
     now = utc_now()
@@ -1667,7 +1665,7 @@ def test_worker_claim_restore_conflict_is_local_and_reconciles_task(
     assert finished.status == "failed"
     assert finished.result is None
     assert "could not be restored" in (finished.error or "")
-    codex_manager.bind_quick_interaction_native_session.assert_not_called()
+    ai_session_manager.bind_quick_interaction_native_session.assert_not_called()
 
 
 def test_worker_claim_restore_store_unavailable_is_local(
@@ -1685,6 +1683,7 @@ def test_worker_claim_restore_store_unavailable_is_local(
         updated_at=utc_now(),
     )
     serialized = task.model_dump(mode="json")
+    serialized["_state_version"] = QUICK_INTERACTION_STATE_VERSION
     serialized["_operation_context"] = {
         "operation_id": "operation-1",
         "source_ip": "127.0.0.1",
@@ -1693,15 +1692,15 @@ def test_worker_claim_restore_store_unavailable_is_local(
         json.dumps([serialized]),
         encoding="utf-8",
     )
-    codex_manager = MagicMock()
-    codex_manager.register_quick_native_claim.side_effect = AiSessionStoreUnavailable(
+    ai_session_manager = MagicMock()
+    ai_session_manager.register_quick_native_claim.side_effect = AiSessionStoreUnavailable(
         "AI Session 状态文件与当前内存状态不一致。"
     )
 
     quick_interactions = QuickInteractionManager(
         tmp_path / "quick-interactions.json",
         tmp_path / "runtime",
-        codex_manager,
+        ai_session_manager,
         worker_settings=settings,
     )
 
@@ -1727,13 +1726,14 @@ def test_missing_session_discards_stale_web_task_without_hiding_worker_recovery(
         updated_at=utc_now(),
     )
     serialized = task.model_dump(mode="json")
+    serialized["_state_version"] = QUICK_INTERACTION_STATE_VERSION
     serialized["_operation_context"] = {
         "operation_id": "operation-1",
         "source_ip": "127.0.0.1",
     }
     state.write_text(json.dumps([serialized]), encoding="utf-8")
-    codex_manager = MagicMock()
-    codex_manager.register_quick_native_claim.side_effect = ApiError(
+    ai_session_manager = MagicMock()
+    ai_session_manager.register_quick_native_claim.side_effect = ApiError(
         404,
         "session_not_found",
         "AI Session not found",
@@ -1741,7 +1741,7 @@ def test_missing_session_discards_stale_web_task_without_hiding_worker_recovery(
     quick_interactions = QuickInteractionManager(
         tmp_path / "codex-sessions.json",
         tmp_path / "runtime",
-        codex_manager,
+        ai_session_manager,
         worker_settings=settings,
     )
     quick_interactions._worker_call = MagicMock(
@@ -1765,7 +1765,7 @@ def test_final_untracked_worker_task_without_session_is_acknowledged(
     tmp_path: Path,
 ) -> None:
     quick_interactions = worker_manager(tmp_path, settings)
-    quick_interactions.codex_manager.get_session.side_effect = ApiError(
+    quick_interactions.ai_session_manager.get_session.side_effect = ApiError(
         404,
         "session_not_found",
         "AI Session not found",
@@ -2093,8 +2093,8 @@ def test_worker_reconciliation_merges_once_and_acknowledges_after_persistence(
         raise AssertionError(action)
 
     monkeypatch.setattr(quick_interactions, "_worker_call", worker_call)
-    quick_interactions.codex_manager.get_session.return_value = (
-        quick_interactions.codex_manager.get_session.return_value
+    quick_interactions.ai_session_manager.get_session.return_value = (
+        quick_interactions.ai_session_manager.get_session.return_value
     )
 
     quick_interactions._reconcile_worker_once(initial=True)
@@ -2154,7 +2154,7 @@ def test_worker_reconciliation_not_found_delivers_failure_notification(
             self.target(*self.args)
 
     monkeypatch.setattr(
-        "app.codex.quick_interactions.threading.Thread",
+        "app.ai_interactions.quick_interactions.threading.Thread",
         ImmediateThread,
     )
     monkeypatch.setattr(
@@ -2269,7 +2269,7 @@ def test_worker_reconciliation_converges_native_session_conflict(
         raise AssertionError(action)
 
     monkeypatch.setattr(quick_interactions, "_worker_call", worker_call)
-    quick_interactions.codex_manager.bind_quick_interaction_native_session.side_effect = (
+    quick_interactions.ai_session_manager.bind_quick_interaction_native_session.side_effect = (
         ApiError(
             409,
             "quick_interaction_native_session_conflict",
@@ -2293,7 +2293,7 @@ def test_worker_reconciliation_allows_translation_native_session_rotation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     quick_interactions = worker_manager(tmp_path, settings)
-    quick_interactions.codex_manager.get_session.return_value = CodexSession(
+    quick_interactions.ai_session_manager.get_session.return_value = AiSessionFixture(
         id="session-1",
         workspace_id="weixin-translation",
         workspace_name="微信文本优化与翻译",
@@ -2356,7 +2356,7 @@ def test_worker_reconciliation_allows_translation_native_session_rotation(
     finished = quick_interactions.get(task.id)
     assert finished.status == "succeeded"
     assert finished.result == "润色：\n优化后的文本\n\nEnglish：\nPolished text"
-    quick_interactions.codex_manager.bind_quick_interaction_native_session.assert_called_once_with(
+    quick_interactions.ai_session_manager.bind_quick_interaction_native_session.assert_called_once_with(
         task.session_id,
         new_native_session_id,
         implementation_id="codex-runtime-dev",
@@ -2373,7 +2373,7 @@ def test_resident_reconciliation_does_not_race_worker_submission(
     quick_interactions = worker_manager(tmp_path, settings)
     quick_interactions._recovery_ready = True
     quick_interactions._resident_reconciler_started = True
-    quick_interactions.codex_manager.get_session.return_value.codex_session_id = (
+    quick_interactions.ai_session_manager.get_session.return_value.native_session_id = (
         "11111111-1111-4111-8111-111111111111"
     )
     submit_entered = threading.Event()
@@ -2454,7 +2454,7 @@ def test_worker_recovery_discards_invalid_web_state_without_waiting(
     assert json.loads(state.read_text(encoding="utf-8")) == []
 
 
-def test_worker_recovery_discards_invalid_entry_and_keeps_valid_task(
+def test_worker_recovery_discards_state_with_an_invalid_entry(
     settings,
     tmp_path: Path,
 ) -> None:
@@ -2485,12 +2485,11 @@ def test_worker_recovery_discards_invalid_entry_and_keeps_valid_task(
     recovered._reconcile_worker_once(initial=True)
 
     assert recovered.recovery_ready is True
-    assert recovered.get(valid.id).result == "完成"
-    persisted = json.loads(state.read_text(encoding="utf-8"))
-    assert [item["id"] for item in persisted] == [valid.id]
+    assert recovered._tasks == {}
+    assert json.loads(state.read_text(encoding="utf-8")) == []
 
 
-def test_retired_weixin_task_keeps_a_failure_notification(
+def test_retired_weixin_task_state_is_discarded(
     settings,
     tmp_path: Path,
 ) -> None:
@@ -2528,9 +2527,7 @@ def test_retired_weixin_task_keeps_a_failure_notification(
         worker_settings=settings,
     )
 
-    current = recovered.get(task.id)
-    assert current.status == "failed"
-    assert current.notification_status == "pending"
+    assert recovered._tasks == {}
 
 
 def test_discarding_unreadable_web_state_keeps_pending_claim_clears(
@@ -2551,7 +2548,7 @@ def test_discarding_unreadable_web_state_keeps_pending_claim_clears(
     recovered._discard_unrecoverable_local_state()
 
     assert claim in recovered._pending_native_claim_clears
-    recovered.codex_manager.discard_quick_native_claims.assert_called_once_with()
+    recovered.ai_session_manager.discard_quick_native_claims.assert_called_once_with()
 
 
 def test_load_discards_legacy_pinned_state(tmp_path: Path) -> None:
@@ -2575,14 +2572,11 @@ def test_load_discards_legacy_pinned_state(tmp_path: Path) -> None:
 
     recovered = manager(tmp_path)
 
-    assert recovered.get(task.id).id == task.id
-    persisted = json.loads(recovered.path.read_text(encoding="utf-8"))
-    assert "pinned_at" not in persisted[0]
-    assert "weixin_session_slot" not in persisted[0]
-    assert "weixin_session_title" not in persisted[0]
+    assert recovered._tasks == {}
+    assert json.loads(recovered.path.read_text(encoding="utf-8")) == []
 
 
-def test_load_retires_legacy_task_capabilities_without_blocking_recovery(
+def test_load_discards_legacy_task_capability_state(
     settings,
     tmp_path: Path,
 ) -> None:
@@ -2622,13 +2616,9 @@ def test_load_retires_legacy_task_capabilities_without_blocking_recovery(
 
     recovered._reconcile_worker_once(initial=True)
 
-    current = recovered.get(task.id)
-    assert current.status == "failed"
-    assert current.submission_verifying is False
-    assert "已废弃的 Worker 协议" in (current.error or "")
+    assert recovered._tasks == {}
     assert recovered.recovery_ready is True
-    persisted = json.loads(recovered.path.read_text(encoding="utf-8"))
-    assert "capability_ids" not in persisted[0]
+    assert json.loads(recovered.path.read_text(encoding="utf-8")) == []
 
 
 @pytest.mark.parametrize("invalid_kind", ["non_utf8", "oversized", "symlink", "directory"])
@@ -2738,7 +2728,7 @@ def test_worker_operation_log_projection_is_persisted_and_idempotent(
     quick_interactions._operations[task.id] = ("operation-log", "127.0.0.1")
     logged: list[str] = []
     monkeypatch.setattr(
-        "app.codex.quick_interactions.write_operation",
+        "app.ai_interactions.quick_interactions.write_operation",
         lambda **payload: logged.append(payload["status"]),
     )
 
@@ -2779,7 +2769,7 @@ def test_worker_operation_log_preserves_cancelled_terminal_status(
     )
     logged: list[str] = []
     monkeypatch.setattr(
-        "app.codex.quick_interactions.write_operation",
+        "app.ai_interactions.quick_interactions.write_operation",
         lambda **payload: logged.append(payload["status"]),
     )
 
@@ -2838,7 +2828,7 @@ def test_worker_reconciliation_recovers_missing_started_operation_log(
     )
     logged: list[str] = []
     monkeypatch.setattr(
-        "app.codex.quick_interactions.write_operation",
+        "app.ai_interactions.quick_interactions.write_operation",
         lambda **payload: logged.append(payload["status"]),
     )
 
@@ -3218,8 +3208,8 @@ def test_submit_uses_worker_and_native_writer_guards_for_running_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     quick_interactions = manager(tmp_path)
-    quick_interactions.codex_manager.get_session.return_value.status = "running"
-    quick_interactions.codex_manager.get_session.return_value.activity = "working"
+    quick_interactions.ai_session_manager.get_session.return_value.status = "running"
+    quick_interactions.ai_session_manager.get_session.return_value.activity = "working"
     monkeypatch.setattr(quick_interactions, "_start_worker_observer", MagicMock())
 
     task = quick_interactions.submit(
@@ -3234,7 +3224,7 @@ def test_submit_uses_worker_and_native_writer_guards_for_running_session(
 
 def test_submit_rejects_active_native_writer(tmp_path: Path) -> None:
     quick_interactions = manager(tmp_path)
-    quick_interactions.codex_manager.has_active_writer.return_value = True
+    quick_interactions.ai_session_manager.has_active_writer.return_value = True
 
     with pytest.raises(ApiError) as error:
         quick_interactions.submit(
@@ -3267,7 +3257,7 @@ def test_submit_allows_new_task_while_restart_is_pending(
     )
 
     assert task.status == "requested"
-    quick_interactions.codex_manager.prepare_quick_interaction.assert_not_called()
+    quick_interactions.ai_session_manager.prepare_quick_interaction.assert_not_called()
 
 
 def test_deferred_restart_ready_waits_only_for_requesting_task_notifications(
@@ -3461,7 +3451,7 @@ def test_submission_uses_fixed_restart_sensitive_rule(
     expected: bool,
 ) -> None:
     quick_interactions = manager(tmp_path)
-    session = quick_interactions.codex_manager.get_session.return_value
+    session = quick_interactions.ai_session_manager.get_session.return_value
     session.workspace_id = workspace_id
     session.permission_mode = permission_mode
     monkeypatch.setattr(quick_interactions, "_start_worker_observer", MagicMock())
@@ -3643,7 +3633,7 @@ def test_deferred_restart_completion_notifies_only_coalesced_weixin_task(
             self.target(*self.args)
 
     monkeypatch.setattr(
-        "app.codex.quick_interactions.threading.Thread",
+        "app.ai_interactions.quick_interactions.threading.Thread",
         ImmediateThread,
     )
 
@@ -3722,7 +3712,7 @@ def test_sensitive_task_failure_updates_timeline_and_notifies_weixin(
             self.target(*self.args)
 
     monkeypatch.setattr(
-        "app.codex.quick_interactions.threading.Thread",
+        "app.ai_interactions.quick_interactions.threading.Thread",
         ImmediateThread,
     )
 
@@ -3829,7 +3819,7 @@ def test_restart_notification_thread_start_failure_is_terminal(
             raise RuntimeError("thread unavailable")
 
     monkeypatch.setattr(
-        "app.codex.quick_interactions.threading.Thread",
+        "app.ai_interactions.quick_interactions.threading.Thread",
         FailingThread,
     )
 
@@ -3865,7 +3855,9 @@ def test_restart_notification_interrupted_while_sending_is_not_retried(
         created_at=utc_now(),
         updated_at=utc_now(),
     )
-    state.write_text(json.dumps([task.model_dump(mode="json")]), encoding="utf-8")
+    serialized = task.model_dump(mode="json")
+    serialized["_state_version"] = QUICK_INTERACTION_STATE_VERSION
+    state.write_text(json.dumps([serialized]), encoding="utf-8")
 
     quick_interactions = manager(tmp_path)
 
@@ -3879,7 +3871,7 @@ def test_restart_notification_interrupted_while_sending_is_not_retried(
 
 def test_submit_rejects_session_error(tmp_path: Path) -> None:
     quick_interactions = manager(tmp_path)
-    session = quick_interactions.codex_manager.get_session.return_value
+    session = quick_interactions.ai_session_manager.get_session.return_value
     session.status = "error"
     session.activity = "unknown"
 
@@ -3899,12 +3891,12 @@ def test_submit_allows_idle_running_terminal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     quick_interactions = manager(tmp_path)
-    session = quick_interactions.codex_manager.get_session.return_value
+    session = quick_interactions.ai_session_manager.get_session.return_value
     session.status = "running"
     session.activity = "idle"
     thread = MagicMock()
     monkeypatch.setattr(
-        "app.codex.quick_interactions.threading.Thread",
+        "app.ai_interactions.quick_interactions.threading.Thread",
         MagicMock(return_value=thread),
     )
 
@@ -3923,7 +3915,7 @@ def test_translation_submissions_share_worker_queue_without_native_claim(
     tmp_path: Path,
 ) -> None:
     quick_interactions = manager(tmp_path)
-    session = quick_interactions.codex_manager.get_session.return_value
+    session = quick_interactions.ai_session_manager.get_session.return_value
     session.workspace_id = "weixin-translation"
     session.permission_mode = "read-only"
     quick_interactions._start_worker_observer = MagicMock()
@@ -3945,7 +3937,7 @@ def test_translation_submissions_share_worker_queue_without_native_claim(
 
     assert first.status == "requested"
     assert second.status == "requested"
-    quick_interactions.codex_manager.register_quick_native_claim.assert_not_called()
+    quick_interactions.ai_session_manager.register_quick_native_claim.assert_not_called()
     assert quick_interactions._worker_call.call_count == 2
 
 
@@ -3965,6 +3957,6 @@ def test_cancel_session_rejects_untracked_active_session(tmp_path: Path) -> None
     quick_interactions._running_sessions.add("session-1")
 
     with pytest.raises(ApiError) as error:
-        quick_interactions.cancel_codex_session("session-1")
+        quick_interactions.cancel_session_interactions("session-1")
 
     assert error.value.code == "quick_interaction_cancel_failed"

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tests.session_fixtures import CodexSession
+from tests.session_fixtures import AiSessionFixture
 
 from contextlib import nullcontext
 from types import SimpleNamespace
@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 from app.application import create_app
-from app.codex.models import (
+from app.ai_usage.models import (
     CodexQuotaData,
     CodexTokenUsageData,
 )
@@ -24,8 +24,8 @@ from tests.openclaw_weixin_chub_mode_helpers import (
 
 
 def configured_stop_target(settings: Settings):
-    manager, codex_manager, quick_interactions = configured_manager(settings)
-    session = CodexSession(
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
+    session = AiSessionFixture(
         id="session-2",
         session_id="native-2",
         workspace_id="chub",
@@ -41,15 +41,15 @@ def configured_stop_target(settings: Settings):
     manager._state.session_slots = [
         WeixinChubModeSessionSlot(slot=2, session_id=session.id)
     ]
-    codex_manager.list_sessions.return_value = [session]
-    codex_manager.get_session.return_value = session
+    ai_session_manager.list_sessions.return_value = [session]
+    ai_session_manager.get_session.return_value = session
     manager.codex_account_reader = MagicMock()
     manager.codex_account_reader.read_account_status.return_value = (
         CodexQuotaData(status="unavailable"),
         CodexTokenUsageData(status="unavailable"),
     )
 
-    def stop_session(session_id: str) -> CodexSession:
+    def stop_session(session_id: str) -> AiSessionFixture:
         assert session_id == session.id
         session.status = "stopped"
         session.activity = "idle"
@@ -108,7 +108,7 @@ def test_session_stop_final_notification_restores_other_running_task_name(
     settings: Settings,
 ) -> None:
     manager, target, quick_interactions = configured_stop_target(settings)
-    other = CodexSession(
+    other = AiSessionFixture(
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",
@@ -123,7 +123,7 @@ def test_session_stop_final_notification_restores_other_running_task_name(
         0,
         WeixinChubModeSessionSlot(slot=1, session_id=other.id),
     )
-    manager.codex_manager.list_sessions.return_value = [target, other]
+    manager.ai_session_manager.list_sessions.return_value = [target, other]
     quick_interactions.is_running.side_effect = lambda session_id: (
         session_id == other.id
     )
@@ -286,7 +286,7 @@ def test_interrupted_session_stop_is_not_replayed_after_restart(
     stopper = MagicMock()
     recovered = WeixinChubModeManager(
         settings,
-        manager.codex_manager,
+        manager.ai_session_manager,
         quick_interactions,
         manager.route_validator,
         session_stopper=stopper,
@@ -376,17 +376,17 @@ def test_application_stop_callback_cleans_resources_in_order(
     application = create_app(settings)
     parent = MagicMock()
     quick_interactions = application.state.quick_interactions
-    codex_manager = application.state.ai_session_manager
+    ai_session_manager = application.state.ai_session_manager
     quick_interactions.stop_operation_guard = MagicMock(
         return_value=nullcontext()
     )
-    quick_interactions.cancel_codex_session = MagicMock()
-    codex_manager.ensure_stop_allowed = MagicMock()
-    codex_manager.stop_session = MagicMock()
-    parent.attach_mock(codex_manager.ensure_stop_allowed, "gate")
-    parent.attach_mock(quick_interactions.cancel_codex_session, "cancel")
-    parent.attach_mock(codex_manager.stop_session, "stop")
-    codex_manager.stop_session.return_value = SimpleNamespace(
+    quick_interactions.cancel_session_interactions = MagicMock()
+    ai_session_manager.ensure_stop_allowed = MagicMock()
+    ai_session_manager.stop_session = MagicMock()
+    parent.attach_mock(ai_session_manager.ensure_stop_allowed, "gate")
+    parent.attach_mock(quick_interactions.cancel_session_interactions, "cancel")
+    parent.attach_mock(ai_session_manager.stop_session, "stop")
+    ai_session_manager.stop_session.return_value = SimpleNamespace(
         status="stopped",
         activity="idle",
     )

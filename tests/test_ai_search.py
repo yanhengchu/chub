@@ -100,7 +100,7 @@ class _QuickInteractions:
     def find_for_operation(self, operation_id: str):
         return self.operation_tasks.get(operation_id)
 
-    def cancel_codex_session(self, _session_id: str) -> bool:
+    def cancel_session_interactions(self, _session_id: str) -> bool:
         return True
 
     def remove_session_tasks(self, _session_id: str) -> None:
@@ -271,7 +271,7 @@ def test_today_focus_visibility_defaults_to_hidden_and_persists(tmp_path: Path) 
     assert _service(tmp_path / "ai-search.json").show_sessions() is True
 
 
-def test_today_focus_retires_legacy_state_and_its_bound_session(tmp_path: Path) -> None:
+def test_today_focus_discards_legacy_state_without_touching_its_bound_session(tmp_path: Path) -> None:
     path = tmp_path / "ai-search.json"
     legacy = SearchRun(
         id="a" * 32,
@@ -286,7 +286,7 @@ def test_today_focus_retires_legacy_state_and_its_bound_session(tmp_path: Path) 
         updated_at=datetime.now(UTC),
     )
     path.write_text(json.dumps({
-        "version": 4,
+        "version": 6,
         "show_sessions": True,
         "session_id": "session-1",
         "runs": [legacy.model_dump(mode="json")],
@@ -298,8 +298,14 @@ def test_today_focus_retires_legacy_state_and_its_bound_session(tmp_path: Path) 
 
     assert data.current is None
     assert data.latest is None
-    assert manager.native_deleted == ["session-1"]
-    assert service._state.retired_session_id is None
+    assert manager.native_deleted == []
+    assert json.loads(path.read_text(encoding="utf-8")) == {
+        "version": 7,
+        "show_sessions": False,
+        "session_id": None,
+        "pending_run": None,
+        "latest_run": None,
+    }
 
 
 def test_today_focus_rejects_result_links_outside_fixed_sources(tmp_path: Path) -> None:

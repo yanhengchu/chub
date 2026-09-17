@@ -9,13 +9,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
-from app.codex.models import (
-    CodexModelCatalogData,
-    CodexQuotaData,
-    QuickInteractionData,
-    QuickInteractionListData,
-    QuickInteractionOrder,
-    QuickInteractionRequest,
+from app.ai_session.api_models import (
     RuntimeEnablementUpdateRequest,
     RuntimeManagementData,
     RuntimeImplementationData,
@@ -30,12 +24,19 @@ from app.codex.models import (
     SessionRuntimeGroup,
     SessionRenameRequest,
 )
+from app.ai_interactions.models import (
+    QuickInteractionData,
+    QuickInteractionListData,
+    QuickInteractionOrder,
+    QuickInteractionRequest,
+)
+from app.ai_runtime.contracts import RuntimeModelCatalogData
 from app.ai_session.operations import (
     archive_session as archive_session_operation,
     delete_session as delete_session_operation,
     forget_session as forget_session_operation,
 )
-from app.ai_runtime.codex_plugin import DEVELOPMENT_CODEX_IMPLEMENTATION_ID
+from app.ai_runtime.development_plugins import development_runtime_artifact_id
 from app.core.response import ApiError, ApiResponse
 from app.core.security import require_trusted_network
 from app.services.operation_log import log_operation, write_operation
@@ -49,12 +50,7 @@ api_router = APIRouter(
     tags=["ai"],
     dependencies=[Depends(require_trusted_network)],
 )
-codex_private_router = APIRouter(
-    prefix="/api/codex",
-    tags=["codex"],
-    dependencies=[Depends(require_trusted_network)],
-)
-web_router = APIRouter(tags=["codex-web"])
+web_router = APIRouter(tags=["ai-web"])
 templates = Jinja2Templates(directory=WEB_DIR / "templates")
 configure_theme_templates(templates)
 
@@ -196,8 +192,15 @@ def read_runtime_management(request: Request) -> ApiResponse[RuntimeManagementDa
 
 
 @api_router.get("/runtime-implementations", response_model=ApiResponse[RuntimeImplementationData])
-def read_runtime_implementations(request: Request) -> ApiResponse[RuntimeImplementationData]:
-    return ApiResponse(data=request.app.state.ai_session_manager.read_runtime_implementations())
+def read_runtime_implementations(
+    request: Request,
+    runtime_id: str | None = Query(default=None),
+) -> ApiResponse[RuntimeImplementationData]:
+    return ApiResponse(
+        data=request.app.state.ai_session_manager.read_runtime_implementations(
+            runtime_id
+        )
+    )
 
 
 @api_router.put(
@@ -209,9 +212,11 @@ async def update_runtime_implementation_enabled(
     payload: RuntimeImplementationEnabledUpdateRequest,
     request: Request,
 ) -> ApiResponse[RuntimeImplementationData]:
+    manager = request.app.state.ai_session_manager
+    runtime_id = manager.runtime_id_for_implementation(implementation_id)
     artifact_id = (
-        f"development:{implementation_id}"
-        if implementation_id == DEVELOPMENT_CODEX_IMPLEMENTATION_ID
+        development_runtime_artifact_id(implementation_id)
+        if implementation_id in manager.development_runtime_implementation_ids()
         else f"runtime:{implementation_id}"
     )
     await request.app.state.plugin_lifecycle.set_enabled(
@@ -221,7 +226,7 @@ async def update_runtime_implementation_enabled(
         payload.enabled,
     )
     return ApiResponse(
-        data=request.app.state.ai_session_manager.read_runtime_implementations()
+        data=manager.read_runtime_implementations(runtime_id)
     )
 
 
@@ -232,8 +237,14 @@ async def update_runtime_implementation_enabled(
 def update_default_runtime_implementation(
     payload: RuntimeDefaultImplementationUpdateRequest,
     request: Request,
+    runtime_id: str | None = Query(default=None),
 ) -> ApiResponse[RuntimeImplementationData]:
-    return ApiResponse(data=request.app.state.ai_session_manager.update_default_implementation(payload.implementation_id))
+    return ApiResponse(
+        data=request.app.state.ai_session_manager.update_default_implementation(
+            payload.implementation_id,
+            runtime_id=runtime_id,
+        )
+    )
 
 
 @api_router.put(
@@ -293,23 +304,15 @@ def read_session(session_id: str, request: Request) -> ApiResponse[SessionInfo]:
     )
 
 
-@api_router.get("/models", response_model=ApiResponse[CodexModelCatalogData])
+@api_router.get("/models", response_model=ApiResponse[RuntimeModelCatalogData])
 def list_models(
     request: Request,
     session_id: str | None = Query(default=None),
-) -> ApiResponse[CodexModelCatalogData]:
+) -> ApiResponse[RuntimeModelCatalogData]:
     manager = request.app.state.ai_session_manager
     if session_id:
         return ApiResponse(data=manager.read_session_model_catalog(session_id))
     return ApiResponse(data=manager.read_model_catalog())
-
-
-@codex_private_router.get("/quota", response_model=ApiResponse[CodexQuotaData])
-def read_quota(
-    request: Request,
-    refresh: bool = Query(default=False),
-) -> ApiResponse[CodexQuotaData]:
-    return ApiResponse(data=request.app.state.codex_rate_limits.read(force=refresh))
 
 
 @api_router.post("/sessions", response_model=ApiResponse[SessionInfo])
@@ -352,7 +355,7 @@ async def stop_session(session_id: str, request: Request) -> ApiResponse[Session
         def stop_with_guard() -> SessionInfo:
             with request.app.state.quick_interactions.stop_operation_guard(session_id):
                 request.app.state.ai_session_manager.ensure_stop_allowed(session_id)
-                request.app.state.quick_interactions.cancel_codex_session(session_id)
+                request.app.state.quick_interactions.cancel_session_interactions(session_id)
                 return request.app.state.ai_session_manager.stop_session(session_id)
 
         data = await asyncio.to_thread(stop_with_guard)
@@ -466,7 +469,7 @@ async def submit_quick_interaction(
         manager = request.app.state.ai_session_manager
         manager.require_session_access(session_id)
 
-        def submit_codex():
+        def submit_interaction():
             with quick_interactions.session_operation_guard(session_id):
                 session = manager.get_session(session_id)
 
@@ -477,7 +480,7 @@ async def submit_quick_interaction(
                     source_ip=source_ip,
                 )
 
-        task = await asyncio.to_thread(submit_codex)
+        task = await asyncio.to_thread(submit_interaction)
     except ApiError:
         write_operation(
             operation_id=operation_id,

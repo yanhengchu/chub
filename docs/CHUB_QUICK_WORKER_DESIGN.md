@@ -2,15 +2,15 @@
 
 > 状态：已验收
 > 主要读者：AI Agent；维护者通过与 AI Agent 协作，理解并确认本文规则。
-> 本文负责：Quick Worker 的任务状态、Session 租约、Native 绑定、恢复与通知终态。
+> 本文负责：Quick Worker 的任务状态、Session 租约、可信 Native 结果、恢复与通知终态。
 > 本文不负责：Runtime 私有 CLI、Session 页面展示、Runtime 插件模块生命周期和微信路由。
 
 ## AI 可执行契约
 
-Quick Worker 是与 Web 独立的后台服务，承载页面、微信 Chub 模式和翻译任务。Web 只负责可信入口校验、提交、状态投影和通知协调；不得回退到 Web 内执行 Runner。
+Quick Worker 是与 Web 独立的后台服务，承载页面、微信 Chub 模式和翻译任务。其 Chub 自有任务和租约状态位于共享 AI Runtime 状态目录 `data/local/state/ai-runtime`。Web 只负责可信入口校验、提交、状态投影和通知协调；不得回退到 Web 内执行 Runner。退役的 `data/local/state/codex` 不参与恢复或重放，升级恢复只会清理。
 
 - 同一 Chub Session 同时最多一个 Worker writer。租约只阻止重复 Chub 提交，不替代 Runtime 的 writer 最终判断，也不因历史租约长期锁住 Session。
-- 首个任务使用预分配的 Chub Session ID 与无 Native ID 的 Runner 请求。Worker 接收可信 Native ID 后，按任务 ID 与执行代次原子绑定；冲突、过期回传或结果不明都不得改写映射。
+- 首个任务使用预分配的 Chub Session ID 与无 Native ID 的 Runner 请求。Worker 返回携带任务 ID 与执行代次的可信 Native ID；Session Manager 才是 Native 映射的唯一 writer，并按当前认领原子绑定。冲突、过期回传或结果不明都不得改写映射。
 - 后续任务按已绑定 Native ID 调用 `resume`。默认 Runtime 或 Session 设置之后改变，不改写已受理任务快照。
 - 任务状态单向推进：`accepted -> starting -> running -> succeeded|failed|timed_out|cancelled`。进程创建、HTTP 200 或已受理均不等于任务成功。
 - Worker 不可用、协议不兼容或恢复未完成时，新的 Session 创建和写入失败关闭；只读 Session/Native 列表、无关服务及已运行任务不受影响。

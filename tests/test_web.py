@@ -18,7 +18,7 @@ from app.automations.models import (
 )
 from app.ai_runtime import RuntimePluginRegistry, RuntimeDescriptor
 from app.application import create_app
-from app.codex.models import RuntimeManagementData, RuntimeManagementItem
+from app.ai_session.api_models import RuntimeManagementData, RuntimeManagementItem
 from app.core.config import Settings
 import app.services.weekly_reports as weekly_report_service
 import app.web.routes as web_routes
@@ -281,6 +281,9 @@ async def settings_page_removes_quick_interaction_page_size_preference(
     assert response.status_code == 200
     assert 'return `当前默认 ${modelName}`;' in script.text
     assert "当前 Codex 默认 ·" not in script.text
+    assert "session-default-runtime" in script.text
+    assert 'model.value = "__default__"' in script.text
+    assert 'reasoning.value = "__default__"' in script.text
     assert "设置 · Hub" in response.text
     assert 'class="settings-workspace-shell"' in response.text
     assert 'id="settings-sidebar"' in response.text
@@ -303,6 +306,7 @@ async def settings_page_removes_quick_interaction_page_size_preference(
     assert 'target.closest("button.settings-mobile-nav-link")' in sidebar_script.text
     assert "const replaceSettingsPage" in sidebar_script.text
     assert 'document.addEventListener("click", replaceSettingsPage);' in sidebar_script.text
+    assert 'document.body.dataset.settingsRuntimeId = nextDocument.body.dataset.settingsRuntimeId || "";' in sidebar_script.text
     assert 'new URL(item.dataset.settingsUrl || "", window.location.href).href' in sidebar_script.text
     assert 'targetUrl.searchParams.set("return_to", returnUrl);' in sidebar_script.text
     assert "const hasWorkspaceReturnHistory = (link) =>" in sidebar_script.text
@@ -702,7 +706,7 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert 'id="runtime-management-list"' not in pages["runtime"].text
     assert 'id="runtime-general-settings-title"' not in pages["runtime"].text
     assert "此处控制 Runtime 是否接收后续新 AI 任务" not in pages["runtime"].text
-    assert 'id="codex-default-runtime-implementation"' not in pages["runtime"].text
+    assert 'id="runtime-default-implementation"' not in pages["runtime"].text
     assert '<h1 id="settings-title" class="settings-workspace-title">插件管理</h1>' in pages["runtime"].text
     assert "统一管理插件的导入、移除、启用、禁用与版本。" in pages["runtime"].text
     assert '<span class="settings-navigation-subgroup">AI Runtime</span>' not in pages["runtime"].text
@@ -726,7 +730,7 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert "session-default-permission" in script.text
     assert 'data-settings-page="runtime-detail"' in pages["runtime-detail"].text
     assert 'id="runtime-management-list"' not in pages["runtime-detail"].text
-    assert 'id="codex-default-runtime-implementation" data-settings-picker disabled' in pages["runtime-detail"].text
+    assert 'id="runtime-default-implementation" data-settings-picker disabled' in pages["runtime-detail"].text
     assert "当前使用版本" in pages["runtime-detail"].text
     assert 'item.imported !== false && item.healthy === true' in script.text
     assert '|| selectedVersion.enabled !== true;' in script.text
@@ -734,7 +738,7 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert 'id="codex-runtime-version-list"' not in pages["runtime-detail"].text
     assert 'id="codex-builtin-runtime-refresh"' not in pages["runtime-detail"].text
     assert 'id="codex-runtime-versions-message"' not in pages["runtime-detail"].text
-    assert 'id="codex-runtime-settings-message"' in pages["runtime-detail"].text
+    assert 'id="runtime-settings-message"' in pages["runtime-detail"].text
     assert 'id="runtime-settings-panel"' not in pages["runtime-detail"].text
     assert "控制是否接收新任务" not in pages["runtime-detail"].text
     assert "ai_runtime.{{ settings_runtime_id }}" not in pages["runtime-detail"].text
@@ -757,7 +761,15 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert "构建标识：${latestOperation.build_id}" in script.text
     assert "release_note: deploymentPackageReleaseNote.value.trim()" in script.text
     assert '"/api/settings/deployment-package/release-note"' in script.text
-    assert 'deploymentPackageBuild.textContent = generationRequired()' in script.text
+    assert "let generationRequested = false;" in script.text
+    assert 'const generationRequired = () => deploymentPackageReleaseNote.value.trim() === "";' in script.text
+    assert "const releaseNoteDraftToken = crypto.randomUUID();" in script.text
+    assert '"X-Chub-Release-Note-Draft-Token": releaseNoteDraftToken' in script.text
+    assert "release_note_draft_token=" not in script.text
+    assert "data.generated_release_note" in script.text
+    assert 'deploymentPackageReleaseNote.addEventListener("input"' in script.text
+    assert '"/api/settings/deployment-package/build", {' in script.text
+    assert 'method: "PUT", headers: settingsHeaders(true)' not in script.text
     assert "最近一次成功发布的产物如下。" in script.text
     assert '"/api/settings/deployment-package/open-output"' in script.text
     assert "随包模块：\\n${moduleSummary}" in script.text
@@ -1564,9 +1576,9 @@ async def test_automation_section_uses_workstation_status_rows(
     assert "setAutomationBrowserMessage" not in workspace_script.text
     assert "setAutomationFeishuMessage" not in workspace_script.text
     assert '"/api/automations/environment/feishu/login-page"' in workspace_script.text
-    assert '"/api/automations/environment/ai/sessions/login-page"' in workspace_script.text
-    assert '"/api/automations/environment/ai/sessions/switch-authentication"' in workspace_script.text
-    assert '"/api/automations/environment/ai/sessions/switch-authentication/stop"' in workspace_script.text
+    assert '"/api/automations/environment/codex/login-page"' in workspace_script.text
+    assert '"/api/automations/environment/codex/switch-authentication"' in workspace_script.text
+    assert '"/api/automations/environment/codex/switch-authentication/stop"' in workspace_script.text
     assert 'let switchTargetMode = "";' in workspace_script.text
     assert 'switchTargetMode = currentMode === "account"' in workspace_script.text
     assert 'input[name="workspace-automation-codex-account-mode"]' not in workspace_script.text

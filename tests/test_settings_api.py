@@ -16,6 +16,32 @@ async def test_translation_settings_remain_available_without_legacy_plugin_route
 
 
 @pytest.mark.anyio
+async def test_translation_settings_reject_removed_enabled_switch(settings) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.put(
+            "/api/settings/weixin-translation",
+            json={"enabled": True},
+        )
+
+    assert response.status_code == 422
+
+
+@pytest.mark.anyio
+async def test_translation_settings_reject_empty_or_mixed_updates(settings) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        empty = await client.put("/api/settings/weixin-translation", json={})
+        mixed = await client.put(
+            "/api/settings/weixin-translation",
+            json={"mode": "auto", "model": "gpt-test"},
+        )
+
+    assert empty.status_code == 422
+    assert mixed.status_code == 422
+
+
+@pytest.mark.anyio
 async def test_translation_runtime_is_read_only_from_session_defaults(settings) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:

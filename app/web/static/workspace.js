@@ -680,7 +680,7 @@
     });
     try {
       const account = await automationRequest(
-        "/api/automations/environment/ai/sessions/switch-authentication/stop",
+        "/api/automations/environment/codex/switch-authentication/stop",
         {},
       );
       setAutomationCodexAccountStatus(account);
@@ -777,7 +777,7 @@
         });
         try {
           const result = await automationRequest(
-            "/api/automations/environment/ai/sessions/switch-authentication",
+            "/api/automations/environment/codex/switch-authentication",
             { mode },
           );
           setAutomationCodexAccountStatus(result.account);
@@ -953,7 +953,7 @@
 
   bindAutomationLoginPageButton(
     automationCodexAccountOpenLogin,
-    "/api/automations/environment/ai/sessions/login-page",
+    "/api/automations/environment/codex/login-page",
     setAutomationCodexAccountStatus,
     "无法打开 Codex Runtime 登录页面。",
   );
@@ -972,7 +972,7 @@
     setAutomationCodexAccountStatus({ state: "checking", message: "正在检查 Codex Runtime 账户状态。" });
     try {
       setAutomationCodexAccountStatus(
-        await automationRequest("/api/automations/environment/ai/sessions/check"),
+        await automationRequest("/api/automations/environment/codex/check"),
       );
       return true;
     } catch (error) {

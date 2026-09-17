@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import tomllib
 import zipfile
 from dataclasses import dataclass
@@ -29,6 +30,7 @@ from app.services.weixin_orchestration_plugins import WeixinOrchestrationPluginS
 FORMAL_CODEX_IMPLEMENTATION_ID = "codex-010000"
 FORMAL_CODEX_DESCRIPTION = "Chub Codex Runtime：提供 AI Session、Quick Worker 任务执行和模型配置能力。"
 RELEASE_VERSION_PATTERN = r"^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$"
+RELEASE_NOTE_DRAFT_TTL_SECONDS = 30 * 60
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -118,6 +120,7 @@ class DeploymentPackageStatus(_StrictModel):
     release_note_generation: DeploymentPackageReleaseNoteGeneration = Field(
         default_factory=DeploymentPackageReleaseNoteGeneration
     )
+    generated_release_note: str | None = Field(default=None, max_length=2000)
 
 
 class _State(_StrictModel):
@@ -182,6 +185,10 @@ class DeploymentPackageService:
         self._quick_interactions = quick_interactions
         self._lock = threading.RLock()
         self._active_operation_id: str | None = None
+        self._release_note_draft_task_id: str | None = None
+        self._release_note_draft_token: str | None = None
+        self._release_note_draft: str | None = None
+        self._release_note_draft_expires_at: float | None = None
 
     def _defaults(self) -> DeploymentPackageConfiguration:
         return DeploymentPackageConfiguration(
@@ -207,6 +214,18 @@ class DeploymentPackageService:
             raise ApiError(503, "deployment_package_state_invalid", "部署包发布配置无效。") from exc
         if state.release_note_session_id is None:
             state.release_note_session_id = state.release_note_generation.session_id
+        if (
+            state.configuration.release_note
+            or state.configuration.release_note_generated_for_version is not None
+            or state.configuration.release_note_generated_for_commit is not None
+        ):
+            state.configuration = state.configuration.model_copy(
+                update={
+                    "release_note": "",
+                    "release_note_generated_for_version": None,
+                    "release_note_generated_for_commit": None,
+                }
+            )
         return state
 
     def _write(self, state: _State) -> None:
@@ -249,7 +268,7 @@ class DeploymentPackageService:
         )
         return state
 
-    def status(self) -> DeploymentPackageStatus:
+    def status(self, *, release_note_draft_token: str | None = None) -> DeploymentPackageStatus:
         with self._lock:
             state = self._recover_interrupted_operation(self._read())
             self._refresh_release_note_generation(state)
@@ -261,6 +280,10 @@ class DeploymentPackageService:
                 output_directory=str(self.output_dir),
                 operation=state.operation,
                 release_note_generation=state.release_note_generation,
+                generated_release_note=self._release_note_draft_for(
+                    state.release_note_generation.task_id,
+                    release_note_draft_token,
+                ),
             )
 
     @staticmethod
@@ -301,6 +324,7 @@ class DeploymentPackageService:
                 raise ApiError(409, "release_note_generation_running", "发版说明正在生成，请等待当前任务完成。")
             state.configuration = configuration.model_copy(
                 update={
+                    "release_note": "",
                     "release_note_generated_for_version": None,
                     "release_note_generated_for_commit": None,
                 }
@@ -337,6 +361,7 @@ class DeploymentPackageService:
         include_development_sources: bool,
         source_ip: str,
         operation_id: str,
+        release_note_draft_token: str,
     ) -> DeploymentPackageStatus:
         with self._lock:
             state = self._recover_interrupted_operation(self._read())
@@ -345,6 +370,7 @@ class DeploymentPackageService:
             self._refresh_release_note_generation(state)
             if state.release_note_generation.status in {"requested", "running"}:
                 raise ApiError(409, "release_note_generation_running", "发版说明正在生成，请等待当前任务完成。")
+            self._clear_release_note_draft()
             configuration = DeploymentPackageConfiguration(
                 chub_release_version=release_version,
                 runtime_implementation_id=FORMAL_CODEX_IMPLEMENTATION_ID,
@@ -399,6 +425,11 @@ class DeploymentPackageService:
             state.release_note_generation = state.release_note_generation.model_copy(
                 update={"task_id": task.id}
             )
+            self._release_note_draft_task_id = task.id
+            self._release_note_draft_token = release_note_draft_token
+            self._release_note_draft_expires_at = (
+                time.monotonic() + RELEASE_NOTE_DRAFT_TTL_SECONDS
+            )
             self._write(state)
             return self.status()
 
@@ -451,6 +482,7 @@ class DeploymentPackageService:
             else:
                 changed = self._apply_release_note_task_result(state, task)
         elif generation.status == "succeeded" and self._generation_is_stale(generation):
+            self._clear_release_note_draft(task_id=generation.task_id)
             state.release_note_generation = generation.model_copy(
                 update={
                     "status": "stale",
@@ -484,6 +516,7 @@ class DeploymentPackageService:
             )
             return True
         if task.status != "succeeded" or not task.result:
+            self._clear_release_note_draft(task_id=generation.task_id)
             state.release_note_generation = generation.model_copy(
                 update={
                     "status": "failed",
@@ -499,6 +532,7 @@ class DeploymentPackageService:
             return True
         note = task.result.strip()
         if not note or len(note) > 2000:
+            self._clear_release_note_draft(task_id=generation.task_id)
             state.release_note_generation = generation.model_copy(
                 update={
                     "status": "failed",
@@ -512,6 +546,7 @@ class DeploymentPackageService:
                 reason="invalid_result",
             )
         elif self._generation_is_stale(generation):
+            self._clear_release_note_draft(task_id=generation.task_id)
             state.release_note_generation = generation.model_copy(
                 update={
                     "status": "stale",
@@ -525,17 +560,12 @@ class DeploymentPackageService:
                 reason="worktree_changed",
             )
         else:
-            state.configuration = state.configuration.model_copy(
-                update={
-                    "release_note": note,
-                    "release_note_generated_for_version": generation.target_version,
-                    "release_note_generated_for_commit": generation.target_commit,
-                }
-            )
+            if generation.task_id == self._release_note_draft_task_id:
+                self._release_note_draft = note
             state.release_note_generation = generation.model_copy(
                 update={
                     "status": "succeeded",
-                    "message": "发版说明已生成，可编辑后发布。",
+                    "message": "发版说明已生成，本页可编辑后发布。",
                     "finished_at": _now(),
                 }
             )
@@ -544,6 +574,31 @@ class DeploymentPackageService:
                 status="succeeded",
             )
         return True
+
+    def _release_note_draft_for(
+        self,
+        task_id: str | None,
+        token: str | None,
+    ) -> str | None:
+        if (
+            task_id is None
+            or task_id != self._release_note_draft_task_id
+            or token != self._release_note_draft_token
+            or self._release_note_draft_expires_at is None
+        ):
+            return None
+        if time.monotonic() >= self._release_note_draft_expires_at:
+            self._clear_release_note_draft(task_id=task_id)
+            return None
+        return self._release_note_draft
+
+    def _clear_release_note_draft(self, *, task_id: str | None = None) -> None:
+        if task_id is not None and task_id != self._release_note_draft_task_id:
+            return
+        self._release_note_draft_task_id = None
+        self._release_note_draft_token = None
+        self._release_note_draft = None
+        self._release_note_draft_expires_at = None
 
     def _generation_is_stale(self, generation: DeploymentPackageReleaseNoteGeneration) -> bool:
         if (
@@ -663,9 +718,14 @@ class DeploymentPackageService:
         if result.returncode != 0:
             raise ApiError(503, "deployment_package_output_open_failed", "无法请求打开本机发版产物目录。")
 
-    def start(self, *, source_ip: str) -> DeploymentPackageStatus:
+    def start(
+        self,
+        *,
+        source_ip: str,
+        configuration: DeploymentPackageConfiguration | None = None,
+    ) -> DeploymentPackageStatus:
         with self._lock:
-            publish = self._begin_publish(source_ip=source_ip)
+            publish = self._begin_publish(source_ip=source_ip, configuration=configuration)
             if publish is None:
                 return self.status()
             operation, configuration, baseline = publish
@@ -692,6 +752,7 @@ class DeploymentPackageService:
         self,
         *,
         source_ip: str,
+        configuration: DeploymentPackageConfiguration | None = None,
     ) -> tuple[
         DeploymentPackageOperation,
         DeploymentPackageConfiguration,
@@ -704,10 +765,11 @@ class DeploymentPackageService:
         if state.release_note_generation.status in {"requested", "running"}:
             raise ApiError(409, "release_note_generation_running", "发版说明正在生成，完成后再发布。")
         self._require_idle_worker()
-        configuration = state.configuration.model_copy(deep=True)
+        configuration = (configuration or state.configuration).model_copy(deep=True)
         if not configuration.release_note.strip():
             raise ApiError(422, "release_note_required", "请填写本次发布说明。")
         baseline = self._require_git_release_baseline(configuration)
+        self._clear_release_note_draft()
         operation = DeploymentPackageOperation(
             operation_id=uuid4().hex,
             status="requested",

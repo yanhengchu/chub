@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from app.codex.models import sessions_newest_first
+from app.ai_session.models import sessions_newest_first
 from app.services.openclaw_weixin_chub_messages import build_session_title
 from app.services.openclaw_weixin_chub_models import (
     MAX_WEIXIN_SESSION_SLOTS,

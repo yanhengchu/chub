@@ -29,8 +29,6 @@ CHUB_RESTART_WORKER_PROMPT = "restart worker"
 CHUB_RESTART_CLAWBOT_PROMPT = "restart clawbot"
 CHUB_RESTART_NETWORK_PROMPT = "restart network"
 CHUB_UPGRADE_PROMPT = "upgrade"
-CODEX_AUTH_PROMPT = "codex auth"
-CODEX_AUTH_SWITCH_PROMPT = "codex auth switch"
 SESSION_RENAME_PROMPT = "rename"
 SESSION_NEW_PROMPT = "new"
 SESSION_ARCHIVE_PROMPT = "archive"
@@ -148,10 +146,14 @@ class WeixinChubCommand:
     model_index: int | None = None
     level_index: int | None = None
     invalid_usage: bool = False
+    command_group: Literal["text", "codex"] | None = None
+    command_group_state: Literal["not_imported", "disabled", "unavailable"] | None = None
 
 
 def is_ai_runtime_write_command(command: WeixinChubCommand) -> bool:
     """Return whether a parsed command can change AI Runtime-owned state."""
+    if command.command_group_state is not None:
+        return False
     if command.kind in _READ_ONLY_COMMAND_KINDS:
         return False
     if command.kind == "text_check":
@@ -232,74 +234,9 @@ def parse_weixin_chub_command(prompt: str) -> WeixinChubCommand:
     if (
         len(help_parts) == 2
         and help_parts[1] == CHUB_HELP_PROMPT
-        and help_parts[0] in {"model", "text", "session", "request", "system"}
+        and help_parts[0] in {"model", "session", "request", "system"}
     ):
         return WeixinChubCommand("help", normalized, task_prompt=help_parts[0])
-    text_parts = normalized.split()
-    text_check_parts = normalized.split(maxsplit=1)
-    if text_check_parts and text_check_parts[0].casefold() == TEXT_CHECK_PROMPT:
-        if len(text_check_parts) == 2:
-            return WeixinChubCommand("text_check", normalized, task_prompt=text_check_parts[1])
-        return WeixinChubCommand("text_check", normalized, invalid_usage=True)
-    if text_parts and text_parts[0].casefold() == TEXT_PROMPT:
-        if len(text_parts) == 1:
-            return WeixinChubCommand("text_control", normalized, text_action="mode")
-        action = text_parts[1].casefold()
-        if action in {"ok", "next", "cancel", "list"} and len(text_parts) == 2:
-            return WeixinChubCommand("text_control", normalized, text_action=action)
-        if action == "mode":
-            if len(text_parts) == 2:
-                return WeixinChubCommand("text_control", normalized, text_action="mode")
-            if len(text_parts) == 3 and text_parts[2].casefold() in TEXT_MODE_VALUES:
-                return WeixinChubCommand(
-                    "text_control",
-                    normalized,
-                    processing_mode=text_parts[2].casefold(),
-                    text_action="mode",
-                )
-        if action == "model" and len(text_parts) >= 3:
-            model_action = text_parts[2].casefold()
-            if model_action == "list" and len(text_parts) == 3:
-                return WeixinChubCommand(
-                    "text_control", normalized, text_action="model_list"
-                )
-            if model_action == "level":
-                if len(text_parts) == 3:
-                    return WeixinChubCommand(
-                        "text_control", normalized, text_action="model_levels"
-                    )
-                if (
-                    len(text_parts) == 4
-                    and re.fullmatch(r"M[1-9][0-9]*", text_parts[3], re.I)
-                ):
-                    return WeixinChubCommand(
-                        "text_control",
-                        normalized,
-                        text_action="model_levels",
-                        model_index=int(text_parts[3][1:]),
-                    )
-            if model_action == "use":
-                model_use = re.fullmatch(
-                    r"(?:(M[1-9][0-9]*)(?:\s+(L[1-9][0-9]*))?|"
-                    r"(L[1-9][0-9]*))",
-                    " ".join(text_parts[3:]),
-                    re.I,
-                )
-                if model_use is not None:
-                    model_reference, paired_level, level_reference = model_use.groups()
-                    selected_level = paired_level or level_reference
-                    return WeixinChubCommand(
-                        "text_control",
-                        normalized,
-                        text_action="model_use",
-                        model_index=(
-                            int(model_reference[1:]) if model_reference else None
-                        ),
-                        level_index=(
-                            int(selected_level[1:]) if selected_level else None
-                        ),
-                    )
-        return WeixinChubCommand("text_control", normalized, invalid_usage=True)
     if folded == CHUB_MODEL_PROMPT:
         return WeixinChubCommand("model", normalized)
     if folded == CHUB_MODEL_LIST_PROMPT:
@@ -335,10 +272,6 @@ def parse_weixin_chub_command(prompt: str) -> WeixinChubCommand:
         return WeixinChubCommand("restart_network", normalized)
     if folded == CHUB_UPGRADE_PROMPT:
         return WeixinChubCommand("upgrade", normalized)
-    if folded == CODEX_AUTH_PROMPT:
-        return WeixinChubCommand("codex_auth", normalized)
-    if folded == CODEX_AUTH_SWITCH_PROMPT:
-        return WeixinChubCommand("codex_auth_switch", normalized)
     if folded == "retry":
         return WeixinChubCommand("retry", normalized)
 

@@ -13,7 +13,7 @@ from app.services.openclaw import (
     OpenClawManager,
 )
 from app.services.openclaw_weixin import WeixinLoginStatus
-from app.codex.models import utc_now
+from app.ai_session.models import utc_now
 
 
 def authorization(settings: Settings) -> dict[str, str]:

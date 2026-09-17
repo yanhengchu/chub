@@ -47,15 +47,14 @@ from app.plugin_lifecycle import PluginLifecycleService
 from app.api.status import router as status_router
 from app.ai_session import AiSessionManager
 from app.ai_session.operations import archive_session, delete_session
-from app.codex.quick_interactions import QuickInteractionManager
+from app.ai_interactions.quick_interactions import QuickInteractionManager
 from app.quick_worker_tasks import worker_restart_request_dir
 from app.ai_runtime import RuntimeOperationError
 from app.ai_runtime.usage import RuntimeUsageService
-from app.codex.routes import (
+from app.api.ai import (
     api_router as ai_session_api_router,
-    codex_private_router,
 )
-from app.codex.routes import web_router as codex_web_router
+from app.api.ai import web_router as ai_web_router
 from app.automations.manager import AutomationManager
 from app.automations.models import RuntimeAccountEnvironmentState
 from app.core.config import PROJECT_ROOT, Settings, load_settings
@@ -264,7 +263,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
 
     # The AI Session Manager is the sole production owner.  The old
-    # Codex Session Store is cleaned by the fixed upgrade flow and is never
+    # Retired Session state is cleaned by the fixed upgrade flow and is never
     # used as a startup-time compatibility switch.
     ai_session_manager = AiSessionManager(resolved_settings)
     class CurrentCodexRateLimits:
@@ -391,7 +390,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def stop_weixin_session(session_id: str):
         with quick_interactions.stop_operation_guard(session_id):
             ai_session_manager.ensure_stop_allowed(session_id)
-            quick_interactions.cancel_codex_session(session_id)
+            quick_interactions.cancel_session_interactions(session_id)
             return ai_session_manager.stop_session(session_id)
 
     def weixin_system_upgrade_check_status():
@@ -1288,8 +1287,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.maintenance_terminal = maintenance_terminal
     def check_codex_runtime_account() -> RuntimeAccountEnvironmentState:
         try:
-            usage = ai_usage.read(force=True)
-        except RuntimeOperationError:
+            implementation_id = ai_session_manager.default_submission_implementation_id(
+                "codex"
+            )
+            usage = ai_usage.read(force=True, runtime_id=implementation_id)
+        except (ApiError, RuntimeOperationError):
             return RuntimeAccountEnvironmentState(
                 state="failed",
                 message="登录状态暂不可用",
@@ -1336,7 +1338,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     def open_codex_runtime_login_page() -> None:
-        ai_usage.open_login_page()
+        implementation_id = ai_session_manager.default_submission_implementation_id(
+            "codex"
+        )
+        ai_usage.open_login_page(runtime_id=implementation_id)
 
     def codex_runtime_account_available() -> bool:
         try:
@@ -1359,6 +1364,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return False
         return True
 
+    def codex_weixin_command_parser():
+        implementation_id = ai_session_manager.default_submission_implementation_id(
+            "codex"
+        )
+        module = ai_session_manager.runtime_plugins.require(implementation_id)
+        parser = getattr(module, "parse_weixin_command", None)
+        if not callable(parser):
+            raise ApiError(
+                503,
+                "codex_runtime_command_unavailable",
+                "Codex Runtime 指令当前不可用。",
+            )
+        return parser
+
     application.state.automation_manager = AutomationManager(
         resolved_settings,
         detected_platform=detected_platform,
@@ -1375,6 +1394,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     weixin_chub_mode.codex_auth_notifier = (
         completion_notifier.notify_weixin_command_result
     )
+    weixin_chub_mode.codex_command_parser = codex_weixin_command_parser
     application.state.openclaw_manager = openclaw_manager
     application.state.notification_service = notification_service
 
@@ -1413,10 +1433,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(plugins_router)
     application.include_router(status_router)
     application.include_router(ai_session_api_router)
-    application.include_router(codex_private_router)
     application.include_router(maintenance_terminal_api_router)
     application.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-    application.include_router(codex_web_router)
+    application.include_router(ai_web_router)
     application.include_router(maintenance_terminal_web_router)
     application.include_router(web_router)
     return application

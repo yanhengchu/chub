@@ -25,7 +25,7 @@ def archive_session(
             # continue the idempotent cleanup instead of surfacing a 404.
             if exc.code != "session_not_found":
                 raise
-        quick_interactions.cancel_codex_session(session_id)
+        quick_interactions.cancel_session_interactions(session_id)
         quick_interactions.remove_session_tasks(session_id)
         if release_slot is not None and not release_slot(session_id):
             raise ApiError(
@@ -55,7 +55,7 @@ def delete_session(
         # Delete is allowed to attempt a running Quick Worker cleanup. The
         # native action is still blocked until cancellation reaches a final
         # state, so a failed cancellation never deletes a live writer.
-        quick_interactions.cancel_codex_session(session_id)
+        quick_interactions.cancel_session_interactions(session_id)
         try:
             manager.delete_native_session(session_id)
         except ApiError as exc:
@@ -83,7 +83,7 @@ def forget_session(
 ) -> None:
     """Stop Chub management without inspecting or changing the Native Session."""
     with quick_interactions.destructive_operation_guard(session_id):
-        quick_interactions.cancel_codex_session(session_id)
+        quick_interactions.cancel_session_interactions(session_id)
         quick_interactions.remove_session_tasks(session_id)
         if release_slot is not None and not release_slot(session_id):
             raise ApiError(

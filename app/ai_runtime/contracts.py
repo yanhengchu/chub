@@ -162,6 +162,28 @@ class RuntimeModelCatalog(_StrictModel):
     )
 
 
+class RuntimeModelReasoningLevelData(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(min_length=1, max_length=32)
+    description: str = Field(max_length=300)
+
+
+class RuntimeModelInfoData(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(min_length=1, max_length=128)
+    name: str = Field(min_length=1, max_length=128)
+    description: str = Field(max_length=500)
+    default_level: str | None = Field(default=None, min_length=1, max_length=32)
+    levels: list[RuntimeModelReasoningLevelData]
+
+
+class RuntimeModelCatalogData(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    models: list[RuntimeModelInfoData]
+    default_model: str | None = None
+    default_reasoning_effort: str | None = None
+
+
 class RuntimeProcessSpec(_StrictModel):
     argv: tuple[str, ...] = Field(min_length=1, max_length=64)
 

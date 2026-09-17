@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tests.session_fixtures import CodexSession
+from tests.session_fixtures import AiSessionFixture
 
 import json
 import re
@@ -13,12 +13,18 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.codex.models import (
+from app.ai_session.api_models import (
+    WorkspaceInfo,
+)
+from app.ai_interactions.models import (
+    QuickInteractionWeixinRoute,
+)
+from app.ai_usage.models import (
     CodexQuotaData,
     CodexQuotaWindow,
     CodexTokenUsageData,
-    QuickInteractionWeixinRoute,
-    WorkspaceInfo,
+)
+from app.ai_session.models import (
     utc_now,
 )
 from app.core.config import ExtraWorkspaceConfig, Settings
@@ -188,7 +194,7 @@ def test_submission_persists_one_direct_orchestration_request(
 def test_submission_reuses_selected_session_in_an_allowed_extra_workspace(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     settings.ai_runtime.shared.extra_workspaces = [
         ExtraWorkspaceConfig(
             id="deliveryline",
@@ -196,7 +202,7 @@ def test_submission_reuses_selected_session_in_an_allowed_extra_workspace(
             path=Path("/workspace/deliveryline"),
         )
     ]
-    deliveryline_session = CodexSession(
+    deliveryline_session = AiSessionFixture(
         id="deliveryline-session",
         workspace_id="deliveryline",
         workspace_name="Deliveryline",
@@ -210,7 +216,7 @@ def test_submission_reuses_selected_session_in_an_allowed_extra_workspace(
     manager._state.session_slots = [
         WeixinChubModeSessionSlot(slot=1, session_id=deliveryline_session.id)
     ]
-    codex_manager.workspaces.return_value = [
+    ai_session_manager.workspaces.return_value = [
         WorkspaceInfo(id="chub", name="Chub", path="/project", available=True),
         WorkspaceInfo(
             id="deliveryline",
@@ -219,8 +225,8 @@ def test_submission_reuses_selected_session_in_an_allowed_extra_workspace(
             available=True,
         ),
     ]
-    codex_manager.list_sessions.return_value = [deliveryline_session]
-    codex_manager.get_session.return_value = deliveryline_session
+    ai_session_manager.list_sessions.return_value = [deliveryline_session]
+    ai_session_manager.get_session.return_value = deliveryline_session
 
     result = manager.dispatch(
         message_id="submit-selected-deliveryline-session",
@@ -233,7 +239,7 @@ def test_submission_reuses_selected_session_in_an_allowed_extra_workspace(
 
     assert result.message is not None
     assert "▶ S1 · [Deliveryline] 交付管理" in result.message
-    codex_manager.create_session.assert_not_called()
+    ai_session_manager.create_session.assert_not_called()
     quick_interactions.submit.assert_called_once()
     assert quick_interactions.submit.call_args.args[:2] == (
         "deliveryline-session",
@@ -316,9 +322,9 @@ def test_worker_completion_advances_the_bound_orchestration_request(
 def test_successful_submission_lists_all_sessions_and_running_tasks(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     sessions = [
-        CodexSession(
+        AiSessionFixture(
             id=f"session-{slot}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -335,8 +341,8 @@ def test_successful_submission_lists_all_sessions_and_running_tasks(
         WeixinChubModeSessionSlot(slot=slot, session_id=f"session-{slot}")
         for slot in (1, 2)
     ]
-    codex_manager.list_sessions.return_value = sessions
-    codex_manager.get_session.return_value = sessions[0]
+    ai_session_manager.list_sessions.return_value = sessions
+    ai_session_manager.get_session.return_value = sessions[0]
     quick_interactions.is_running.side_effect = (
         lambda session_id: session_id == "session-2"
     )
@@ -354,17 +360,14 @@ def test_successful_submission_lists_all_sessions_and_running_tasks(
     )
 
     assert result.message is not None
-    assert result.message.startswith("Submitted\n\nSessions\n\n")
-    assert "▶ S1 · [Chub] 当前工作\n\nTask · 继续当前任务" in result.message
-    assert "S2 · [Chub] 后台检查\n\nTask · 检查后台日志" in result.message
-    assert "Weekly" not in result.message
+    assert result.message == "Submitted\n\n▶ S1 · [Chub] 当前工作\n\nTask · 继续当前任务"
 
 
 def test_successful_submission_keeps_task_context_when_session_snapshot_fails(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
-    session = CodexSession(
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
+    session = AiSessionFixture(
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",
@@ -378,8 +381,8 @@ def test_successful_submission_keeps_task_context_when_session_snapshot_fails(
     manager._state.session_slots = [
         WeixinChubModeSessionSlot(slot=1, session_id=session.id)
     ]
-    codex_manager.get_session.return_value = session
-    codex_manager.list_sessions.side_effect = [[session], OSError("unavailable")]
+    ai_session_manager.get_session.return_value = session
+    ai_session_manager.list_sessions.side_effect = [[session], OSError("unavailable")]
 
     result = manager.dispatch(
         message_id="submission-session-list-unavailable",
@@ -390,17 +393,14 @@ def test_successful_submission_keeps_task_context_when_session_snapshot_fails(
         delivery_route=delivery_route(),
     )
 
-    assert result.message == (
-        "Submitted\n\nSessions\n\n"
-            "▶ S1 · [Chub] 当前工作\n\nTask · 继续当前任务"
-    )
+    assert result.message == "Submitted\n\n▶ S1 · [Chub] 当前工作\n\nTask · 继续当前任务"
     quick_interactions.submit.assert_called_once()
 
 
 def test_submit_creates_one_private_session_and_replays_duplicate(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
 
     first = manager.submit(
         message_id="message-1",
@@ -422,8 +422,8 @@ def test_submit_creates_one_private_session_and_replays_duplicate(
     assert duplicate.duplicate is True
     assert duplicate.task_summary is None
     assert duplicate.message == first.message
-    codex_manager.create_session.assert_called_once_with("chub")
-    codex_manager.set_initial_quick_interaction_title.assert_not_called()
+    ai_session_manager.create_session.assert_called_once_with("chub")
+    ai_session_manager.set_initial_quick_interaction_title.assert_not_called()
     quick_interactions.submit.assert_called_once_with(
         "session-1",
         "检查设备状态",
@@ -641,6 +641,7 @@ def test_confirmed_translation_uses_started_notification_without_reply(
     settings: Settings,
 ) -> None:
     manager, _codex_manager, _quick_interactions = configured_manager(settings)
+    manager._state.orchestration_implementation = "weixin-orchestration-dev"
     entry = TranslationEntry(
         id="confirmed-translation",
         message_id="translation-source",
@@ -685,6 +686,7 @@ def test_confirmed_translation_reports_waiting_until_target_is_writable(
     settings: Settings,
 ) -> None:
     manager, _codex_manager, _quick_interactions = configured_manager(settings)
+    manager._state.orchestration_implementation = "weixin-orchestration-dev"
     entry = TranslationEntry(
         id="confirmed-waiting-translation",
         message_id="translation-source",
@@ -724,6 +726,7 @@ def test_confirmed_translation_reports_waiting_until_target_is_writable(
 
 def test_replayed_confirmed_translation_stays_silent(settings: Settings) -> None:
     manager, _codex_manager, _quick_interactions = configured_manager(settings)
+    manager._state.orchestration_implementation = "weixin-orchestration-dev"
     entry = TranslationEntry(
         id="replayed-confirmed-translation",
         message_id="translation-source",
@@ -808,8 +811,10 @@ def test_removed_direct_command_is_a_normal_task(settings: Settings) -> None:
     manager.translation_manager.enqueue.assert_called_once()
 
 
-def test_optimized_task_selects_the_final_session_after_refinement(settings: Settings) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+def test_optimized_task_defers_default_session_until_after_refinement(
+    settings: Settings,
+) -> None:
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager.translation_manager = MagicMock()
     manager.translation_manager.has_active_target.return_value = False
     manager.translation_manager.enqueue.return_value = True
@@ -829,7 +834,8 @@ def test_optimized_task_selects_the_final_session_after_refinement(settings: Set
     request = manager._state.orchestration_requests[0]
     assert source is not None
     assert source.session_id is None
-    assert codex_manager.create_session.call_count == 0
+    assert ai_session_manager.create_session.call_count == 0
+    assert manager.translation_manager.enqueue.call_args.kwargs["target_session_id"] is None
     assert quick_interactions.submit.call_count == 0
     assert request.original_prompt == "检查下服务咋样"
     assert request.current_prompt == "检查下服务咋样"
@@ -839,7 +845,7 @@ def test_optimized_task_selects_the_final_session_after_refinement(settings: Set
     assert request.cursor == 0
     assert request.translation_entry_id == "translation-entry"
     assert request.checkpoint == "development.weixin_refinement.queued"
-    codex_manager.list_sessions.return_value = [codex_manager.get_session.return_value]
+    ai_session_manager.list_sessions.return_value = [ai_session_manager.get_session.return_value]
     entry = TranslationEntry(
         id="translation-entry",
         message_id="optimized-source",
@@ -847,7 +853,6 @@ def test_optimized_task_selects_the_final_session_after_refinement(settings: Set
         route=delivery_route(),
         operation_id="operation:translation",
         source_ip="100.64.0.21",
-        target_session_id=source.session_id,
         created_at=utc_now(),
         updated_at=utc_now(),
     )
@@ -1025,6 +1030,7 @@ def test_development_preference_preserves_direct_and_confirmation_modes(
         confirmation_required=True,
     )
     source = manager._find_submission("development-confirmation")
+    assert source is not None
     outcome = manager.complete_optimized_task(
         TranslationEntry(
             id="development-confirmation-entry",
@@ -1033,7 +1039,6 @@ def test_development_preference_preserves_direct_and_confirmation_modes(
             route=delivery_route(),
             operation_id="development-confirmation-operation:translation",
             source_ip="100.64.0.21",
-            target_session_id=source.session_id,
             confirmation_required=True,
             created_at=utc_now(),
             updated_at=utc_now(),
@@ -1047,6 +1052,62 @@ def test_development_preference_preserves_direct_and_confirmation_modes(
     request = manager._state.orchestration_requests[1]
     assert request.checkpoint == "development.weixin_refinement.awaiting_confirmation"
     assert quick_interactions.submit.call_count == 1
+
+
+def test_confirmation_notification_assigns_default_session_after_refinement(
+    settings: Settings,
+) -> None:
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
+    manager.translation_manager = MagicMock()
+    manager.translation_manager.has_active_target.return_value = False
+    manager.translation_manager.enqueue.return_value = True
+    manager.translation_manager.entry_for_orchestration.return_value = SimpleNamespace(
+        id="confirmation-entry"
+    )
+    manager.translation_confirmation_notifier = MagicMock(
+        return_value=SimpleNamespace(status="sent")
+    )
+    manager.submit(
+        message_id="confirmation-source",
+        prompt="检查服务状态",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+        preprocess=True,
+        confirmation_required=True,
+    )
+    source = manager._find_submission("confirmation-source")
+    assert source is not None
+    entry = TranslationEntry(
+        id="confirmation-entry",
+        message_id="confirmation-source",
+        original="检查服务状态",
+        route=delivery_route(),
+        operation_id="confirmation-operation:translation",
+        source_ip="100.64.0.21",
+        orchestration_id=source.orchestration_id,
+        status="ready_confirmation",
+        polished="请检查服务状态。",
+        english="Please check the service status.",
+        confirmation_required=True,
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    manager.translation_manager.assign_target_session.side_effect = (
+        lambda _entry_id, session_id: entry.model_copy(
+            update={"target_session_id": session_id}
+        )
+    )
+
+    outcome = manager.notify_optimized_task_outcome(entry)
+
+    assert outcome.status == "sent"
+    assert ai_session_manager.create_session.call_count == 1
+    assert manager.translation_confirmation_notifier.call_args.kwargs[
+        "target_session_id"
+    ] == "session-1"
+    request = manager._state.orchestration_requests[0]
+    assert request.session_id == "session-1"
 
 
 def test_development_source_change_blocks_new_or_existing_request(
@@ -1309,7 +1370,7 @@ def test_interrupted_optimization_source_is_closed_and_replays_silently(
 def test_optimized_task_waits_if_target_becomes_busy(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager.translation_manager = MagicMock()
     manager.translation_manager.has_active_target.return_value = False
     manager.translation_manager.enqueue.return_value = True
@@ -1323,7 +1384,7 @@ def test_optimized_task_waits_if_target_becomes_busy(
         preprocess=True,
     )
     source = manager._find_submission("optimized-busy")
-    codex_manager.list_sessions.return_value = [codex_manager.get_session.return_value]
+    ai_session_manager.list_sessions.return_value = [ai_session_manager.get_session.return_value]
     entry = TranslationEntry(
         id="translation-busy",
         message_id="optimized-busy",
@@ -1372,7 +1433,7 @@ def test_optimized_task_waits_if_target_becomes_busy(
 def test_submit_rejects_invalid_delivery_route_before_codex(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager.route_validator = MagicMock(return_value="原消息的 ClawBot 当前不可用。")
 
     with pytest.raises(ApiError) as error:
@@ -1384,7 +1445,7 @@ def test_submit_rejects_invalid_delivery_route_before_codex(
         )
 
     assert error.value.code == "weixin_chub_mode_delivery_route_invalid"
-    codex_manager.create_session.assert_not_called()
+    ai_session_manager.create_session.assert_not_called()
     quick_interactions.submit.assert_not_called()
 
 
@@ -1426,25 +1487,25 @@ def test_mode_readiness_no_longer_requires_global_recipient(
 def test_mode_readiness_uses_the_selected_default_runtime(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
-    codex_manager.select_new_session_runtime.return_value = (
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
+    ai_session_manager.select_new_session_runtime.return_value = (
         "test-runtime",
         "test-runtime-dev",
     )
-    codex_manager.select_new_session_runtime.reset_mock()
+    ai_session_manager.select_new_session_runtime.reset_mock()
 
     status = manager.status()
 
     assert status.ready is True
-    codex_manager.select_new_session_runtime.assert_called_once_with()
-    codex_manager.require_runtime_submission.assert_not_called()
+    ai_session_manager.select_new_session_runtime.assert_called_once_with()
+    ai_session_manager.require_runtime_submission.assert_not_called()
 
 
 def test_disabled_runtime_has_specific_weixin_reply_and_chub_status(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
-    codex_manager.select_new_session_runtime.side_effect = ApiError(
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
+    ai_session_manager.select_new_session_runtime.side_effect = ApiError(
         409,
         "ai_runtime_disabled",
         "当前 AI Runtime 已停用，无法提交新的 AI 任务。",
@@ -1531,8 +1592,8 @@ def test_unavailable_quick_worker_keeps_weixin_recovery_command_available(
 def test_submit_reuses_session_when_defaults_resolve_to_effective_model(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
-    codex_manager.get_session.return_value = CodexSession(
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
+    ai_session_manager.get_session.return_value = AiSessionFixture(
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",
@@ -1559,7 +1620,7 @@ def test_submit_reuses_session_when_defaults_resolve_to_effective_model(
 
     assert first.new_session is True
     assert second.new_session is False
-    codex_manager.create_session.assert_called_once()
+    ai_session_manager.create_session.assert_called_once()
     assert quick_interactions.submit.call_count == 2
     assert manager.session_id() == "session-1"
 
@@ -1567,9 +1628,9 @@ def test_submit_reuses_session_when_defaults_resolve_to_effective_model(
 def test_submit_replaces_session_when_workspace_no_longer_matches(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager._state.session_id = "old-session"
-    codex_manager.get_session.return_value = CodexSession(
+    ai_session_manager.get_session.return_value = AiSessionFixture(
         id="old-session",
         workspace_id="home",
         workspace_name="Home",
@@ -1578,7 +1639,7 @@ def test_submit_replaces_session_when_workspace_no_longer_matches(
         model="different-model",
         reasoning_effort="medium",
     )
-    codex_manager.create_session.return_value = SimpleNamespace(id="new-session")
+    ai_session_manager.create_session.return_value = SimpleNamespace(id="new-session")
     quick_interactions.submit.return_value = SimpleNamespace(id="task-1")
 
     result = manager.submit(
@@ -1589,7 +1650,7 @@ def test_submit_replaces_session_when_workspace_no_longer_matches(
     )
 
     assert result.new_session is True
-    codex_manager.create_session.assert_called_once_with("chub")
+    ai_session_manager.create_session.assert_called_once_with("chub")
     quick_interactions.submit.assert_called_once_with(
         "new-session",
         "检查工作区配置",
@@ -1635,14 +1696,14 @@ def test_submit_logs_dispatch_lifecycle_without_exposing_prompt(
 def test_submit_reclaims_unknown_session_before_quick_interaction(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
-    codex_manager.get_session.return_value = CodexSession(
+    ai_session_manager.get_session.return_value = AiSessionFixture(
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",
         cwd="/project",
-        codex_session_id="native-session-1",
+        native_session_id="native-session-1",
         permission_mode="full-access",
         status="running",
         activity="unknown",
@@ -1665,7 +1726,7 @@ def test_submit_reclaims_unknown_session_before_quick_interaction(
     assert result.message == "Submitted\n\nTask · 检查设备"
     assert result.task_summary == "检查设备"
     reclaimer.assert_called_once_with("session-1")
-    codex_manager.wait_for_writer_release.assert_called_once_with(
+    ai_session_manager.wait_for_writer_release.assert_called_once_with(
         "native-session-1",
         timeout=3.0,
     )
@@ -1685,19 +1746,19 @@ def test_submit_reclaims_unknown_session_before_quick_interaction(
 def test_submit_rejects_unknown_session_when_writer_does_not_release(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
-    codex_manager.get_session.return_value = CodexSession(
+    ai_session_manager.get_session.return_value = AiSessionFixture(
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",
         cwd="/project",
-        codex_session_id="native-session-1",
+        native_session_id="native-session-1",
         permission_mode="full-access",
         status="running",
         activity="unknown",
     )
-    codex_manager.wait_for_writer_release.return_value = False
+    ai_session_manager.wait_for_writer_release.return_value = False
     manager.session_reclaimer = MagicMock(
         return_value=SimpleNamespace(status="stopped", activity="idle")
     )
@@ -1750,11 +1811,11 @@ def test_submit_rejects_busy_session_and_replays_same_failure(
 def test_disabled_submission_failure_is_persisted_for_idempotency(
     settings: Settings,
 ) -> None:
-    codex_manager = MagicMock()
+    ai_session_manager = MagicMock()
     quick_interactions = MagicMock()
     manager = WeixinChubModeManager(
         settings,
-        codex_manager,
+        ai_session_manager,
         quick_interactions,
     )
 

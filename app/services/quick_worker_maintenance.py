@@ -14,7 +14,7 @@ from uuid import uuid4
 import psutil
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from app.codex.models import utc_now
+from app.ai_session.models import utc_now
 from app.core.config import PROJECT_ROOT, Settings
 from app.core.response import ApiError
 from app.quick_worker import PROTOCOL_VERSION, read_health

@@ -1,4 +1,4 @@
-from tests.session_fixtures import CodexSession
+from tests.session_fixtures import AiSessionFixture
 
 import json
 import threading
@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.codex.models import QuickInteractionWeixinRoute
+from app.ai_interactions.models import QuickInteractionWeixinRoute
 from app.services.weixin_translation import (
     TRANSLATION_PROMPT,
     TranslationEntry,
@@ -17,7 +17,7 @@ from app.services.weixin_translation import (
     TranslationState,
     WeixinTranslationManager,
 )
-from app.codex.models import utc_now
+from app.ai_session.models import utc_now
 from app.core.response import ApiError
 
 
@@ -30,23 +30,23 @@ def route() -> QuickInteractionWeixinRoute:
 
 def manager_without_worker(settings, *, catalog_side_effect=None):
     config = settings.openclaw.weixin_chub_mode
-    config.translation_enabled = True
-    codex_manager = MagicMock()
-    codex_manager.runtime_id = "codex"
-    codex_manager.runtime_settings_store.read_general.return_value = SimpleNamespace(
+    config.translation_mode = "auto"
+    ai_session_manager = MagicMock()
+    ai_session_manager.runtime_id = "codex"
+    ai_session_manager.runtime_settings_store.read_general.return_value = SimpleNamespace(
         default_runtime_id="codex",
         model=None,
         reasoning_effort=None,
     )
-    codex_manager.read_model_catalog.return_value = SimpleNamespace(
+    ai_session_manager.read_model_catalog.return_value = SimpleNamespace(
         models=(SimpleNamespace(id="translation-model", default_level="medium"),),
         default_model="translation-model",
         default_reasoning_effort="medium",
     )
     if catalog_side_effect is not None:
-        codex_manager.read_model_catalog.side_effect = catalog_side_effect
-    codex_manager.discard_unstarted_session.return_value = False
-    codex_manager.create_translation_session.return_value = SimpleNamespace(
+        ai_session_manager.read_model_catalog.side_effect = catalog_side_effect
+    ai_session_manager.discard_unstarted_session.return_value = False
+    ai_session_manager.create_translation_session.return_value = SimpleNamespace(
         id="translation-session"
     )
     quick_interactions = MagicMock()
@@ -54,11 +54,11 @@ def manager_without_worker(settings, *, catalog_side_effect=None):
     quick_interactions.submit.return_value = SimpleNamespace(id="quick-task-1")
     manager = WeixinTranslationManager(
         config,
-        codex_manager,
+        ai_session_manager,
         quick_interactions,
     )
     manager._start_worker_watcher = MagicMock()
-    return manager, codex_manager, quick_interactions
+    return manager, ai_session_manager, quick_interactions
 
 
 def wait_for(predicate, timeout: float = 1) -> bool:
@@ -115,8 +115,8 @@ def test_enqueue_binds_the_orchestration_request(settings) -> None:
 
 
 def test_enqueue_rejects_before_persisting_when_runtime_is_disabled(settings) -> None:
-    manager, codex_manager, _quick_interactions = manager_without_worker(settings)
-    codex_manager.require_runtime_submission.side_effect = ApiError(
+    manager, ai_session_manager, _quick_interactions = manager_without_worker(settings)
+    ai_session_manager.require_runtime_submission.side_effect = ApiError(
         409,
         "ai_runtime_disabled",
         "当前 AI Runtime 已停用，无法提交新的 AI 任务。",
@@ -135,7 +135,7 @@ def test_enqueue_rejects_before_persisting_when_runtime_is_disabled(settings) ->
 
 
 def test_enqueue_reuses_accepted_message_when_runtime_is_disabled(settings) -> None:
-    manager, codex_manager, quick_interactions = manager_without_worker(settings)
+    manager, ai_session_manager, quick_interactions = manager_without_worker(settings)
     assert manager.enqueue(
         message_id="message-1",
         original="请优化这段文字",
@@ -143,8 +143,8 @@ def test_enqueue_reuses_accepted_message_when_runtime_is_disabled(settings) -> N
         operation_id="operation-1",
         source_ip="100.64.0.21",
     )
-    codex_manager.require_runtime_submission.reset_mock()
-    codex_manager.require_runtime_submission.side_effect = ApiError(
+    ai_session_manager.require_runtime_submission.reset_mock()
+    ai_session_manager.require_runtime_submission.side_effect = ApiError(
         409,
         "ai_runtime_disabled",
         "当前 AI Runtime 已停用，无法提交新的 AI 任务。",
@@ -161,7 +161,7 @@ def test_enqueue_reuses_accepted_message_when_runtime_is_disabled(settings) -> N
     assert accepted is True
     assert len(manager._state.entries) == 1
     assert manager._state.entries[0].original == "请优化这段文字"
-    codex_manager.require_runtime_submission.assert_not_called()
+    ai_session_manager.require_runtime_submission.assert_not_called()
     assert wait_for(lambda: quick_interactions.submit.call_count == 1)
     quick_interactions.submit.assert_called_once()
 
@@ -354,9 +354,9 @@ def test_worker_submission_thread_failure_closes_targeted_entry(settings) -> Non
 
 
 def test_translation_execution_overrides_are_snapshotted(settings) -> None:
-    manager, codex_manager, quick_interactions = manager_without_worker(settings)
-    codex_manager.validate_model = MagicMock()
-    codex_manager.runtime_settings_store.read_general.return_value = SimpleNamespace(
+    manager, ai_session_manager, quick_interactions = manager_without_worker(settings)
+    ai_session_manager.validate_model = MagicMock()
+    ai_session_manager.runtime_settings_store.read_general.return_value = SimpleNamespace(
         default_runtime_id="codex",
         model="gpt-default",
         reasoning_effort="high",
@@ -372,7 +372,7 @@ def test_translation_execution_overrides_are_snapshotted(settings) -> None:
         source_ip="100.64.0.21",
     )
 
-    codex_manager.runtime_settings_store.read_general.return_value = SimpleNamespace(
+    ai_session_manager.runtime_settings_store.read_general.return_value = SimpleNamespace(
         default_runtime_id="codex",
         model="gpt-default",
         reasoning_effort="medium",
@@ -397,27 +397,47 @@ def test_translation_execution_overrides_are_snapshotted(settings) -> None:
     assert reloaded.status().reasoning_effort == "medium"
 
 
-def test_legacy_translation_state_drops_its_runtime_selection(settings) -> None:
-    manager, codex_manager, quick_interactions = manager_without_worker(settings)
+def test_legacy_translation_state_is_replaced_without_migration(settings) -> None:
+    manager, ai_session_manager, quick_interactions = manager_without_worker(settings)
     payload = manager._state.model_dump(mode="json")
-    payload.update({"version": 1, "runtime_id": "legacy-runtime"})
+    payload.update(
+        {
+            "version": 2,
+            "model": "legacy-model",
+            "entries": [
+                {
+                    "id": "legacy-entry",
+                    "message_id": "legacy-message",
+                    "original": "旧任务",
+                    "route": route().model_dump(mode="json"),
+                    "operation_id": "legacy-operation",
+                    "source_ip": "100.64.0.21",
+                    "created_at": utc_now().isoformat(),
+                    "updated_at": utc_now().isoformat(),
+                }
+            ],
+        }
+    )
     manager.path.write_text(json.dumps(payload), encoding="utf-8")
 
     reloaded = WeixinTranslationManager(
         settings.openclaw.weixin_chub_mode,
-        codex_manager,
+        ai_session_manager,
         quick_interactions,
     )
 
     persisted = json.loads(reloaded.path.read_text(encoding="utf-8"))
-    assert reloaded.status().runtime_id == "codex"
-    assert persisted["version"] == 2
-    assert "runtime_id" not in persisted
+    assert reloaded.status().model == "translation-model"
+    assert reloaded._state.entries == []
+    assert persisted["version"] == 4
+    assert persisted["entries"] == []
+    assert persisted["model"] == "translation-model"
+    assert persisted["reasoning_effort"] == "medium"
 
 
 def test_translation_execution_settings_do_not_read_session_defaults(settings) -> None:
-    manager, codex_manager, _quick_interactions = manager_without_worker(settings)
-    codex_manager.runtime_settings_store.read_general.reset_mock()
+    manager, ai_session_manager, _quick_interactions = manager_without_worker(settings)
+    ai_session_manager.runtime_settings_store.read_general.reset_mock()
     manager._ensure_session = MagicMock(return_value="translation-session")
 
     assert manager.status().model == "translation-model"
@@ -430,7 +450,7 @@ def test_translation_execution_settings_do_not_read_session_defaults(settings) -
         source_ip="100.64.0.21",
     )
 
-    codex_manager.runtime_settings_store.read_general.assert_not_called()
+    ai_session_manager.runtime_settings_store.read_general.assert_not_called()
 
 
 def test_worker_recovery_initializes_execution_settings_after_catalog_recovers(
@@ -459,15 +479,15 @@ def test_worker_recovery_initializes_execution_settings_after_catalog_recovers(
 
 
 def test_worker_recovery_does_not_replace_existing_execution_settings(settings) -> None:
-    manager, codex_manager, _quick_interactions = manager_without_worker(settings)
+    manager, ai_session_manager, _quick_interactions = manager_without_worker(settings)
     manager.set_execution_settings("codex", "saved-model", "low")
-    codex_manager.read_model_catalog.reset_mock()
+    ai_session_manager.read_model_catalog.reset_mock()
 
     manager.start_worker_recovery()
 
     assert manager.status().model == "saved-model"
     assert manager.status().reasoning_effort == "low"
-    codex_manager.read_model_catalog.assert_not_called()
+    ai_session_manager.read_model_catalog.assert_not_called()
 
 
 def test_translation_rejects_runtime_without_text_optimization_support(settings) -> None:
@@ -710,6 +730,30 @@ def test_confirmation_text_is_unavailable_until_notification_is_sent(settings) -
 
     manager._advance_confirmation_queue()
     assert manager.active_confirmation(route()) is None
+
+
+def test_assign_target_session_persists_a_new_confirmation_target(settings) -> None:
+    manager, _codex_manager, _quick_interactions = manager_without_worker(settings)
+    now = utc_now()
+    manager._state.entries.append(
+        TranslationEntry(
+            id="new-confirmation",
+            message_id="new-source",
+            original="检查服务",
+            route=route(),
+            operation_id="new-operation:translation",
+            source_ip="100.64.0.21",
+            status="ready_confirmation",
+            confirmation_required=True,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+
+    bound = manager.assign_target_session("new-confirmation", "session-1")
+
+    assert bound.target_session_id == "session-1"
+    assert manager._state.entries[0].target_session_id == "session-1"
 
 
 def test_confirmation_queue_places_the_actionable_head_first(settings) -> None:
@@ -989,8 +1033,7 @@ def test_web_restart_delivers_pending_confirmed_started_once(settings) -> None:
     notifier.assert_called_once()
 
 
-def test_configured_confirmation_mode_overrides_legacy_translation_boolean(settings) -> None:
-    settings.openclaw.weixin_chub_mode.translation_enabled = False
+def test_configured_confirmation_mode_is_used_without_legacy_boolean(settings) -> None:
     settings.openclaw.weixin_chub_mode.translation_mode = "confirm"
 
     manager = WeixinTranslationManager(
@@ -1327,7 +1370,7 @@ def test_restart_preserves_unfinished_translation_for_worker_recovery(settings) 
     assert manager._state.entries[0].status == "running"
 
 
-def test_restart_removes_legacy_session_display_snapshot(settings) -> None:
+def test_restart_discards_incompatible_legacy_session_display_snapshot(settings) -> None:
     state_file = settings.openclaw.weixin_chub_mode.state_file.with_name(
         "weixin-translation.json"
     )
@@ -1359,9 +1402,9 @@ def test_restart_removes_legacy_session_display_snapshot(settings) -> None:
     )
 
     persisted = json.loads(state_file.read_text(encoding="utf-8"))
-    assert "target_session_slot" not in persisted["entries"][0]
-    assert "target_session_title" not in persisted["entries"][0]
-    assert manager._state.entries[0].target_session_id == "session-1"
+    assert persisted["version"] == 4
+    assert persisted["entries"] == []
+    assert manager._state.entries == []
 
 
 def test_restart_marks_unknown_optimization_notification_failed(settings) -> None:
@@ -1434,17 +1477,17 @@ def test_worker_restart_preserves_and_resumes_translation_observation(settings) 
         session_id="translation-session",
         kind="translation",
     )
-    codex_manager = MagicMock()
-    codex_manager.get_session.return_value = CodexSession(
+    ai_session_manager = MagicMock()
+    ai_session_manager.get_session.return_value = AiSessionFixture(
         id="translation-session",
         workspace_id="weixin-translation",
         workspace_name="Translation",
-        cwd=settings.ai_runtime.codex.workspace,
+        cwd=settings.ai_runtime.shared.workspace,
         permission_mode="read-only",
     )
     manager = WeixinTranslationManager(
         settings.openclaw.weixin_chub_mode,
-        codex_manager,
+        ai_session_manager,
         quick_interactions,
     )
     watcher = MagicMock()
@@ -1586,7 +1629,7 @@ def test_invalid_translation_state_fails_status_and_updates_closed(settings) -> 
     with pytest.raises(OSError):
         manager.status()
     with pytest.raises(OSError):
-        manager.set_enabled(True)
+        manager.set_processing_mode("auto")
     assert not manager.enqueue(
         message_id="invalid-state-message",
         original="不应执行",
@@ -1627,11 +1670,11 @@ def test_unreadable_translation_state_is_unavailable(settings) -> None:
 
 
 def test_translation_session_is_reused_and_never_uses_numbered_slot(settings) -> None:
-    manager, codex_manager, _quick_interactions = manager_without_worker(
+    manager, ai_session_manager, _quick_interactions = manager_without_worker(
         settings
     )
     manager._state.session_id = "translation-session"
-    codex_manager.get_session.return_value = CodexSession(
+    ai_session_manager.get_session.return_value = AiSessionFixture(
         id="translation-session",
         workspace_id="weixin-translation",
         workspace_name="微信文本优化与翻译",
@@ -1643,13 +1686,13 @@ def test_translation_session_is_reused_and_never_uses_numbered_slot(settings) ->
     )
 
     assert manager._ensure_session() == "translation-session"
-    codex_manager.create_translation_session.assert_not_called()
-    codex_manager.cleanup_translation_sessions_for_replacement.assert_not_called()
+    ai_session_manager.create_translation_session.assert_not_called()
+    ai_session_manager.cleanup_translation_sessions_for_replacement.assert_not_called()
 
 
 def test_new_translation_session_cleans_stale_translation_sessions(settings) -> None:
-    manager, codex_manager, _quick_interactions = manager_without_worker(settings)
-    codex_manager.get_session.side_effect = ApiError(
+    manager, ai_session_manager, _quick_interactions = manager_without_worker(settings)
+    ai_session_manager.get_session.side_effect = ApiError(
         404,
         "session_not_found",
         "AI Session not found",
@@ -1657,21 +1700,21 @@ def test_new_translation_session_cleans_stale_translation_sessions(settings) -> 
 
     assert manager._ensure_session() == "translation-session"
 
-    codex_manager.cleanup_translation_sessions_for_replacement.assert_called_once_with()
-    codex_manager.create_translation_session.assert_called_once_with()
+    ai_session_manager.cleanup_translation_sessions_for_replacement.assert_called_once_with()
+    ai_session_manager.create_translation_session.assert_called_once_with()
 
 
 def test_translation_setting_persists_across_manager_restart(settings) -> None:
-    settings.openclaw.weixin_chub_mode.translation_enabled = False
-    codex_manager = MagicMock()
-    codex_manager.runtime_id = "codex"
+    settings.openclaw.weixin_chub_mode.translation_mode = "direct"
+    ai_session_manager = MagicMock()
+    ai_session_manager.runtime_id = "codex"
     manager = WeixinTranslationManager(
         settings.openclaw.weixin_chub_mode,
-        codex_manager,
+        ai_session_manager,
         MagicMock(),
     )
 
-    status = manager.set_enabled(True)
+    status = manager.set_processing_mode("auto")
 
     assert status.enabled is True
     reloaded_codex_manager = MagicMock()
@@ -1687,10 +1730,10 @@ def test_translation_setting_persists_across_manager_restart(settings) -> None:
 def test_disable_drains_existing_generation_and_reenable_uses_new_session(
     settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = manager_without_worker(settings)
+    manager, ai_session_manager, _quick_interactions = manager_without_worker(settings)
     manager._state.session_id = "old-session"
     manager._state.session_generation = 0
-    codex_manager.get_session.return_value = CodexSession(
+    ai_session_manager.get_session.return_value = AiSessionFixture(
         id="old-session",
         workspace_id="weixin-translation",
         workspace_name="微信文本优化与翻译",
@@ -1700,7 +1743,7 @@ def test_disable_drains_existing_generation_and_reenable_uses_new_session(
         status="stopped",
         activity="idle",
     )
-    codex_manager.create_translation_session.return_value = SimpleNamespace(
+    ai_session_manager.create_translation_session.return_value = SimpleNamespace(
         id="new-session"
     )
     assert manager.enqueue(
@@ -1711,7 +1754,7 @@ def test_disable_drains_existing_generation_and_reenable_uses_new_session(
         source_ip="100.64.0.21",
     )
 
-    disabled = manager.set_enabled(False)
+    disabled = manager.set_processing_mode("direct")
     assert disabled.enabled is False
     assert disabled.queued == 1
     assert not manager.enqueue(
@@ -1722,9 +1765,9 @@ def test_disable_drains_existing_generation_and_reenable_uses_new_session(
         source_ip="100.64.0.21",
     )
     assert manager._ensure_session(0) == "old-session"
-    codex_manager.delete_session.assert_not_called()
+    ai_session_manager.delete_session.assert_not_called()
 
-    manager.set_enabled(True)
+    manager.set_processing_mode("auto")
     assert manager.enqueue(
         message_id="new-message",
         original="重新开启后的任务",
@@ -1740,30 +1783,30 @@ def test_disable_drains_existing_generation_and_reenable_uses_new_session(
     manager._finish(old_entry.id, "succeeded", None)
     manager._retire_completed_sessions()
 
-    codex_manager.delete_session.assert_called_once_with("old-session")
+    ai_session_manager.delete_session.assert_called_once_with("old-session")
     assert manager.session_id() == "new-session"
 
 
 def test_retired_translation_session_cleanup_retries_after_failure(settings) -> None:
-    manager, codex_manager, _quick_interactions = manager_without_worker(settings)
+    manager, ai_session_manager, _quick_interactions = manager_without_worker(settings)
     manager._state.session_id = "old-session"
-    codex_manager.delete_session.side_effect = [OSError("busy"), None]
+    ai_session_manager.delete_session.side_effect = [OSError("busy"), None]
 
-    manager.set_enabled(False)
+    manager.set_processing_mode("direct")
 
     assert [item.session_id for item in manager._state.retired_sessions] == [
         "old-session"
     ]
 
-    manager.set_enabled(False)
+    manager.set_processing_mode("direct")
 
     assert manager._state.retired_sessions == []
-    assert codex_manager.delete_session.call_count == 2
+    assert ai_session_manager.delete_session.call_count == 2
 
 
 def test_native_cleanup_failure_is_persisted_and_retry_is_bounded(settings) -> None:
-    manager, codex_manager, _quick_interactions = manager_without_worker(settings)
-    codex_manager.cleanup_stale_translation_native_sessions.return_value = SimpleNamespace(
+    manager, ai_session_manager, _quick_interactions = manager_without_worker(settings)
+    ai_session_manager.cleanup_stale_translation_native_sessions.return_value = SimpleNamespace(
         pending=2,
         reason="部分历史翻译 Session 暂时无法删除。",
         retry_required=True,
@@ -1805,18 +1848,18 @@ def test_native_cleanup_failure_is_persisted_and_retry_is_bounded(settings) -> N
 
 
 def test_startup_defers_native_cleanup_until_worker_recovery_is_ready(settings) -> None:
-    manager, codex_manager, _quick_interactions = manager_without_worker(settings)
+    manager, ai_session_manager, _quick_interactions = manager_without_worker(settings)
 
-    codex_manager.cleanup_stale_translation_native_sessions.assert_not_called()
+    ai_session_manager.cleanup_stale_translation_native_sessions.assert_not_called()
 
     manager.start_worker_recovery()
 
-    codex_manager.cleanup_stale_translation_native_sessions.assert_called_once_with()
+    ai_session_manager.cleanup_stale_translation_native_sessions.assert_called_once_with()
 
 
 def test_native_cleanup_state_write_failure_does_not_disable_translation(settings) -> None:
-    manager, codex_manager, _quick_interactions = manager_without_worker(settings)
-    codex_manager.cleanup_stale_translation_native_sessions.return_value = SimpleNamespace(
+    manager, ai_session_manager, _quick_interactions = manager_without_worker(settings)
+    ai_session_manager.cleanup_stale_translation_native_sessions.return_value = SimpleNamespace(
         pending=1,
         reason="部分历史翻译 Session 暂时无法删除。",
         retry_required=True,

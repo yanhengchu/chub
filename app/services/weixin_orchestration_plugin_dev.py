@@ -115,3 +115,22 @@ class WeixinDevelopmentStage:
                 "weixin_orchestration_plugin_development_changed",
                 "微信开发编排实现已变化，已受理任务未继续执行。",
             )
+
+    def command_parser(self) -> Callable[[str], object]:
+        """Load the development module's bounded command parser."""
+        snapshot = self.snapshot()
+        spec = importlib.util.spec_from_file_location(
+            f"chub_weixin_orchestration_plugin_commands_{snapshot.source_hash}",
+            self.source_path,
+        )
+        if spec is None or spec.loader is None:
+            raise ApiError(503, "weixin_orchestration_plugin_development_unavailable", "微信开发编排实现当前不可用。")
+        module = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(module)
+            parser = getattr(module, "parse_command")
+            if not callable(parser):
+                raise TypeError("development command entry is unavailable")
+            return parser
+        except (OSError, ImportError, TypeError, AttributeError) as exc:
+            raise ApiError(503, "weixin_orchestration_plugin_development_unavailable", "微信开发编排实现当前不可用。") from exc

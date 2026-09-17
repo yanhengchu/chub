@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tests.session_fixtures import CodexSession
+from tests.session_fixtures import AiSessionFixture
 
 import json
 import re
@@ -12,12 +12,18 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.codex.models import (
+from app.ai_session.api_models import (
+    WorkspaceInfo,
+)
+from app.ai_interactions.models import (
+    QuickInteractionWeixinRoute,
+)
+from app.ai_usage.models import (
     CodexQuotaData,
     CodexQuotaWindow,
     CodexTokenUsageData,
-    QuickInteractionWeixinRoute,
-    WorkspaceInfo,
+)
+from app.ai_session.models import (
     utc_now,
 )
 from app.core.config import Settings
@@ -44,10 +50,10 @@ from tests.openclaw_weixin_chub_mode_helpers import (
 def test_codex_switch_uses_creation_order_and_allows_busy_target(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager._state.session_id = "a-current"
     sessions = [
-        CodexSession(
+        AiSessionFixture(
             id="c-available",
             workspace_id="chub",
             workspace_name="Chub",
@@ -57,7 +63,7 @@ def test_codex_switch_uses_creation_order_and_allows_busy_target(
             status="stopped",
             activity="idle",
         ),
-        CodexSession(
+        AiSessionFixture(
             id="a-current",
             workspace_id="chub",
             workspace_name="Chub",
@@ -67,7 +73,7 @@ def test_codex_switch_uses_creation_order_and_allows_busy_target(
             status="stopped",
             activity="idle",
         ),
-        CodexSession(
+        AiSessionFixture(
             id="b-busy",
             workspace_id="chub",
             workspace_name="Chub",
@@ -85,8 +91,8 @@ def test_codex_switch_uses_creation_order_and_allows_busy_target(
         WeixinChubModeSessionSlot(slot=2, session_id="b-busy"),
         WeixinChubModeSessionSlot(slot=3, session_id="c-available"),
     ]
-    codex_manager.list_sessions.return_value = sessions
-    codex_manager.get_session.side_effect = lambda session_id: by_id[session_id]
+    ai_session_manager.list_sessions.return_value = sessions
+    ai_session_manager.get_session.side_effect = lambda session_id: by_id[session_id]
     quick_interactions.is_running.side_effect = (
         lambda session_id: session_id == "b-busy"
     )
@@ -121,10 +127,10 @@ def test_canonical_switch_routes_to_numbered_session(
     settings: Settings,
     prompt: str,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
     sessions = [
-        CodexSession(
+        AiSessionFixture(
             id=f"session-{slot}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -140,8 +146,8 @@ def test_canonical_switch_routes_to_numbered_session(
         WeixinChubModeSessionSlot(slot=slot, session_id=f"session-{slot}")
         for slot in (1, 2)
     ]
-    codex_manager.list_sessions.return_value = sessions
-    codex_manager.get_session.return_value = sessions[1]
+    ai_session_manager.list_sessions.return_value = sessions
+    ai_session_manager.get_session.return_value = sessions[1]
     manager.codex_account_reader = MagicMock()
     manager.codex_account_reader.read_account_status.return_value = (
         CodexQuotaData(status="unavailable"),
@@ -175,10 +181,10 @@ def test_codex_switch_with_task_switches_and_submits_once(
     prompt: str,
     task_prompt: str,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
     sessions = [
-        CodexSession(
+        AiSessionFixture(
             id=f"session-{slot}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -194,8 +200,8 @@ def test_codex_switch_with_task_switches_and_submits_once(
         WeixinChubModeSessionSlot(slot=slot, session_id=f"session-{slot}")
         for slot in (1, 2)
     ]
-    codex_manager.list_sessions.return_value = sessions
-    codex_manager.get_session.return_value = sessions[1]
+    ai_session_manager.list_sessions.return_value = sessions
+    ai_session_manager.get_session.return_value = sessions[1]
     manager.codex_account_reader = MagicMock()
     manager.codex_account_reader.read_account_status.return_value = (
         CodexQuotaData(status="unavailable"),
@@ -221,11 +227,10 @@ def test_codex_switch_with_task_switches_and_submits_once(
 
     assert first.disposition == "reply"
     assert first.message is not None
-    assert first.message.startswith("Session: S2 selected.")
-    assert "\n\nSessions\n\n" in first.message
-    assert "S1 · [Chub] 第 1 项" in first.message
-    assert f"▶ S2 · [Chub] 第 2 项\n\nTask · {task_prompt}" in first.message
-    assert "Weekly" not in first.message
+    assert first.message == (
+        "Session: S2 selected. Task submitted.\n\n"
+        f"▶ S2 · [Chub] 第 2 项\n\nTask · {task_prompt}"
+    )
     assert duplicate.message == first.message
     assert manager.session_id() == "session-2"
     quick_interactions.submit.assert_called_once()
@@ -238,7 +243,7 @@ def test_codex_switch_with_task_switches_and_submits_once(
 def test_codex_switch_task_uses_enabled_text_optimization(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager.translation_manager = MagicMock()
     manager.translation_manager.enabled.return_value = True
     manager._state.orchestration_enabled = True
@@ -246,7 +251,7 @@ def test_codex_switch_task_uses_enabled_text_optimization(
     manager.translation_manager.enqueue.return_value = True
     manager._state.session_id = "session-1"
     sessions = [
-        CodexSession(
+        AiSessionFixture(
             id=f"session-{slot}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -262,8 +267,8 @@ def test_codex_switch_task_uses_enabled_text_optimization(
         WeixinChubModeSessionSlot(slot=slot, session_id=f"session-{slot}")
         for slot in (1, 2)
     ]
-    codex_manager.list_sessions.return_value = sessions
-    codex_manager.get_session.return_value = sessions[1]
+    ai_session_manager.list_sessions.return_value = sessions
+    ai_session_manager.get_session.return_value = sessions[1]
 
     first = manager.dispatch(
         message_id="switch-optimized-task",
@@ -306,13 +311,13 @@ def test_codex_switch_task_uses_enabled_text_optimization(
 def test_codex_switch_task_bypasses_confirm_mode_when_plugin_is_disabled(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager.translation_manager = MagicMock()
     manager.translation_manager.processing_mode.return_value = "confirm"
     manager.translation_manager.has_active_target.return_value = False
     manager._state.session_id = "session-1"
     sessions = [
-        CodexSession(
+        AiSessionFixture(
             id=f"session-{slot}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -328,8 +333,8 @@ def test_codex_switch_task_bypasses_confirm_mode_when_plugin_is_disabled(
         WeixinChubModeSessionSlot(slot=slot, session_id=f"session-{slot}")
         for slot in (1, 2)
     ]
-    codex_manager.list_sessions.return_value = sessions
-    codex_manager.get_session.return_value = sessions[1]
+    ai_session_manager.list_sessions.return_value = sessions
+    ai_session_manager.get_session.return_value = sessions[1]
     task_prompt = "检查服务状态"
 
     result = manager.dispatch(
@@ -351,7 +356,7 @@ def test_codex_switch_task_bypasses_confirm_mode_when_plugin_is_disabled(
 def test_codex_switch_task_keeps_selection_when_optimization_cannot_queue(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager.translation_manager = MagicMock()
     manager.translation_manager.enabled.return_value = True
     manager._state.orchestration_enabled = True
@@ -359,7 +364,7 @@ def test_codex_switch_task_keeps_selection_when_optimization_cannot_queue(
     manager.translation_manager.enqueue.return_value = False
     manager._state.session_id = "session-1"
     sessions = [
-        CodexSession(
+        AiSessionFixture(
             id=f"session-{slot}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -375,8 +380,8 @@ def test_codex_switch_task_keeps_selection_when_optimization_cannot_queue(
         WeixinChubModeSessionSlot(slot=slot, session_id=f"session-{slot}")
         for slot in (1, 2)
     ]
-    codex_manager.list_sessions.return_value = sessions
-    codex_manager.get_session.return_value = sessions[1]
+    ai_session_manager.list_sessions.return_value = sessions
+    ai_session_manager.get_session.return_value = sessions[1]
 
     result = manager.dispatch(
         message_id="switch-optimization-failed",
@@ -400,10 +405,10 @@ def test_codex_switch_task_keeps_selection_when_optimization_cannot_queue(
 def test_codex_switch_with_task_failure_shows_task_summary(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
     sessions = [
-        CodexSession(
+        AiSessionFixture(
             id=f"session-{slot}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -419,8 +424,8 @@ def test_codex_switch_with_task_failure_shows_task_summary(
         WeixinChubModeSessionSlot(slot=slot, session_id=f"session-{slot}")
         for slot in (1, 2)
     ]
-    codex_manager.list_sessions.return_value = sessions
-    codex_manager.get_session.return_value = sessions[1]
+    ai_session_manager.list_sessions.return_value = sessions
+    ai_session_manager.get_session.return_value = sessions[1]
     quick_interactions.submit.side_effect = ApiError(
         503,
         "quick_worker_unavailable",
@@ -456,10 +461,10 @@ def test_codex_switch_with_task_failure_shows_task_summary(
 def test_codex_switch_with_task_busy_target_uses_target_without_current_marker(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
     sessions = [
-        CodexSession(
+        AiSessionFixture(
             id=f"session-{slot}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -475,7 +480,7 @@ def test_codex_switch_with_task_busy_target_uses_target_without_current_marker(
         WeixinChubModeSessionSlot(slot=slot, session_id=f"session-{slot}")
         for slot in (1, 2)
     ]
-    codex_manager.list_sessions.return_value = sessions
+    ai_session_manager.list_sessions.return_value = sessions
     quick_interactions.is_running.side_effect = (
         lambda session_id: session_id == "session-2"
     )
@@ -502,8 +507,8 @@ def test_codex_switch_with_task_busy_target_uses_target_without_current_marker(
 def test_codex_switch_without_current_uses_first_visible_session(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
-    unavailable = CodexSession(
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
+    unavailable = AiSessionFixture(
         id="a-unavailable",
         workspace_id="chub",
         workspace_name="Chub",
@@ -514,7 +519,7 @@ def test_codex_switch_without_current_uses_first_visible_session(
         activity="unknown",
         error="private failure",
     )
-    available = CodexSession(
+    available = AiSessionFixture(
         id="b-available",
         workspace_id="chub",
         workspace_name="Chub",
@@ -524,11 +529,11 @@ def test_codex_switch_without_current_uses_first_visible_session(
         status="stopped",
         activity="idle",
     )
-    codex_manager.list_sessions.return_value = [available, unavailable]
+    ai_session_manager.list_sessions.return_value = [available, unavailable]
     manager._state.session_slots = [
         WeixinChubModeSessionSlot(slot=1, session_id="b-available")
     ]
-    codex_manager.get_session.return_value = available
+    ai_session_manager.get_session.return_value = available
     manager.codex_account_reader = MagicMock()
     manager.codex_account_reader.read_account_status.return_value = (
         CodexQuotaData(status="unavailable"),
@@ -560,9 +565,9 @@ def test_codex_archive_removes_target_and_clears_current_binding(
     settings: Settings,
     prompt: str,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     sessions = [
-        CodexSession(
+        AiSessionFixture(
             id=f"session-{index}",
             session_id=f"native-{index}",
             workspace_id="chub",
@@ -582,8 +587,8 @@ def test_codex_archive_removes_target_and_clears_current_binding(
         WeixinChubModeSessionSlot(slot=2, session_id="session-2"),
     ]
     remaining_sessions = list(sessions)
-    codex_manager.list_sessions.side_effect = lambda: list(remaining_sessions)
-    codex_manager.get_session.side_effect = lambda session_id: by_id[session_id]
+    ai_session_manager.list_sessions.side_effect = lambda: list(remaining_sessions)
+    ai_session_manager.get_session.side_effect = lambda session_id: by_id[session_id]
     manager.session_archiver.side_effect = lambda session_id: remaining_sessions.__setitem__(
         slice(None),
         [session for session in remaining_sessions if session.id != session_id],
@@ -634,8 +639,8 @@ def test_codex_archive_removes_target_and_clears_current_binding(
 def test_codex_archive_allows_chub_only_session_without_native_binding(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
-    session = CodexSession(
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
+    session = AiSessionFixture(
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",
@@ -646,8 +651,8 @@ def test_codex_archive_allows_chub_only_session_without_native_binding(
         activity="idle",
     )
     remaining_sessions = [session]
-    codex_manager.list_sessions.side_effect = lambda: list(remaining_sessions)
-    codex_manager.get_session.return_value = session
+    ai_session_manager.list_sessions.side_effect = lambda: list(remaining_sessions)
+    ai_session_manager.get_session.return_value = session
     manager._state.session_slots = [
         WeixinChubModeSessionSlot(slot=1, session_id="session-1")
     ]
@@ -669,8 +674,8 @@ def test_codex_archive_allows_chub_only_session_without_native_binding(
 
 
 def test_duplicate_codex_archive_does_not_archive_twice(settings: Settings) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
-    session = CodexSession(
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
+    session = AiSessionFixture(
         id="session-1",
         session_id="native-1",
         workspace_id="chub",
@@ -681,8 +686,8 @@ def test_duplicate_codex_archive_does_not_archive_twice(settings: Settings) -> N
         status="stopped",
         activity="idle",
     )
-    codex_manager.list_sessions.return_value = [session]
-    codex_manager.get_session.return_value = session
+    ai_session_manager.list_sessions.return_value = [session]
+    ai_session_manager.get_session.return_value = session
     manager._state.session_slots = [
         WeixinChubModeSessionSlot(slot=1, session_id="session-1")
     ]
@@ -711,9 +716,9 @@ def test_duplicate_codex_archive_does_not_archive_twice(settings: Settings) -> N
 def test_codex_archive_status_preserves_freed_slot_for_codex_new(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
     sessions = [
-        CodexSession(
+        AiSessionFixture(
             id=f"session-{index}",
             session_id=f"native-{index}",
             workspace_id="chub",
@@ -732,8 +737,8 @@ def test_codex_archive_status_preserves_freed_slot_for_codex_new(
         for index in range(1, 10)
     ]
     remaining_sessions = list(sessions)
-    codex_manager.list_sessions.side_effect = lambda: list(remaining_sessions)
-    codex_manager.get_session.side_effect = lambda session_id: by_id[session_id]
+    ai_session_manager.list_sessions.side_effect = lambda: list(remaining_sessions)
+    ai_session_manager.get_session.side_effect = lambda session_id: by_id[session_id]
     manager.session_archiver.side_effect = lambda session_id: remaining_sessions.__setitem__(
         slice(None),
         [session for session in remaining_sessions if session.id != session_id],
@@ -775,9 +780,9 @@ def test_codex_archive_status_preserves_freed_slot_for_codex_new(
 def test_codex_archive_does_not_fill_unassigned_candidate(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
     sessions = [
-        CodexSession(
+        AiSessionFixture(
             id=f"session-{index}",
             session_id=f"native-{index}",
             workspace_id="chub",
@@ -793,7 +798,7 @@ def test_codex_archive_does_not_fill_unassigned_candidate(
     manager._state.session_slots = [
         WeixinChubModeSessionSlot(slot=1, session_id="session-1")
     ]
-    codex_manager.list_sessions.return_value = sessions
+    ai_session_manager.list_sessions.return_value = sessions
     manager.codex_account_reader = MagicMock()
     manager.codex_account_reader.read_account_status.return_value = (
         CodexQuotaData(status="unavailable"),
@@ -839,8 +844,8 @@ def test_codex_archive_rejects_session_that_is_not_safely_idle(
     quick_running: bool,
     writer_active: bool,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
-    session = CodexSession(
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
+    session = AiSessionFixture(
         id="session-1",
         session_id="native-1",
         workspace_id="chub",
@@ -851,13 +856,13 @@ def test_codex_archive_rejects_session_that_is_not_safely_idle(
         status="running" if activity != "unknown" else "stopped",
         activity=activity,
     )
-    codex_manager.list_sessions.return_value = [session]
-    codex_manager.get_session.return_value = session
+    ai_session_manager.list_sessions.return_value = [session]
+    ai_session_manager.get_session.return_value = session
     manager._state.session_slots = [
         WeixinChubModeSessionSlot(slot=1, session_id="session-1")
     ]
     quick_interactions.is_running.return_value = quick_running
-    codex_manager.has_active_writer.return_value = writer_active
+    ai_session_manager.has_active_writer.return_value = writer_active
     if activity == "working" or quick_running:
         manager.session_archiver.side_effect = ApiError(
             409,
@@ -910,7 +915,7 @@ def test_codex_archive_invalid_usage_is_submitted_as_normal_task(
     settings: Settings,
     prompt: str,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
 
     result = manager.dispatch(
         message_id=f"invalid-archive-{prompt}",
@@ -948,8 +953,8 @@ def test_chinese_archive_business_text_is_submitted_as_normal_task(
 def test_codex_archive_failure_keeps_slot_and_explains_possible_stop(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
-    session = CodexSession(
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
+    session = AiSessionFixture(
         id="session-1",
         session_id="native-1",
         workspace_id="chub",
@@ -960,8 +965,8 @@ def test_codex_archive_failure_keeps_slot_and_explains_possible_stop(
         status="stopped",
         activity="idle",
     )
-    codex_manager.list_sessions.return_value = [session]
-    codex_manager.get_session.return_value = session
+    ai_session_manager.list_sessions.return_value = [session]
+    ai_session_manager.get_session.return_value = session
     manager._state.session_slots = [
         WeixinChubModeSessionSlot(slot=1, session_id="session-1")
     ]
@@ -992,8 +997,8 @@ def test_codex_archive_failure_keeps_slot_and_explains_possible_stop(
 def test_codex_archive_rejects_session_with_pending_retry(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
-    session = CodexSession(
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
+    session = AiSessionFixture(
         id="session-1",
         session_id="native-1",
         workspace_id="chub",
@@ -1004,8 +1009,8 @@ def test_codex_archive_rejects_session_with_pending_retry(
         status="stopped",
         activity="idle",
     )
-    codex_manager.list_sessions.return_value = [session]
-    codex_manager.get_session.return_value = session
+    ai_session_manager.list_sessions.return_value = [session]
+    ai_session_manager.get_session.return_value = session
     manager._state.session_slots = [
         WeixinChubModeSessionSlot(slot=1, session_id="session-1")
     ]
@@ -1038,8 +1043,8 @@ def test_codex_archive_rejects_session_with_pending_retry(
 def test_codex_archive_state_sync_failure_reports_partial_success(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
-    session = CodexSession(
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
+    session = AiSessionFixture(
         id="session-1",
         session_id="native-1",
         workspace_id="chub",
@@ -1050,8 +1055,8 @@ def test_codex_archive_state_sync_failure_reports_partial_success(
         status="stopped",
         activity="idle",
     )
-    codex_manager.list_sessions.return_value = [session]
-    codex_manager.get_session.return_value = session
+    ai_session_manager.list_sessions.return_value = [session]
+    ai_session_manager.get_session.return_value = session
     manager._state.session_slots = [
         WeixinChubModeSessionSlot(slot=1, session_id="session-1")
     ]
@@ -1086,9 +1091,9 @@ def test_codex_archive_state_sync_failure_reports_partial_success(
 
 
 def test_codex_switch_number_uses_fresh_visible_list(settings: Settings) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
     sessions = [
-        CodexSession(
+        AiSessionFixture(
             id=f"session-{index}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -1105,8 +1110,8 @@ def test_codex_switch_number_uses_fresh_visible_list(settings: Settings) -> None
         WeixinChubModeSessionSlot(slot=index, session_id=f"session-{index}")
         for index in range(1, 4)
     ]
-    codex_manager.list_sessions.return_value = list(reversed(sessions))
-    codex_manager.get_session.side_effect = lambda session_id: by_id[session_id]
+    ai_session_manager.list_sessions.return_value = list(reversed(sessions))
+    ai_session_manager.get_session.side_effect = lambda session_id: by_id[session_id]
     manager.codex_account_reader = MagicMock()
     manager.codex_account_reader.read_account_status.return_value = (
         CodexQuotaData(status="unavailable"),
@@ -1130,10 +1135,10 @@ def test_codex_switch_number_uses_fresh_visible_list(settings: Settings) -> None
 def test_codex_switch_uses_one_deadline_and_reuses_session_scan(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
     sessions = [
-        CodexSession(
+        AiSessionFixture(
             id=f"session-{index}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -1150,8 +1155,8 @@ def test_codex_switch_uses_one_deadline_and_reuses_session_scan(
         WeixinChubModeSessionSlot(slot=index, session_id=f"session-{index}")
         for index in (1, 2)
     ]
-    codex_manager.list_sessions.return_value = sessions
-    codex_manager.get_session.side_effect = lambda session_id: by_id[session_id]
+    ai_session_manager.list_sessions.return_value = sessions
+    ai_session_manager.get_session.side_effect = lambda session_id: by_id[session_id]
     account_release = threading.Event()
     manager.codex_account_reader = MagicMock()
 
@@ -1188,15 +1193,15 @@ def test_codex_switch_uses_one_deadline_and_reuses_session_scan(
     assert result.message.endswith("Usage unavailable")
     assert "▶ S2 · [Chub] 候选 2" in result.message
     assert manager.session_id() == "session-2"
-    codex_manager.list_sessions.assert_called_once()
+    ai_session_manager.list_sessions.assert_called_once()
 
 
 def test_codex_switch_out_of_range_returns_fresh_list_without_changing_binding(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
-    session = CodexSession(
+    session = AiSessionFixture(
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",
@@ -1206,7 +1211,7 @@ def test_codex_switch_out_of_range_returns_fresh_list_without_changing_binding(
         status="stopped",
         activity="idle",
     )
-    codex_manager.list_sessions.return_value = [session]
+    ai_session_manager.list_sessions.return_value = [session]
 
     result = manager.dispatch(
         message_id="codex-switch-out-of-range",
@@ -1224,16 +1229,16 @@ def test_codex_switch_out_of_range_returns_fresh_list_without_changing_binding(
     assert "Sessions" in result.message
     assert "▶ S1 · [Chub] 当前会话" in result.message
     assert manager.session_id() == "session-1"
-    codex_manager.get_session.assert_not_called()
+    ai_session_manager.get_session.assert_not_called()
 
 
 def test_codex_switch_does_not_fill_unassigned_candidate(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
     sessions = [
-        CodexSession(
+        AiSessionFixture(
             id=f"session-{index}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -1248,7 +1253,7 @@ def test_codex_switch_does_not_fill_unassigned_candidate(
     manager._state.session_slots = [
         WeixinChubModeSessionSlot(slot=1, session_id="session-1")
     ]
-    codex_manager.list_sessions.return_value = sessions
+    ai_session_manager.list_sessions.return_value = sessions
     manager.codex_account_reader = MagicMock()
     manager.codex_account_reader.read_account_status.return_value = (
         CodexQuotaData(status="unavailable"),
@@ -1307,7 +1312,7 @@ def test_codex_switch_invalid_usage_is_submitted_as_normal_task(
     settings: Settings,
     prompt: str,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
 
     result = manager.dispatch(
         message_id=f"invalid-{prompt}",
@@ -1335,7 +1340,7 @@ def test_chinese_switch_business_text_is_submitted_as_normal_task(
     settings: Settings,
     prompt: str,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
 
     result = manager.dispatch(
         message_id=f"switch-business-text-{prompt}",
@@ -1354,7 +1359,7 @@ def test_chinese_switch_business_text_is_submitted_as_normal_task(
 
 
 def test_codex_switch_rejects_oversized_numeric_index(settings: Settings) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
 
     result = manager.dispatch(
         message_id="invalid-large-switch-index",
@@ -1376,10 +1381,10 @@ def test_codex_switch_rejects_oversized_numeric_index(settings: Settings) -> Non
 def test_codex_switch_write_failure_keeps_previous_binding(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
     sessions = [
-        CodexSession(
+        AiSessionFixture(
             id=f"session-{index}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -1396,8 +1401,8 @@ def test_codex_switch_write_failure_keeps_previous_binding(
         WeixinChubModeSessionSlot(slot=index, session_id=f"session-{index}")
         for index in range(1, 4)
     ]
-    codex_manager.list_sessions.return_value = sessions
-    codex_manager.get_session.side_effect = lambda session_id: by_id[session_id]
+    ai_session_manager.list_sessions.return_value = sessions
+    ai_session_manager.get_session.side_effect = lambda session_id: by_id[session_id]
     original_write = manager._write_state
     write_count = 0
 
@@ -1431,10 +1436,10 @@ def test_codex_switch_write_failure_keeps_previous_binding(
 
 
 def test_duplicate_codex_switch_does_not_switch_twice(settings: Settings) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
     sessions = [
-        CodexSession(
+        AiSessionFixture(
             id=f"session-{index}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -1451,8 +1456,8 @@ def test_duplicate_codex_switch_does_not_switch_twice(settings: Settings) -> Non
         WeixinChubModeSessionSlot(slot=index, session_id=f"session-{index}")
         for index in range(1, 4)
     ]
-    codex_manager.list_sessions.return_value = sessions
-    codex_manager.get_session.side_effect = lambda session_id: by_id[session_id]
+    ai_session_manager.list_sessions.return_value = sessions
+    ai_session_manager.get_session.side_effect = lambda session_id: by_id[session_id]
     manager.codex_account_reader = MagicMock()
     manager.codex_account_reader.read_account_status.return_value = (
         CodexQuotaData(status="unavailable"),
@@ -1478,15 +1483,15 @@ def test_duplicate_codex_switch_does_not_switch_twice(settings: Settings) -> Non
 
     assert duplicate == first
     assert manager.session_id() == "session-3"
-    codex_manager.list_sessions.assert_called_once()
+    ai_session_manager.list_sessions.assert_called_once()
     manager.codex_account_reader.read_account_status.assert_called_once_with(force=True)
 
 
 def test_codex_delete_removes_target_and_clears_current_binding(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
-    session = CodexSession(
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
+    session = AiSessionFixture(
         id="session-1",
         session_id="native-1",
         workspace_id="chub",
@@ -1502,8 +1507,8 @@ def test_codex_delete_removes_target_and_clears_current_binding(
     manager._state.session_slots = [
         WeixinChubModeSessionSlot(slot=1, session_id="session-1")
     ]
-    codex_manager.list_sessions.side_effect = lambda: list(remaining_sessions)
-    codex_manager.get_session.return_value = session
+    ai_session_manager.list_sessions.side_effect = lambda: list(remaining_sessions)
+    ai_session_manager.get_session.return_value = session
     manager.session_deleter.side_effect = lambda _session_id: remaining_sessions.clear()
 
     result = manager.dispatch(

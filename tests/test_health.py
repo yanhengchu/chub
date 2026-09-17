@@ -101,7 +101,7 @@ def test_unavailable_tailnet_listener_keeps_loopback_available(
 
     availability = []
 
-    with caplog.at_level("WARNING", logger="hub.startup"):
+    with caplog.at_level("INFO", logger="hub.startup"):
         listeners = listen_sockets(
             settings,
             set_tailnet_listener_available=availability.append,
@@ -111,7 +111,8 @@ def test_unavailable_tailnet_listener_keeps_loopback_available(
 
     assert listeners == [loopback_listener]
     assert availability == [False]
-    assert "continuing with loopback only" in caplog.text
+    assert "keeping loopback-only access" in caplog.text
+    assert "normal when Tailscale is stopped" in caplog.text
 
 
 def test_auto_tailnet_listener_binds_discovered_host(

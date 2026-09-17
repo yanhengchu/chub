@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tests.session_fixtures import CodexSession
+from tests.session_fixtures import AiSessionFixture
 
 import json
 import re
@@ -12,12 +12,18 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.codex.models import (
+from app.ai_session.api_models import (
+    WorkspaceInfo,
+)
+from app.ai_interactions.models import (
+    QuickInteractionWeixinRoute,
+)
+from app.ai_usage.models import (
     CodexQuotaData,
     CodexQuotaWindow,
     CodexTokenUsageData,
-    QuickInteractionWeixinRoute,
-    WorkspaceInfo,
+)
+from app.ai_session.models import (
     utc_now,
 )
 from app.core.config import Settings
@@ -189,15 +195,15 @@ def test_new_without_title_creates_and_selects_default_session(
     settings: Settings,
     prompt: str,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
-    codex_manager.create_session.return_value = SimpleNamespace(id="session-new")
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
+    ai_session_manager.create_session.return_value = SimpleNamespace(id="session-new")
     manager.codex_account_reader = MagicMock()
     manager.codex_account_reader.read_account_status.return_value = (
         CodexQuotaData(status="unavailable"),
         CodexTokenUsageData(status="unavailable"),
     )
-    codex_manager.list_sessions.return_value = [
-        CodexSession(
+    ai_session_manager.list_sessions.return_value = [
+        AiSessionFixture(
             id="session-new",
             workspace_id="chub",
             workspace_name="Chub",
@@ -222,8 +228,8 @@ def test_new_without_title_creates_and_selects_default_session(
         "Create: S1 created and selected."
     )
     assert manager.session_id() == "session-new"
-    codex_manager.create_session.assert_called_once()
-    codex_manager.rename_session.assert_not_called()
+    ai_session_manager.create_session.assert_called_once()
+    ai_session_manager.rename_session.assert_not_called()
     quick_interactions.submit.assert_not_called()
 
 
@@ -240,8 +246,8 @@ def test_codex_new_creates_names_and_selects_without_submitting(
     prompt: str,
     task_prompt: str,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
-    session = CodexSession(
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
+    session = AiSessionFixture(
         id="session-new",
         workspace_id="chub",
         workspace_name="Chub",
@@ -250,14 +256,14 @@ def test_codex_new_creates_names_and_selects_without_submitting(
         status="stopped",
         activity="idle",
     )
-    codex_manager.create_session.return_value = SimpleNamespace(id=session.id)
-    codex_manager.get_session.return_value = session
-    codex_manager.list_sessions.return_value = [session]
+    ai_session_manager.create_session.return_value = SimpleNamespace(id=session.id)
+    ai_session_manager.get_session.return_value = session
+    ai_session_manager.list_sessions.return_value = [session]
     def rename_session(_session_id: str, title: str) -> SimpleNamespace:
         session.title = title
         return SimpleNamespace(title=title)
 
-    codex_manager.rename_session.side_effect = rename_session
+    ai_session_manager.rename_session.side_effect = rename_session
 
     first = manager.dispatch(
         message_id=f"new-with-task-{prompt}",
@@ -283,14 +289,14 @@ def test_codex_new_creates_names_and_selects_without_submitting(
     )
     assert f"▶ S1 · [Chub] {task_prompt}" in first.message
     assert duplicate.message == first.message
-    codex_manager.create_session.assert_called_once()
-    codex_manager.rename_session.assert_called_once_with("session-new", task_prompt)
+    ai_session_manager.create_session.assert_called_once()
+    ai_session_manager.rename_session.assert_called_once_with("session-new", task_prompt)
     quick_interactions.submit.assert_not_called()
 
 
 def test_codex_new_naming_failure_keeps_created_session(settings: Settings) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
-    session = CodexSession(
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
+    session = AiSessionFixture(
         id="session-new",
         workspace_id="chub",
         workspace_name="Chub",
@@ -299,10 +305,10 @@ def test_codex_new_naming_failure_keeps_created_session(settings: Settings) -> N
         status="stopped",
         activity="idle",
     )
-    codex_manager.create_session.return_value = SimpleNamespace(id=session.id)
-    codex_manager.get_session.return_value = session
-    codex_manager.list_sessions.return_value = [session]
-    codex_manager.rename_session.side_effect = ApiError(
+    ai_session_manager.create_session.return_value = SimpleNamespace(id=session.id)
+    ai_session_manager.get_session.return_value = session
+    ai_session_manager.list_sessions.return_value = [session]
+    ai_session_manager.rename_session.side_effect = ApiError(
         503,
         "quick_worker_unavailable",
         "private detail",
@@ -330,19 +336,19 @@ def test_codex_new_naming_failure_keeps_created_session(settings: Settings) -> N
     assert "Send rename <title> to try again." in result.message
     assert manager.session_id() == "session-new"
     assert duplicate == result
-    codex_manager.rename_session.assert_called_once()
+    ai_session_manager.rename_session.assert_called_once()
     quick_interactions.submit.assert_not_called()
 
 
 def test_codex_new_creation_failure_does_not_link_current_session(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
     manager._state.session_slots = [
         WeixinChubModeSessionSlot(slot=1, session_id="session-1")
     ]
-    codex_manager.create_session.side_effect = ApiError(
+    ai_session_manager.create_session.side_effect = ApiError(
         503,
         "codex_unavailable",
         "private detail",
@@ -368,9 +374,9 @@ def test_codex_new_creation_failure_does_not_link_current_session(
 def test_codex_new_status_does_not_fill_unassigned_candidate(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
     sessions = [
-        CodexSession(
+        AiSessionFixture(
             id=session_id,
             workspace_id="chub",
             workspace_name="Chub",
@@ -389,13 +395,13 @@ def test_codex_new_status_does_not_fill_unassigned_candidate(
     manager._state.session_slots = [
         WeixinChubModeSessionSlot(slot=1, session_id="session-1")
     ]
-    codex_manager.create_session.return_value = SimpleNamespace(id="session-new")
-    codex_manager.list_sessions.return_value = sessions
+    ai_session_manager.create_session.return_value = SimpleNamespace(id="session-new")
+    ai_session_manager.list_sessions.return_value = sessions
     def rename_new_session(_session_id: str, title: str) -> SimpleNamespace:
         sessions[2].title = title
         return SimpleNamespace(title=title)
 
-    codex_manager.rename_session.side_effect = rename_new_session
+    ai_session_manager.rename_session.side_effect = rename_new_session
     manager.codex_account_reader = MagicMock()
     manager.codex_account_reader.read_account_status.return_value = (
         CodexQuotaData(status="unavailable"),
@@ -422,9 +428,9 @@ def test_codex_new_status_does_not_fill_unassigned_candidate(
 def test_internal_codex_status_does_not_fill_unassigned_candidate(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
     sessions = [
-        CodexSession(
+        AiSessionFixture(
             id=f"session-{index}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -440,20 +446,20 @@ def test_internal_codex_status_does_not_fill_unassigned_candidate(
     manager._state.session_slots = [
         WeixinChubModeSessionSlot(slot=1, session_id="session-1")
     ]
-    codex_manager.list_sessions.return_value = sessions
+    ai_session_manager.list_sessions.return_value = sessions
     manager.codex_account_reader = MagicMock()
     manager.codex_account_reader.read_account_status.return_value = (
         CodexQuotaData(status="unavailable"),
         CodexTokenUsageData(status="unavailable"),
     )
     manager._refresh_chub_cache()
-    codex_manager.list_sessions.reset_mock()
+    ai_session_manager.list_sessions.reset_mock()
 
     internal_status = manager.codex_status_message()
 
     assert "▶ S1 · [Chub] 候选 1" in internal_status
     assert "候选 2" not in internal_status
-    codex_manager.list_sessions.assert_not_called()
+    ai_session_manager.list_sessions.assert_not_called()
     assert manager.session_slot_matches(2, "session-2") is False
 
     manager.dispatch(
@@ -471,10 +477,10 @@ def test_internal_codex_status_does_not_fill_unassigned_candidate(
 def test_codex_operation_log_uses_operation_result_not_status_refresh(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
-    codex_manager.create_session.return_value = SimpleNamespace(id="session-new")
-    codex_manager.list_sessions.return_value = [
-        CodexSession(
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
+    ai_session_manager.create_session.return_value = SimpleNamespace(id="session-new")
+    ai_session_manager.list_sessions.return_value = [
+        AiSessionFixture(
             id="session-new",
             workspace_id="chub",
             workspace_name="Chub",
@@ -537,10 +543,10 @@ def test_codex_operation_log_uses_operation_result_not_status_refresh(
 def test_duplicate_codex_new_replays_status_without_creating_twice(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
-    codex_manager.create_session.return_value = SimpleNamespace(id="session-new")
-    codex_manager.list_sessions.return_value = [
-        CodexSession(
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
+    ai_session_manager.create_session.return_value = SimpleNamespace(id="session-new")
+    ai_session_manager.list_sessions.return_value = [
+        AiSessionFixture(
             id="session-new",
             workspace_id="chub",
             workspace_name="Chub",
@@ -551,7 +557,7 @@ def test_duplicate_codex_new_replays_status_without_creating_twice(
         )
     ]
 
-    codex_manager.rename_session.return_value = SimpleNamespace(title="新建会话")
+    ai_session_manager.rename_session.return_value = SimpleNamespace(title="新建会话")
     first = manager.dispatch(
         message_id="codex-new-duplicate",
         prompt="new 新建会话",
@@ -570,20 +576,20 @@ def test_duplicate_codex_new_replays_status_without_creating_twice(
     )
 
     assert duplicate.message == first.message
-    codex_manager.create_session.assert_called_once()
+    ai_session_manager.create_session.assert_called_once()
 
 
 def test_codex_new_discards_unstarted_session_when_slot_state_write_fails(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
-    codex_manager.create_session.return_value = SimpleNamespace(id="session-new")
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
+    ai_session_manager.create_session.return_value = SimpleNamespace(id="session-new")
     manager._write_state = MagicMock(side_effect=OSError("disk unavailable"))
 
     with pytest.raises(OSError):
         manager._create_session(manager.configuration())
 
-    codex_manager.discard_unstarted_session.assert_called_once_with("session-new")
+    ai_session_manager.discard_unstarted_session.assert_called_once_with("session-new")
     assert manager.session_id() is None
     assert manager._state.session_slots == []
 
@@ -591,14 +597,14 @@ def test_codex_new_discards_unstarted_session_when_slot_state_write_fails(
 def test_chub_sync_uses_placeholder_for_untitled_session(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager.codex_account_reader = MagicMock()
     manager.codex_account_reader.read_account_status.return_value = (
         CodexQuotaData(status="unavailable"),
         CodexTokenUsageData(status="unavailable"),
     )
-    codex_manager.list_sessions.return_value = [
-        CodexSession(
+    ai_session_manager.list_sessions.return_value = [
+        AiSessionFixture(
             id="untitled-session",
             workspace_id="chub",
             workspace_name="Chub",

@@ -1,5 +1,7 @@
 # Chub 正式部署包：AI 安装与验收指引
 
+> 文档类型：随正式部署包交付的目标设备操作指引，不属于项目资料页登记的当前设计文档，也不定义 Chub 的产品能力、架构或模块契约。项目定位、当前能力与设计边界分别以项目 README、能力清单和对应专项设计为准。
+
 本文是解压后目标设备 AI 的唯一部署操作入口。它使用一套通用流程完成 Chub 核心部署，再按目标平台执行必要的关注事项和恢复验收。目标 AI 必须逐步确认本机环境和每项业务终态，并根据本文报告 `succeeded`、`failed` 或 `recovery_pending`；不得猜测发行版、账号、凭据、OpenClaw 路径、微信 Owner 或浏览器配置。
 
 当前支持 macOS LaunchAgent、原生 Ubuntu systemd user service，以及已启用 systemd 的 Ubuntu WSL2。WSL1、非 Ubuntu WSL、未启用 systemd 的 WSL，或无法使用 `systemctl --user` 的 Ubuntu 环境不得继续执行受管服务安装。Windows 不是 Chub 的原生运行平台；Windows 只通过 WSL2 的 localhost 转发访问 Chub。
@@ -118,7 +120,7 @@ security:
 
 - `node.id` 必须是新设备唯一标识，`node.name` 必须可读，`node.type` 必须与已确认的平台匹配；
 - `server.port` 默认是 `8080`。仅在端口冲突时修改为未被本机占用的端口；
-- `ai_runtime.codex.workspace` 必须是本机受信工作目录。默认 `~/workspace` 可保留，但目标目录不存在时创建它；
+- `ai_runtime.shared.workspace` 必须是本机受信工作目录。默认 `~/workspace` 可保留，但目标目录不存在时创建它；
 - 首轮本机验收保持 `security.allow_tailscale: false`，Tailnet 验收另行执行；
 - 不填写或复制通知、OpenClaw、微信、API Key、Token、Cookie、账号或其他凭据。
 

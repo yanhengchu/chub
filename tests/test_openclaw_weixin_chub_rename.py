@@ -1,19 +1,19 @@
 from __future__ import annotations
 
-from tests.session_fixtures import CodexSession
+from tests.session_fixtures import AiSessionFixture
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from app.codex.models import CodexQuotaData , CodexTokenUsageData
+from app.ai_usage.models import CodexQuotaData, CodexTokenUsageData
 from app.core.config import Settings
 from app.core.response import ApiError
 from app.services.openclaw_weixin_chub_models import WeixinChubModeSessionSlot
 from tests.openclaw_weixin_chub_mode_helpers import configured_manager, delivery_route
 
 
-def _current_session(*, title: str = "旧标题", activity: str = "idle") -> CodexSession:
-    return CodexSession(
+def _current_session(*, title: str = "旧标题", activity: str = "idle") -> AiSessionFixture:
+    return AiSessionFixture(
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",
@@ -37,16 +37,16 @@ def _enable_usage_snapshot(manager) -> None:
 def test_rename_current_session_normalizes_title_and_is_idempotent(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
     manager._state.session_slots = [
         WeixinChubModeSessionSlot(slot=1, session_id="session-1")
     ]
     current = _current_session(activity="working")
     renamed = current.model_copy(update={"title": "新 标题"})
-    codex_manager.get_session.return_value = current
-    codex_manager.rename_session.return_value = renamed
-    codex_manager.list_sessions.return_value = [renamed]
+    ai_session_manager.get_session.return_value = current
+    ai_session_manager.rename_session.return_value = renamed
+    ai_session_manager.list_sessions.return_value = [renamed]
     quick_interactions.running_standard_task_summaries.return_value = SimpleNamespace(
         running_tasks=(("session-1", "优化微信指令交互流程"),),
     )
@@ -76,21 +76,21 @@ def test_rename_current_session_normalizes_title_and_is_idempotent(
     )
     assert first.message.endswith("Usage unavailable")
     assert duplicate == first
-    codex_manager.rename_session.assert_called_once_with("session-1", "新 标题")
+    ai_session_manager.rename_session.assert_called_once_with("session-1", "新 标题")
     quick_interactions.submit.assert_not_called()
 
 
 def test_rename_supports_chinese_alias(settings: Settings) -> None:
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
     manager._state.session_slots = [
         WeixinChubModeSessionSlot(slot=3, session_id="session-1")
     ]
     current = _current_session()
     renamed = current.model_copy(update={"title": "项目维护"})
-    codex_manager.get_session.return_value = current
-    codex_manager.rename_session.return_value = renamed
-    codex_manager.list_sessions.return_value = [renamed]
+    ai_session_manager.get_session.return_value = current
+    ai_session_manager.rename_session.return_value = renamed
+    ai_session_manager.list_sessions.return_value = [renamed]
     _enable_usage_snapshot(manager)
 
     result = manager.dispatch(
@@ -108,14 +108,14 @@ def test_rename_supports_chinese_alias(settings: Settings) -> None:
         "Sessions\n\n▶ S3 · [Chub] 项目维护\n\n"
     )
     assert result.message.endswith("Usage unavailable")
-    codex_manager.rename_session.assert_called_once_with("session-1", "项目维护")
+    ai_session_manager.rename_session.assert_called_once_with("session-1", "项目维护")
 
 
 def test_rename_result_keeps_full_title_and_shortens_session_list(
     settings: Settings,
 ) -> None:
     settings.openclaw.weixin_chub_mode.session_name_max_width = 30
-    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, _quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
     manager._state.session_slots = [
         WeixinChubModeSessionSlot(slot=1, session_id="session-1")
@@ -123,9 +123,9 @@ def test_rename_result_keeps_full_title_and_shortens_session_list(
     current = _current_session()
     title = "标" * 27
     renamed = current.model_copy(update={"title": title})
-    codex_manager.get_session.return_value = current
-    codex_manager.rename_session.return_value = renamed
-    codex_manager.list_sessions.return_value = [renamed]
+    ai_session_manager.get_session.return_value = current
+    ai_session_manager.rename_session.return_value = renamed
+    ai_session_manager.list_sessions.return_value = [renamed]
     _enable_usage_snapshot(manager)
 
     result = manager.dispatch(
@@ -144,7 +144,7 @@ def test_rename_result_keeps_full_title_and_shortens_session_list(
 
 
 def test_rename_rejects_missing_or_invalid_title(settings: Settings) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
 
     missing = manager.dispatch(
         message_id="rename-missing-title",
@@ -169,11 +169,11 @@ def test_rename_rejects_missing_or_invalid_title(settings: Settings) -> None:
     assert long_title.message is not None
     assert long_title.message == "Usage: rename <title> (maximum 48 characters)."
 
-    codex_manager.rename_session.assert_not_called()
+    ai_session_manager.rename_session.assert_not_called()
 
 
 def test_rename_requires_current_session(settings: Settings) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
 
     result = manager.dispatch(
         message_id="rename-without-current-session",
@@ -189,20 +189,20 @@ def test_rename_requires_current_session(settings: Settings) -> None:
         "Rename: Not completed because no Session is selected.\n\nNo sessions\n\n"
     )
     assert result.message.endswith("Usage unavailable")
-    codex_manager.rename_session.assert_not_called()
+    ai_session_manager.rename_session.assert_not_called()
     quick_interactions.submit.assert_not_called()
 
 
 def test_rename_failure_keeps_command_out_of_normal_submission(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
     manager._state.session_slots = [
         WeixinChubModeSessionSlot(slot=1, session_id="session-1")
     ]
-    codex_manager.get_session.return_value = _current_session()
-    codex_manager.rename_session.side_effect = ApiError(
+    ai_session_manager.get_session.return_value = _current_session()
+    ai_session_manager.rename_session.side_effect = ApiError(
         503,
         "session_rename_failed",
         "rename failed",
@@ -229,13 +229,13 @@ def test_rename_failure_keeps_command_out_of_normal_submission(
 def test_rename_external_writer_explains_how_to_recover(
     settings: Settings,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
     manager._state.session_slots = [
         WeixinChubModeSessionSlot(slot=1, session_id="session-1")
     ]
-    codex_manager.get_session.return_value = _current_session()
-    codex_manager.rename_session.side_effect = ApiError(
+    ai_session_manager.get_session.return_value = _current_session()
+    ai_session_manager.rename_session.side_effect = ApiError(
         409,
         "session_writer_active",
         "This is open in another app, close it there to continue here.",

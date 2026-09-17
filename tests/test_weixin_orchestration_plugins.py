@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.core.response import ApiError
-from app.codex.models import utc_now
+from app.ai_session.models import utc_now
 from app.services.openclaw_weixin_chub_models import WeixinTaskOrchestrationRequest
 from app.services.weixin_orchestration_plugins import WeixinOrchestrationPluginService
 from scripts.build_weixin_orchestration_plugin_zip import build as build_weixin_plugin_zip
@@ -35,6 +35,7 @@ def module_archive(
         "description": "Refines Weixin task text through Chub's bounded callback.",
         "chub_version": settings.app.version,
         "entry": "module:execute_refinement",
+        "command_entry": "module:parse_command",
     }
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w") as archive:
@@ -46,7 +47,9 @@ def module_archive(
             "module.py",
             f"MARKER = {marker!r}\n"
             "def execute_refinement(*, enqueue_refinement):\n"
-            "    return enqueue_refinement()\n",
+            "    return enqueue_refinement()\n"
+            "def parse_command(prompt):\n"
+            "    return None\n",
         )
     return output.getvalue()
 
@@ -94,6 +97,70 @@ def test_repository_module_builds_and_installs(settings, tmp_path) -> None:
         implementation_ref=preview.implementation_ref,
         enqueue_refinement=lambda: True,
     ) is True
+
+
+def test_imported_repository_module_owns_text_commands_across_its_lifecycle(
+    settings, tmp_path
+) -> None:
+    settings.openclaw.weixin_chub_mode.orchestration_modules_dir = tmp_path / "modules"
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    archive_path = build_weixin_plugin_zip(
+        tmp_path / "weixin-refinement.zip", chub_version=settings.app.version
+    )
+    service = WeixinOrchestrationPluginService(settings)
+    module = service.install(archive_path.read_bytes(), source_name=archive_path.name)
+    manager.orchestration_plugin_service = service
+    manager.translation_manager = MagicMock()
+    manager.translation_manager.processing_queue.return_value = []
+
+    disabled = manager.dispatch(
+        message_id="imported-disabled", prompt="text", message_type="text",
+        correlation_id=None, source_ip="127.0.0.1", delivery_route=delivery_route(),
+    )
+    assert disabled.message is not None and "module is disabled" in disabled.message
+
+    manager.set_orchestration_implementation("module", module.implementation_ref)
+    manager.set_orchestration_enabled(True)
+    manager.translation_manager.status.return_value = SimpleNamespace(
+        mode="direct", model="translation-model", reasoning_effort="medium"
+    )
+    manager.ai_session_manager.read_model_catalog.return_value = SimpleNamespace(
+        models=(SimpleNamespace(id="translation-model", levels=()),)
+    )
+    enabled = manager.dispatch(
+        message_id="imported-enabled", prompt="text list", message_type="text",
+        correlation_id=None, source_ip="127.0.0.1", delivery_route=delivery_route(),
+    )
+    assert enabled.message == "Text processing: None."
+    quick_interactions.submit.assert_not_called()
+
+    manager.set_orchestration_enabled(False)
+    drained = manager.dispatch(
+        message_id="imported-drain", prompt="text list", message_type="text",
+        correlation_id=None, source_ip="127.0.0.1", delivery_route=delivery_route(),
+    )
+    assert drained.message is not None and "module is disabled" in drained.message
+
+
+def test_unimported_text_command_group_is_not_submitted_as_a_normal_task(settings) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    manager._state.orchestration_implementation = "disabled"
+    manager.orchestration_plugin_service.list_artifacts = MagicMock(return_value=())
+
+    result = manager.dispatch(
+        message_id="text-not-imported",
+        prompt="text list",
+        message_type="text",
+        correlation_id=None,
+        source_ip="127.0.0.1",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == (
+        "Text: The Weixin refinement module is not imported. "
+        "Import and enable it in Settings."
+    )
+    quick_interactions.submit.assert_not_called()
 
 
 def test_module_selection_snapshots_request_and_blocks_referenced_removal(

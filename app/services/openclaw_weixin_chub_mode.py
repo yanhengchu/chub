@@ -15,14 +15,20 @@ from types import SimpleNamespace
 from typing import Callable, Literal
 from uuid import uuid4
 
+from pydantic import ValidationError
+
 from app.ai_usage.models import AiUsageData
-from app.codex.models import (
+from app.ai_session.api_models import (
+    SessionRenameRequest,
+)
+from app.ai_interactions.models import (
     QuickInteractionTask,
     QuickInteractionWeixinRoute,
-    SessionRenameRequest,
+)
+from app.ai_session.models import (
     utc_now,
 )
-from app.codex.quick_interactions import build_task_summary
+from app.ai_interactions.quick_interactions import build_task_summary
 from app.core.config import OpenClawWeixinChubModeConfig, Settings
 from app.core.response import ApiError
 from app.services.deferred_restart import (
@@ -40,6 +46,7 @@ from app.services.weixin_orchestration_plugins import (
 )
 from app.services.openclaw_weixin_chub_commands import (
     FIXED_COMMAND_KINDS,
+    WeixinChubCommand,
     command_task_message_id,
     is_ai_runtime_write_command,
     normalize_fixed_prompt,
@@ -123,6 +130,10 @@ STOP_TARGET_TIMEOUT_SECONDS = 3
 MAX_EPHEMERAL_STATUS_REPLIES = 256
 MAX_EPHEMERAL_STATUS_INFLIGHT = 64
 LOGGER = logging.getLogger("hub.openclaw.weixin_chub_mode")
+COMMAND_GROUP_PREFIXES = {
+    "text": ("text", "text-check"),
+    "codex": ("codex",),
+}
 FIXED_COMMAND_STATUS_CODES = frozenset(
     {
         "chub_restart_requested",
@@ -155,7 +166,7 @@ class WeixinChubModeManager:
     def __init__(
         self,
         settings: Settings,
-        codex_manager,
+        ai_session_manager,
         quick_interactions,
         route_validator: Callable[[QuickInteractionWeixinRoute], str | None]
         | None = None,
@@ -193,6 +204,7 @@ class WeixinChubModeManager:
             [QuickInteractionWeixinRoute, Callable[[], str]], object
         ]
         | None = None,
+        codex_command_parser: Callable[[], Callable[[str], object]] | None = None,
         last_result_notifier: Callable[
             [QuickInteractionTask, QuickInteractionWeixinRoute], object
         ]
@@ -201,10 +213,10 @@ class WeixinChubModeManager:
         orchestration_plugin_service: WeixinOrchestrationPluginService | None = None,
     ) -> None:
         self.settings = settings
-        self.codex_manager = codex_manager
+        self.ai_session_manager = ai_session_manager
         self.quick_interactions = quick_interactions
         self.task_capabilities = WeixinTaskCapabilityHost(
-            quick_interactions, codex_manager
+            quick_interactions, ai_session_manager
         )
         self.route_validator = route_validator
         self.session_reclaimer = session_reclaimer
@@ -227,6 +239,7 @@ class WeixinChubModeManager:
         self.codex_auth_reader = codex_auth_reader
         self.codex_auth_switcher = codex_auth_switcher
         self.codex_auth_notifier = codex_auth_notifier
+        self.codex_command_parser = codex_command_parser
         self.last_result_notifier = last_result_notifier
         self.development_stage = development_stage or WeixinDevelopmentStage()
         self.orchestration_plugin_service = (
@@ -294,14 +307,14 @@ class WeixinChubModeManager:
             if len(content) > MAX_STATE_BYTES:
                 raise ValueError("Weixin Chub mode state is too large")
             payload = json.loads(content.decode("utf-8"))
-            configuration_payload = payload.get("configuration")
-            retired_configuration_fields_removed = False
-            if isinstance(configuration_payload, dict):
-                for field in ("permission_mode", "model", "reasoning_effort"):
-                    if field in configuration_payload:
-                        configuration_payload.pop(field)
-                        retired_configuration_fields_removed = True
-            state = WeixinChubModeState.model_validate(payload)
+            if not isinstance(payload, dict) or payload.get("version") != 2:
+                self._write_state(fallback)
+                return fallback
+            try:
+                state = WeixinChubModeState.model_validate(payload)
+            except ValidationError:
+                self._write_state(fallback)
+                return fallback
         except FileNotFoundError:
             return fallback
         except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError):
@@ -316,28 +329,7 @@ class WeixinChubModeManager:
                 "Unable to protect Weixin Chub mode state",
                 exc_info=True,
             )
-        changed = retired_configuration_fields_removed
-        if retired_configuration_fields_removed and state.session_id is not None:
-            # The previous bound Session was created from a now-retired private
-            # profile. Drop only that binding; user-managed slots remain intact.
-            state.session_id = None
-        if "orchestration_enabled" not in payload:
-            # Existing selected implementations were active before this explicit
-            # setting existed. Preserve that behavior during the one-time state
-            # shape upgrade instead of silently bypassing text processing.
-            state.orchestration_enabled = state.orchestration_implementation != "disabled"
-            changed = True
-        if state.orchestration_implementation == "internal":
-            state.orchestration_implementation = "weixin-orchestration-dev"
-            state.orchestration_module_ref = None
-            try:
-                snapshot = development_snapshot or self.development_stage.snapshot()
-            except ApiError:
-                self._state_error = True
-                LOGGER.warning("Weixin development implementation is unavailable")
-            else:
-                state.orchestration_development_source_hash = snapshot.source_hash
-            changed = True
+        changed = False
         if state.configuration != configured:
             changed_session_configuration = any(
                 getattr(state.configuration, field) != getattr(configured, field)
@@ -472,6 +464,166 @@ class WeixinChubModeManager:
         with self._lock:
             return self._mode_enabled and is_ai_runtime_write_command(command)
 
+    def requires_system_upgrade_write_guard_for_prompt(self, prompt: str) -> bool:
+        """Apply the existing write guard after module command routing."""
+        command = self._parse_dispatch_command(prompt)
+        if self.requires_system_upgrade_write_guard(command):
+            return True
+        # A missing Codex Runtime cannot load its parser, but this known
+        # maintenance write must remain inside the existing upgrade gate.
+        return (
+            self._mode_enabled
+            and command.command_group == "codex"
+            and normalize_fixed_prompt(prompt).casefold() == "codex auth switch"
+        )
+
+    def _parse_dispatch_command(self, prompt: str):
+        """Route core commands first, then fixed module-owned command groups."""
+        command = parse_weixin_chub_command(prompt)
+        if command.kind != "normal":
+            return command
+        command_group = self._command_group_for_prompt(prompt)
+        if command_group == "text":
+            return self._parse_text_command_group(prompt)
+        if command_group == "codex":
+            return self._parse_codex_command_group(prompt)
+        return command
+
+    @staticmethod
+    def _command_group_for_prompt(prompt: str) -> Literal["text", "codex"] | None:
+        normalized = normalize_fixed_prompt(prompt).casefold()
+        for group, prefixes in COMMAND_GROUP_PREFIXES.items():
+            if any(
+                normalized == prefix or normalized.startswith(f"{prefix} ")
+                for prefix in prefixes
+            ):
+                return "text" if group == "text" else "codex"
+        return None
+
+    @staticmethod
+    def _unavailable_command_group(
+        group: Literal["text", "codex"],
+        state: Literal["not_imported", "disabled", "unavailable"],
+        prompt: str,
+    ) -> WeixinChubCommand:
+        return WeixinChubCommand(
+            "text_control" if group == "text" else "codex_auth",
+            normalize_fixed_prompt(prompt),
+            command_group=group,
+            command_group_state=state,
+        )
+
+    def _parse_text_command_group(self, prompt: str) -> WeixinChubCommand:
+        if not self.orchestration_command_module_imported():
+            return self._unavailable_command_group("text", "not_imported", prompt)
+        parsers, parser_unavailable = self._registered_module_command_parsers()
+        matches = []
+        for implementation_ref, parser in parsers:
+            try:
+                parsed = parser(prompt)
+            except Exception:
+                LOGGER.warning(
+                    "Weixin command module %s could not parse a prompt",
+                    implementation_ref,
+                    exc_info=True,
+                )
+                parser_unavailable = True
+                continue
+            if parsed is None:
+                continue
+            if not self._is_allowed_module_command(parsed):
+                LOGGER.warning(
+                    "Weixin command module %s returned a command outside its allowed group",
+                    implementation_ref,
+                )
+                continue
+            matches.append((implementation_ref, parsed))
+        if matches:
+            if len(matches) > 1:
+                LOGGER.warning(
+                    "Multiple imported Weixin command modules matched one prompt; using %s by registration order",
+                    matches[0][0],
+                )
+            return matches[0][1]
+        if parser_unavailable:
+            return self._unavailable_command_group("text", "unavailable", prompt)
+        return self._unavailable_command_group("text", "unavailable", prompt)
+
+    def _parse_codex_command_group(self, prompt: str) -> WeixinChubCommand:
+        if self.codex_command_parser is None:
+            return self._unavailable_command_group("codex", "unavailable", prompt)
+        try:
+            parser = self.codex_command_parser()
+            parsed = parser(prompt)
+        except ApiError as exc:
+            state: Literal["not_imported", "disabled", "unavailable"]
+            if exc.code == "runtime_plugin_not_imported":
+                state = "not_imported"
+            elif exc.code in {"runtime_plugin_disabled", "ai_runtime_disabled"}:
+                state = "disabled"
+            else:
+                state = "unavailable"
+            return self._unavailable_command_group("codex", state, prompt)
+        except Exception:
+            LOGGER.warning("Unable to load Codex Runtime command parser", exc_info=True)
+            return self._unavailable_command_group("codex", "unavailable", prompt)
+        if isinstance(parsed, WeixinChubCommand) and parsed.kind in {
+            "codex_auth",
+            "codex_auth_switch",
+        }:
+            return parsed
+        LOGGER.warning("Codex Runtime returned an invalid Weixin command")
+        return self._unavailable_command_group("codex", "unavailable", prompt)
+
+    @staticmethod
+    def _is_allowed_module_command(command: object) -> bool:
+        """Keep a refinement module inside its fixed user-facing command group."""
+        if not isinstance(command, WeixinChubCommand):
+            return False
+        return command.kind in {"text_control", "text_check"} or (
+            command.kind == "help" and command.task_prompt == "text"
+        )
+
+    def _registered_module_command_parsers(self):
+        """Return module parsers in the persisted registration order.
+
+        The current product has one module. Keeping this as an ordered tuple
+        makes adding another command-owning module a local registration change
+        without exposing raw messages to every execution implementation.
+        """
+        registrations = []
+        unavailable = False
+        with self._lock:
+            implementation = self._state.orchestration_implementation
+            module_ref = self._state.orchestration_module_ref
+        if implementation == "weixin-orchestration-dev":
+            try:
+                registrations.append((implementation, self.development_stage.command_parser()))
+            except ApiError:
+                LOGGER.warning("Unable to load Weixin development command module", exc_info=True)
+                unavailable = True
+        elif implementation == "module":
+            try:
+                loaded = self.orchestration_plugin_service.require(module_ref)
+                registrations.append((module_ref, loaded.parse_command))
+            except ApiError:
+                LOGGER.warning("Unable to load the selected Weixin command module", exc_info=True)
+                unavailable = True
+        else:
+            try:
+                # Import alone reserves the module's main command.  With no
+                # selected version, use the latest imported artifact; normal
+                # stable use has one installed version and updates are done
+                # after prior work has finished.
+                imported = self.orchestration_plugin_service.command_registrations()
+                if imported:
+                    latest = imported[-1]
+                    registrations.append((latest.implementation_ref, latest.parse_command))
+            except ApiError:
+                LOGGER.warning("Unable to read Weixin orchestration command registrations", exc_info=True)
+                unavailable = True
+        return tuple(registrations), unavailable
+
     def _validate_configuration(
         self,
         configuration: WeixinChubModeRuntimeConfig,
@@ -479,7 +631,7 @@ class WeixinChubModeManager:
         workspace = next(
             (
                 item
-                for item in self.codex_manager.workspaces()
+                for item in self.ai_session_manager.workspaces()
                 if item.id == configuration.workspace_id
             ),
             None,
@@ -492,7 +644,7 @@ class WeixinChubModeManager:
                 message="固定工作区当前不可用。",
             )
         try:
-            self.codex_manager.select_new_session_runtime()
+            self.ai_session_manager.select_new_session_runtime()
         except ApiError as exc:
             if exc.code == "ai_runtime_disabled":
                 return WeixinChubModeStatus(
@@ -652,6 +804,49 @@ class WeixinChubModeManager:
     def orchestration_enabled(self) -> bool:
         with self._lock:
             return self._state.orchestration_enabled
+
+    def orchestration_command_module_imported(self) -> bool:
+        """Whether an imported refinement implementation owns ``text`` commands.
+
+        An absent implementation leaves the fixed command group unowned, so
+        Chub replies that the module is not imported rather than submitting it.
+        """
+        with self._lock:
+            if self._state.orchestration_implementation != "disabled":
+                return True
+        try:
+            # An imported ZIP registers its main command even before an
+            # operator enables/selects it for new refinement requests.
+            return bool(self.orchestration_plugin_service.list_artifacts())
+        except Exception:
+            LOGGER.warning(
+                "Unable to read Weixin orchestration command registrations",
+                exc_info=True,
+            )
+            return False
+
+    @staticmethod
+    def _orchestration_module_disabled_message() -> str:
+        return (
+            "Text: The Weixin refinement module is disabled. "
+            "New messages are submitted unchanged."
+        )
+
+    @staticmethod
+    def _command_group_unavailable_message(
+        group: Literal["text", "codex"] | None,
+        state: Literal["not_imported", "disabled", "unavailable"],
+    ) -> str:
+        labels = {
+            "text": "Text: The Weixin refinement module",
+            "codex": "Codex: The Codex Runtime",
+        }
+        label = labels.get(group or "", "Command group")
+        if state == "not_imported":
+            return f"{label} is not imported. Import and enable it in Settings."
+        if state == "disabled":
+            return f"{label} is disabled. Enable it in Settings."
+        return f"{label} is unavailable. Try again later."
 
     def require_orchestration_implementation_available(self, *, ignore_enabled: bool = False) -> None:
         """Allow text optimization only when the selected implementation is ready."""
@@ -1043,7 +1238,7 @@ class WeixinChubModeManager:
                     session_title: str | None = None
                     session_workspace_name: str | None = None
                     if target_session_id is not None:
-                        target_session = self.codex_manager.get_session(target_session_id)
+                        target_session = self.ai_session_manager.get_session(target_session_id)
                         if (
                             self._slot_for_session(target_session_id) is None
                             or not self._session_matches_available_workspace(
@@ -1064,6 +1259,10 @@ class WeixinChubModeManager:
                         session_workspace_name = self._session_workspace_name(
                             target_session
                         )
+                    reservation.session_id = target_session_id
+                    reservation.session_slot = session_slot
+                    reservation.session_title = session_title
+                    reservation.session_workspace_name = session_workspace_name
                     def enqueue_refinement() -> bool:
                         return self.translation_manager.enqueue(
                             message_id=message_id,
@@ -1135,63 +1334,13 @@ class WeixinChubModeManager:
                         task_summary=task_summary,
                     )
 
-                self._sync_session_slots(configuration, fill_candidates=False)
-                if target_session_id is None:
-                    creation_ref = hashlib.sha256(
-                        f"{orchestration_id}:weixin-default".encode("utf-8")
-                    ).hexdigest()
-                    next_state = self._state.model_copy(deep=True)
-                    next_state.orchestration_requests = [
-                        item.model_copy(update={"creation_ref": creation_ref, "updated_at": utc_now()})
-                        if item.id == orchestration_id else item
-                        for item in next_state.orchestration_requests
-                    ]
-                    self._write_state(next_state)
-                    self._state = next_state
-                    request = next(item for item in self._state.orchestration_requests if item.id == orchestration_id)
-                    session_id, new_session = self.task_capabilities.create_session(
-                        request,
-                        creation_ref,
-                        lambda: self._ensure_session(configuration),
-                    )
-                    self._record_orchestration_capability_call(
+                session_id, new_session, session_ref = (
+                    self._resolve_orchestration_target_session(
                         orchestration_id,
-                        "create_session",
-                        "succeeded",
-                        "session.resolved",
+                        target_session_id,
+                        configuration,
                     )
-                else:
-                    session_id = target_session_id
-                    new_session = False
-                    target_session = self.codex_manager.get_session(session_id)
-                    if (
-                        self._slot_for_session(session_id) is None
-                            or not self._session_matches_available_workspace(
-                            target_session,
-                            configuration,
-                        )
-                    ):
-                        raise ApiError(
-                            409,
-                            "weixin_chub_mode_target_unavailable",
-                            "原目标 Session 已不可用，本次任务未执行。",
-                        )
-                session_ref = hashlib.sha256(
-                    f"{orchestration_id}:{session_id}".encode("utf-8")
-                ).hexdigest()
-                next_state = self._state.model_copy(deep=True)
-                next_state.orchestration_requests = [
-                    item.model_copy(update={
-                        "session_id": session_id,
-                        "session_ref": session_ref,
-                        "candidate_session_refs": [session_ref],
-                        "updated_at": utc_now(),
-                    })
-                    if item.id == orchestration_id else item
-                    for item in next_state.orchestration_requests
-                ]
-                self._write_state(next_state)
-                self._state = next_state
+                )
                 if (
                     not preprocess
                     and
@@ -1253,7 +1402,7 @@ class WeixinChubModeManager:
                     )
                 session_workspace_name: str | None = None
                 if preprocess:
-                    session = self.codex_manager.get_session(session_id)
+                    session = self.ai_session_manager.get_session(session_id)
                     session_slot = self._slot_for_session(session_id)
                     session_title = build_session_title(
                         session.title or prompt,
@@ -1286,7 +1435,7 @@ class WeixinChubModeManager:
                     task = None
                 else:
                     with self.quick_interactions.session_operation_guard(session_id):
-                        session = self.codex_manager.get_session(session_id)
+                        session = self.ai_session_manager.get_session(session_id)
                         if not new_session and session.activity == "unknown":
                             self._reclaim_unknown_session(
                                 session_id,
@@ -1606,86 +1755,14 @@ class WeixinChubModeManager:
         submitted_session_workspace_name: str | None,
         submitted_task_summary: str,
     ) -> str:
-        task_summaries_by_session = {submitted_session_id: submitted_task_summary}
-        try:
-            task_snapshot = self.quick_interactions.running_standard_task_summaries()
-            task_summaries_by_session.update(
-                {
-                    session_id: build_task_name(
-                        summary,
-                        self.settings.openclaw.weixin_chub_mode.task_name_max_width,
-                    )
-                    for session_id, summary in getattr(
-                        task_snapshot, "running_tasks", ()
-                    )
-                    if session_id != submitted_session_id
-                }
-            )
-        except Exception:
-            LOGGER.warning(
-                "Unable to snapshot running tasks after submission",
-                exc_info=True,
-            )
-
-        try:
-            snapshots = list(
-                self._collect_assigned_session_snapshot(
-                    self._state.configuration.model_copy(deep=True),
-                    self._state.session_id,
-                    [item.model_copy(deep=True) for item in self._state.session_slots],
-                )
-            )
-        except Exception:
-            LOGGER.warning(
-                "Unable to snapshot Sessions after task submission",
-                exc_info=True,
-            )
-            snapshots = []
-
-        if submitted_session_slot is not None and not any(
-            item.session_id == submitted_session_id for item in snapshots
-        ):
-            snapshots.append(
-                _ChubSessionSnapshot(
-                    slot=submitted_session_slot,
-                    session_id=submitted_session_id,
-                    title=submitted_session_title,
-                    state="Busy",
-                    current=self._state.session_id == submitted_session_id,
-                    workspace_name=submitted_session_workspace_name,
-                )
-            )
-        snapshots.sort(key=lambda item: item.slot)
-
-        entries: list[tuple[int, str, str, bool, str | None]] = []
-        task_summaries_by_slot: dict[int, str] = {}
-        for item in snapshots:
-            try:
-                running = self.quick_interactions.is_running(item.session_id)
-            except Exception:
-                running = False
-            busy = (
-                item.session_id == submitted_session_id
-                or item.session_id in task_summaries_by_session
-                or running
-            )
-            entries.append(
-                (
-                    item.slot,
-                    item.title,
-                    "Busy" if busy else item.state,
-                    item.current,
-                    item.workspace_name,
-                )
-            )
-            if item.session_id in task_summaries_by_session:
-                task_summaries_by_slot[item.slot] = task_summaries_by_session[
-                    item.session_id
-                ]
-
-        if not entries:
-            return format_task_context(status, submitted_task_summary)
-        return f"{status}\n\n{format_session_blocks(entries, task_summaries_by_slot)}"
+        return format_task_context(
+            status,
+            submitted_task_summary,
+            session_slot=submitted_session_slot,
+            session_title=submitted_session_title,
+            session_workspace_name=submitted_session_workspace_name,
+            current=self._state.session_id == submitted_session_id,
+        )
 
     def complete_optimized_task(
         self,
@@ -1931,6 +2008,18 @@ class WeixinChubModeManager:
                     status="failed",
                     error="翻译确认内容不完整。",
                 )
+            if entry.target_session_id is None:
+                try:
+                    entry = self._assign_confirmation_target(entry)
+                except (ApiError, OSError):
+                    LOGGER.warning(
+                        "Unable to assign a target for a translation confirmation",
+                        exc_info=True,
+                    )
+                    return SimpleNamespace(
+                        status="failed",
+                        error="确认任务未能分配目标 Session。",
+                    )
             return self.translation_confirmation_notifier(
                 entry.route,
                 target_session_id=entry.target_session_id,
@@ -1957,6 +2046,26 @@ class WeixinChubModeManager:
             english=entry.english,
             error=entry.error,
         )
+
+    def _assign_confirmation_target(
+        self,
+        entry: TranslationEntry,
+    ) -> TranslationEntry:
+        """Assign a durable target before publishing a new confirmation."""
+        if self.translation_manager is None or entry.orchestration_id is None:
+            raise OSError("Translation target binding is unavailable")
+        with self._slot_lock, self._lock:
+            target_session_id, _new_session, _session_ref = (
+                self._resolve_orchestration_target_session(
+                    entry.orchestration_id,
+                    None,
+                    self._state.configuration,
+                )
+            )
+            return self.translation_manager.assign_target_session(
+                entry.id,
+                target_session_id,
+            )
 
     def _optimized_task_notification_session_id(
         self,
@@ -2099,7 +2208,7 @@ class WeixinChubModeManager:
         delivery_route: QuickInteractionWeixinRoute,
     ) -> WeixinChubModeDispatchResult:
         """Route one trusted Weixin message through the single public contract."""
-        command = parse_weixin_chub_command(prompt)
+        command = self._parse_dispatch_command(prompt)
         command_task_prompt = (
             prompt
             if command.kind == "normal"
@@ -2108,6 +2217,18 @@ class WeixinChubModeManager:
             else None
         )
         mode_enabled = self._mode_enabled
+        if mode_enabled and command.command_group_state is not None:
+            return self._finalize_fixed_command_result(
+                command.kind,
+                WeixinChubModeDispatchResult(
+                    disposition="reply",
+                    message=self._command_group_unavailable_message(
+                        command.command_group,
+                        command.command_group_state,
+                    ),
+                ),
+                delivery_route,
+            )
         if mode_enabled and command.kind == "status":
             return self._finalize_fixed_command_result(
                 command.kind,
@@ -2135,6 +2256,15 @@ class WeixinChubModeManager:
                 route_fingerprint=self._route_fingerprint(delivery_route),
             )
         if mode_enabled and command.kind == "codex_auth":
+            if command.invalid_usage:
+                return self._finalize_fixed_command_result(
+                    command.kind,
+                    WeixinChubModeDispatchResult(
+                        disposition="reply",
+                        message="Codex: Usage: codex auth | codex auth switch",
+                    ),
+                    delivery_route,
+                )
             return self._finalize_fixed_command_result(
                 command.kind,
                 self._dispatch_codex_auth_status(
@@ -2146,23 +2276,60 @@ class WeixinChubModeManager:
                 delivery_route,
             )
         if mode_enabled and command.kind == "text_control":
+            # Disabling a module only changes admission for future messages.
+            # Queue inspection and confirmation actions remain available so
+            # requests accepted under their creation snapshot can converge.
+            settling_action = command.text_action in {"list", "ok", "next", "cancel"}
+            if not self.orchestration_enabled() and not settling_action:
+                return self._finalize_fixed_command_result(
+                    command.kind,
+                    WeixinChubModeDispatchResult(
+                        disposition="reply",
+                        message=self._orchestration_module_disabled_message(),
+                    ),
+                    delivery_route,
+                )
+            result = self._dispatch_text_control(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                route_fingerprint=self._route_fingerprint(delivery_route),
+                source_ip=source_ip,
+                delivery_route=delivery_route,
+                processing_mode=command.processing_mode,
+                text_action=command.text_action,
+                model_index=command.model_index,
+                level_index=command.level_index,
+                invalid_usage=command.invalid_usage,
+            )
+            if not self.orchestration_enabled() and command.text_action == "list":
+                result = result.model_copy(
+                    update={
+                        "message": "\n\n".join(
+                            (
+                                self._orchestration_module_disabled_message(),
+                                result.message or "Text processing: Unavailable.",
+                            )
+                        )
+                    }
+                )
             return self._finalize_fixed_command_result(
                 command.kind,
-                self._dispatch_text_control(
-                    message_id=message_id,
-                    correlation_id=correlation_id,
-                    route_fingerprint=self._route_fingerprint(delivery_route),
-                    source_ip=source_ip,
-                    delivery_route=delivery_route,
-                    processing_mode=command.processing_mode,
-                    text_action=command.text_action,
-                    model_index=command.model_index,
-                    level_index=command.level_index,
-                    invalid_usage=command.invalid_usage,
-                ),
+                result,
                 delivery_route,
             )
         if mode_enabled and command.kind == "text_check":
+            if not self.orchestration_enabled():
+                # The confirmation handler is idempotent and can only advance
+                # an existing queued item; it cannot create a new refinement.
+                if self.translation_manager is None or self.translation_manager.active_confirmation(delivery_route) is None:
+                    return self._finalize_fixed_command_result(
+                        command.kind,
+                        WeixinChubModeDispatchResult(
+                            disposition="reply",
+                            message=self._orchestration_module_disabled_message(),
+                        ),
+                        delivery_route,
+                    )
             return self._finalize_fixed_command_result(
                 command.kind,
                 self._dispatch_text_confirmation(
@@ -2174,6 +2341,15 @@ class WeixinChubModeManager:
                 delivery_route,
             )
         if mode_enabled and command.kind == "help":
+            if command.task_prompt == "text" and not self.orchestration_enabled():
+                return self._finalize_fixed_command_result(
+                    command.kind,
+                    WeixinChubModeDispatchResult(
+                        disposition="reply",
+                        message=self._orchestration_module_disabled_message(),
+                    ),
+                    delivery_route,
+                )
             return self._finalize_fixed_command_result(
                 command.kind,
                 self._dispatch_chub_help(
@@ -2752,7 +2928,7 @@ class WeixinChubModeManager:
             self._log_rename(operation_id, "requested", session_id, source_ip)
             self._log_rename(operation_id, "started", session_id, source_ip)
             try:
-                self.codex_manager.rename_session(
+                self.ai_session_manager.rename_session(
                     session_id,
                     normalized_title,
                 )
@@ -2880,7 +3056,7 @@ class WeixinChubModeManager:
                     session_title=target_title,
                 )
             try:
-                refreshed = self.codex_manager.get_session(target.id)
+                refreshed = self.ai_session_manager.get_session(target.id)
                 if (
                     refreshed.id != target.id
                     or not self._session_matches_available_workspace(
@@ -4066,7 +4242,7 @@ class WeixinChubModeManager:
 
         runtime_attention = False
         try:
-            management = self.codex_manager.read_runtime_management()
+            management = self.ai_session_manager.read_runtime_management()
             runtimes = list(getattr(management, "runtimes", []))
             if not runtimes:
                 runtime_message = "AI Runtime：未配置"
@@ -4294,17 +4470,18 @@ class WeixinChubModeManager:
             if entry.target_session_id is not None
             else (None, None, None)
         )
-        session_line = (
-            format_session_name_line(
+        if slot is not None and title is not None:
+            session_line = format_session_name_line(
                 slot,
                 title,
                 "Available",
                 entry.target_session_id == current_session_id,
                 workspace_name,
             )
-            if slot is not None and title is not None
-            else "Session · Unavailable"
-        )
+        elif entry.target_session_id is None:
+            session_line = "Session · Preparing"
+        else:
+            session_line = "Session · Unavailable"
         task_summary = build_task_name(
             entry.original,
             self.settings.openclaw.weixin_chub_mode.task_name_max_width,
@@ -4592,7 +4769,7 @@ class WeixinChubModeManager:
         if selected_model is None:
             raise ValueError("The configured translation model is unavailable")
         implementation_id = self._translation_implementation_id(status)
-        self.codex_manager.validate_model(
+        self.ai_session_manager.validate_model(
             configured_model,
             configured_reasoning_effort,
             implementation_id=implementation_id,
@@ -4601,17 +4778,17 @@ class WeixinChubModeManager:
 
     def _translation_model_catalog(self, status: object):
         implementation_id = self._translation_implementation_id(status)
-        return self.codex_manager.read_model_catalog(
+        return self.ai_session_manager.read_model_catalog(
             implementation_id=implementation_id
         )
 
     def _translation_implementation_id(self, status: object) -> str:
         runtime_id = getattr(status, "runtime_id", None)
         if isinstance(runtime_id, str) and runtime_id:
-            return self.codex_manager.default_submission_implementation_id(
+            return self.ai_session_manager.default_submission_implementation_id(
                 runtime_id
             )
-        _runtime_id, implementation_id = self.codex_manager.select_new_session_runtime(
+        _runtime_id, implementation_id = self.ai_session_manager.select_new_session_runtime(
             required_capabilities=frozenset({"background_turn"})
         )
         return implementation_id
@@ -4873,7 +5050,7 @@ class WeixinChubModeManager:
                 failed=True,
             )
         try:
-            session = self.codex_manager.get_session(session_id)
+            session = self.ai_session_manager.get_session(session_id)
             if getattr(session, "id", None) != session_id:
                 raise ValueError("Current Session identity could not be confirmed")
         except Exception:
@@ -4988,7 +5165,7 @@ class WeixinChubModeManager:
                 failed=True,
             )
         try:
-            session = self.codex_manager.get_session(session_id)
+            session = self.ai_session_manager.get_session(session_id)
             if getattr(session, "id", None) != session_id:
                 raise ValueError("Current Session identity could not be confirmed")
             catalog = self._session_model_catalog(session)
@@ -5155,7 +5332,7 @@ class WeixinChubModeManager:
                 failed=True,
             )
         try:
-            session = self.codex_manager.get_session(session_id)
+            session = self.ai_session_manager.get_session(session_id)
             if getattr(session, "id", None) != session_id:
                 raise ValueError("Current Session identity could not be confirmed")
             catalog = self._session_model_catalog(session)
@@ -5310,7 +5487,7 @@ class WeixinChubModeManager:
                 failed=True,
             )
         try:
-            session = self.codex_manager.get_session(session_id)
+            session = self.ai_session_manager.get_session(session_id)
             if getattr(session, "id", None) != session_id:
                 raise ValueError("Current Session identity could not be confirmed")
             catalog = self._session_model_catalog(session)
@@ -5984,7 +6161,7 @@ class WeixinChubModeManager:
         slots: list[WeixinChubModeSessionSlot],
     ) -> tuple[_ChubSessionSnapshot, ...]:
         return collect_assigned_session_snapshots(
-            sessions=self.codex_manager.list_sessions(),
+            sessions=self.ai_session_manager.list_sessions(),
             configuration=configuration,
             current_session_id=current_session_id,
             slots=slots,
@@ -6232,14 +6409,14 @@ class WeixinChubModeManager:
                         "Unable to start Codex usage check during slot synchronization"
                     )
                     account_results.put("Usage unavailable")
-                sessions = self.codex_manager.list_sessions()
+                sessions = self.ai_session_manager.list_sessions()
                 synced = self._build_synced_slots(
                     configuration,
                     original_slots,
                     original_current,
                     sessions,
                 )
-                verified_sessions = self.codex_manager.list_sessions()
+                verified_sessions = self.ai_session_manager.list_sessions()
                 if self._build_synced_slots(
                     configuration,
                     original_slots,
@@ -6420,8 +6597,8 @@ class WeixinChubModeManager:
         session_id = getattr(session, "id", None)
         if not isinstance(session_id, str) or not session_id:
             raise ValueError("Session identity could not be confirmed")
-        implementation_id = self.codex_manager.session_implementation_id(session_id)
-        return self.codex_manager.read_model_catalog(
+        implementation_id = self.ai_session_manager.session_implementation_id(session_id)
+        return self.ai_session_manager.read_model_catalog(
             implementation_id=implementation_id
         )
 
@@ -6784,7 +6961,7 @@ class WeixinChubModeManager:
         if slot is None:
             return None, None, None
         try:
-            session = self.codex_manager.get_session(session_id)
+            session = self.ai_session_manager.get_session(session_id)
         except Exception:
             return None, None, None
         if getattr(session, "id", None) != session_id:
@@ -6918,7 +7095,7 @@ class WeixinChubModeManager:
             )
 
         try:
-            current = self.codex_manager.get_session(session_id)
+            current = self.ai_session_manager.get_session(session_id)
             if (
                 current.id != session_id
                 or not self._session_matches_allowed_workspace(
@@ -6945,12 +7122,12 @@ class WeixinChubModeManager:
         self._log_rename(operation_id, "requested", session_id, source_ip)
         self._log_rename(operation_id, "started", session_id, source_ip)
         try:
-            renamed = self.codex_manager.rename_session(
+            renamed = self.ai_session_manager.rename_session(
                 session_id,
                 normalized_title,
             )
         except Exception as exc:
-            LOGGER.warning("Codex Session rename failed", exc_info=True)
+            LOGGER.warning("AI Session rename failed", exc_info=True)
             self._log_rename(operation_id, "failed", session_id, source_ip)
             if isinstance(exc, ApiError) and exc.code == "session_writer_active":
                 message = (
@@ -7116,7 +7293,7 @@ class WeixinChubModeManager:
 
         target_slot, target, _listed_state = target_entry
         try:
-            refreshed = self.codex_manager.get_session(target.id)
+            refreshed = self.ai_session_manager.get_session(target.id)
             if (
                 refreshed.id != target.id
                 or self._slot_for_session(refreshed.id) != target_slot
@@ -7201,7 +7378,7 @@ class WeixinChubModeManager:
         try:
             self._start_stop_operation(operation_id)
         except RuntimeError:
-            LOGGER.warning("Unable to start Codex Session stop worker", exc_info=True)
+            LOGGER.warning("Unable to start AI Session stop worker", exc_info=True)
             self._complete_stop_operation(
                 operation_id,
                 status="failed",
@@ -7253,7 +7430,7 @@ class WeixinChubModeManager:
                         snapshot.session_id,
                         snapshot.source_ip,
                     )
-                LOGGER.warning("Unable to persist Codex Session stop start")
+                LOGGER.warning("Unable to persist AI Session stop start")
                 return
             self._state = next_state
 
@@ -7267,7 +7444,7 @@ class WeixinChubModeManager:
             ):
                 raise OSError("Session stop result was not final")
         except Exception:
-            LOGGER.warning("Codex Session stop failed", exc_info=True)
+            LOGGER.warning("AI Session stop failed", exc_info=True)
             self._log_stop(operation_id, "failed", snapshot.session_id, snapshot.source_ip)
             self._complete_stop_operation(
                 operation_id,
@@ -7747,7 +7924,7 @@ class WeixinChubModeManager:
         target_slot, target, _listed_state = target_entry
 
         try:
-            refreshed = self.codex_manager.get_session(target.id)
+            refreshed = self.ai_session_manager.get_session(target.id)
             if (
                 refreshed.id != target.id
                 or self._slot_for_session(refreshed.id) != target_slot
@@ -8043,7 +8220,7 @@ class WeixinChubModeManager:
         target_slot, target, _listed_state = target_entry
 
         try:
-            refreshed = self.codex_manager.get_session(target.id)
+            refreshed = self.ai_session_manager.get_session(target.id)
             if (
                 refreshed.id != target.id
                 or self._slot_for_session(refreshed.id) != target_slot
@@ -8411,7 +8588,7 @@ class WeixinChubModeManager:
             )
 
         try:
-            refreshed = self.codex_manager.get_session(target.id)
+            refreshed = self.ai_session_manager.get_session(target.id)
             if (
                 refreshed.id != target.id
                 or not self._session_matches_allowed_workspace(refreshed, configuration)
@@ -8682,7 +8859,7 @@ class WeixinChubModeManager:
         *,
         fill_candidates: bool,
     ) -> tuple[list[tuple[int, object, str]], int]:
-        sessions = self.codex_manager.list_sessions()
+        sessions = self.ai_session_manager.list_sessions()
         self._sync_session_slots(
             configuration,
             sessions=sessions,
@@ -8704,7 +8881,7 @@ class WeixinChubModeManager:
         fill_candidates: bool,
     ) -> None:
         if sessions is None:
-            sessions = self.codex_manager.list_sessions()
+            sessions = self.ai_session_manager.list_sessions()
         synced = build_synced_slots(
             configuration=configuration,
             original_slots=self._state.session_slots,
@@ -8894,7 +9071,7 @@ class WeixinChubModeManager:
         try:
             return any(
                 workspace.id == workspace_id and workspace.available
-                for workspace in self.codex_manager.workspaces()
+                for workspace in self.ai_session_manager.workspaces()
             )
         except Exception:
             LOGGER.warning(
@@ -8938,7 +9115,7 @@ class WeixinChubModeManager:
         if getattr(session, "status", None) == "running" and activity != "idle":
             return "Unavailable"
         native_session_id = getattr(session, "native_session_id", None)
-        if native_session_id and self.codex_manager.has_active_writer(native_session_id):
+        if native_session_id and self.ai_session_manager.has_active_writer(native_session_id):
             return "Busy"
         return "Available"
 
@@ -8996,7 +9173,7 @@ class WeixinChubModeManager:
             session_id = self._state.session_id
         if not session_id:
             return False
-        return self.quick_interactions.cancel_codex_session(session_id)
+        return self.quick_interactions.cancel_session_interactions(session_id)
 
     def disable(self) -> bool:
         with self._slot_lock, self._lock:
@@ -9024,7 +9201,7 @@ class WeixinChubModeManager:
         session_id = self._state.session_id
         if session_id:
             try:
-                session = self.codex_manager.get_session(session_id)
+                session = self.ai_session_manager.get_session(session_id)
             except ApiError as exc:
                 if exc.code != "session_not_found":
                     raise
@@ -9032,6 +9209,102 @@ class WeixinChubModeManager:
                 if self._session_matches_available_workspace(session, configuration):
                     return session.id, False
         return self._create_session(configuration), True
+
+    def _resolve_orchestration_target_session(
+        self,
+        orchestration_id: str,
+        target_session_id: str | None,
+        configuration: WeixinChubModeRuntimeConfig,
+    ) -> tuple[str, bool, str]:
+        """Bind one durable target before a refinement stage can expose it."""
+        current_session_id = self._state.session_id
+        if (
+            target_session_id is not None
+            or current_session_id is None
+            or self._slot_for_session(current_session_id) is None
+        ):
+            self._sync_session_slots(configuration, fill_candidates=False)
+        if target_session_id is None:
+            request = next(
+                (
+                    item
+                    for item in self._state.orchestration_requests
+                    if item.id == orchestration_id
+                ),
+                None,
+            )
+            if request is None:
+                raise ApiError(
+                    409,
+                    "weixin_chub_mode_orchestration_unavailable",
+                    "文本优化编排记录已不可用，本次任务未执行。",
+                )
+            creation_ref = hashlib.sha256(
+                f"{orchestration_id}:weixin-default".encode("utf-8")
+            ).hexdigest()
+            next_state = self._state.model_copy(deep=True)
+            next_state.orchestration_requests = [
+                item.model_copy(
+                    update={"creation_ref": creation_ref, "updated_at": utc_now()}
+                )
+                if item.id == orchestration_id
+                else item
+                for item in next_state.orchestration_requests
+            ]
+            self._write_state(next_state)
+            self._state = next_state
+            request = next(
+                item
+                for item in self._state.orchestration_requests
+                if item.id == orchestration_id
+            )
+            session_id, new_session = self.task_capabilities.create_session(
+                request,
+                creation_ref,
+                lambda: self._ensure_session(configuration),
+            )
+            self._record_orchestration_capability_call(
+                orchestration_id,
+                "create_session",
+                "succeeded",
+                "session.resolved",
+            )
+        else:
+            session_id = target_session_id
+            new_session = False
+            target_session = self.ai_session_manager.get_session(session_id)
+            if (
+                self._slot_for_session(session_id) is None
+                or not self._session_matches_available_workspace(
+                    target_session,
+                    configuration,
+                )
+            ):
+                raise ApiError(
+                    409,
+                    "weixin_chub_mode_target_unavailable",
+                    "原目标 Session 已不可用，本次任务未执行。",
+                )
+        session_ref = hashlib.sha256(
+            f"{orchestration_id}:{session_id}".encode("utf-8")
+        ).hexdigest()
+        next_state = self._state.model_copy(deep=True)
+        next_state.orchestration_requests = [
+            item.model_copy(
+                update={
+                    "session_id": session_id,
+                    "session_ref": session_ref,
+                    "candidate_session_refs": [session_ref],
+                    "updated_at": utc_now(),
+                }
+            )
+            if item.id == orchestration_id
+            else item
+            for item in next_state.orchestration_requests
+        ]
+        self._write_state(next_state)
+        self._state = next_state
+        return session_id, new_session, session_ref
 
     def _create_session(
         self,
@@ -9053,7 +9326,7 @@ class WeixinChubModeManager:
                 "9 个微信 Session 槽位已满，请先归档或删除一个 Session。",
             )
         with self.quick_interactions.session_creation_guard():
-            created = self.codex_manager.create_session(configuration.workspace_id)
+            created = self.ai_session_manager.create_session(configuration.workspace_id)
         next_state = self._state.model_copy(deep=True)
         next_state.session_id = created.id
         next_state.session_slots.append(
@@ -9064,7 +9337,7 @@ class WeixinChubModeManager:
             self._write_state(next_state)
         except OSError:
             try:
-                discarded = self.codex_manager.discard_unstarted_session(created.id)
+                discarded = self.ai_session_manager.discard_unstarted_session(created.id)
             except Exception:
                 discarded = False
                 LOGGER.error(
@@ -9100,12 +9373,12 @@ class WeixinChubModeManager:
             stopped = (
                 self.session_reclaimer(session_id)
                 if self.session_reclaimer is not None
-                else self.codex_manager.stop_session(session_id)
+                else self.ai_session_manager.stop_session(session_id)
             )
             if (
                 getattr(stopped, "status", None) != "stopped"
                 or getattr(stopped, "activity", None) != "idle"
-                or not self.codex_manager.wait_for_writer_release(
+                or not self.ai_session_manager.wait_for_writer_release(
                     native_session_id,
                     timeout=3.0,
                 )
@@ -9474,6 +9747,31 @@ class WeixinChubModeManager:
             state.submissions,
             key=lambda item: (item.created_at, item.message_id),
         )[-MAX_STORED_SUBMISSIONS:]
+        active_orchestration_requests = [
+            request
+            for request in state.orchestration_requests
+            if request.status in {"accepted", "waiting", "unknown"}
+        ]
+        if len(active_orchestration_requests) > MAX_STORED_SUBMISSIONS:
+            raise OSError("Too many active Weixin orchestration requests")
+        terminal_limit = MAX_STORED_SUBMISSIONS - len(active_orchestration_requests)
+        terminal_orchestration_requests = sorted(
+            (
+                request
+                for request in state.orchestration_requests
+                if request.status not in {"accepted", "waiting", "unknown"}
+            ),
+            key=lambda request: (request.updated_at, request.id),
+        )
+        if terminal_limit:
+            terminal_orchestration_requests = terminal_orchestration_requests[
+                -terminal_limit:
+            ]
+        else:
+            terminal_orchestration_requests = []
+        state.orchestration_requests = (
+            active_orchestration_requests + terminal_orchestration_requests
+        )
         active_restart_operations = [
             item
             for item in state.restart_operations
@@ -9522,10 +9820,28 @@ class WeixinChubModeManager:
                 ).encode("utf-8")
                 if len(content) <= MAX_STATE_BYTES:
                     break
-                if not state.submissions:
-                    raise OSError("Weixin Chub mode state exceeds its size limit")
-                drop_count = max(1, len(state.submissions) // 10)
-                state.submissions = state.submissions[drop_count:]
+                if state.submissions:
+                    drop_count = max(1, len(state.submissions) // 10)
+                    state.submissions = state.submissions[drop_count:]
+                    continue
+                terminal_orchestration_requests = [
+                    request
+                    for request in state.orchestration_requests
+                    if request.status not in {"accepted", "waiting", "unknown"}
+                ]
+                if terminal_orchestration_requests:
+                    drop_count = max(1, len(terminal_orchestration_requests) // 10)
+                    dropped_ids = {
+                        request.id
+                        for request in terminal_orchestration_requests[:drop_count]
+                    }
+                    state.orchestration_requests = [
+                        request
+                        for request in state.orchestration_requests
+                        if request.id not in dropped_ids
+                    ]
+                    continue
+                raise OSError("Weixin Chub mode state exceeds its size limit")
             temporary.write_bytes(content)
             os.chmod(temporary, 0o600)
             temporary.replace(self.path)

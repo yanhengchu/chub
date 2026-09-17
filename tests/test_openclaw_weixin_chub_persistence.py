@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tests.session_fixtures import CodexSession
+from tests.session_fixtures import AiSessionFixture
 
 import json
 import re
@@ -12,12 +12,18 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.codex.models import (
+from app.ai_session.api_models import (
+    WorkspaceInfo,
+)
+from app.ai_interactions.models import (
+    QuickInteractionWeixinRoute,
+)
+from app.ai_usage.models import (
     CodexQuotaData,
     CodexQuotaWindow,
     CodexTokenUsageData,
-    QuickInteractionWeixinRoute,
-    WorkspaceInfo,
+)
+from app.ai_session.models import (
     utc_now,
 )
 from app.core.config import Settings
@@ -154,7 +160,7 @@ def test_startup_configuration_change_resets_bound_session(
     assert manager.session_id() is None
 
 
-def test_startup_removes_retired_weixin_session_configuration_fields(
+def test_startup_discards_incompatible_weixin_chub_state(
     settings: Settings,
 ) -> None:
     state_file = settings.openclaw.weixin_chub_mode.state_file
@@ -176,8 +182,10 @@ def test_startup_removes_retired_weixin_session_configuration_fields(
     WeixinChubModeManager(settings, MagicMock(), MagicMock())
 
     payload = json.loads(state_file.read_text(encoding="utf-8"))
+    assert payload["version"] == 2
     assert payload["configuration"] == {"enabled": False, "workspace_id": "chub"}
     assert payload["session_id"] is None
+    assert payload["submissions"] == []
 
 
 def test_invalid_state_blocks_submission_without_overwriting_file(
@@ -293,3 +301,50 @@ def test_state_failure_after_task_start_fails_closed(
         )
     assert retry_error.value.code == "weixin_chub_mode_state_unavailable"
     assert quick_interactions.submit.call_count == 1
+
+
+def test_state_write_discards_old_terminal_orchestration_requests_when_full(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, _quick_interactions = configured_manager(settings)
+    now = utc_now()
+    state = WeixinChubModeState(
+        configuration=manager.configuration(),
+        orchestration_requests=[
+            WeixinTaskOrchestrationRequest(
+                id="00000000-0000-0000-0000-000000000001",
+                message_id="active",
+                operation_id="active-operation",
+                task_kind="direct",
+                checkpoint="internal.submit",
+                status="accepted",
+                created_at=now,
+                updated_at=now,
+            ),
+            WeixinTaskOrchestrationRequest(
+                id="00000000-0000-0000-0000-000000000002",
+                message_id="old-terminal",
+                operation_id="old-operation",
+                task_kind="direct",
+                checkpoint="task.submitted",
+                status="completed",
+                created_at=now,
+                updated_at=now,
+            ),
+            WeixinTaskOrchestrationRequest(
+                id="00000000-0000-0000-0000-000000000003",
+                message_id="new-terminal",
+                operation_id="new-operation",
+                task_kind="direct",
+                checkpoint="task.submitted",
+                status="completed",
+                created_at=now,
+                updated_at=now + timedelta(seconds=1),
+            ),
+        ],
+    )
+
+    with patch("app.services.openclaw_weixin_chub_mode.MAX_STORED_SUBMISSIONS", 1):
+        manager._write_state(state)
+
+    assert [request.message_id for request in state.orchestration_requests] == ["active"]

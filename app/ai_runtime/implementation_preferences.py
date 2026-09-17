@@ -5,9 +5,9 @@ import os
 import re
 import threading
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.ai_runtime.contracts import (
     RUNTIME_ID_PATTERN,
@@ -25,29 +25,6 @@ class RuntimeImplementationPreferences(BaseModel):
     version: Literal[2] = 2
     default_implementation_ids: dict[str, str] = Field(default_factory=dict)
     disabled_implementation_ids: list[str] = Field(default_factory=list, max_length=32)
-
-    @model_validator(mode="before")
-    @classmethod
-    def migrate_single_default(cls, value: Any) -> Any:
-        if not isinstance(value, dict):
-            return value
-        # New in-memory objects may not have serialized the default version
-        # yet. Only the former single-default shape is eligible for migration.
-        if "default_implementation_ids" in value or value.get("version", 1) != 1:
-            return value
-        default_implementation_id = value.get("default_implementation_id")
-        defaults = (
-            {"codex": default_implementation_id}
-            if isinstance(default_implementation_id, str)
-            else {}
-        )
-        return {
-            "version": 2,
-            "default_implementation_ids": defaults,
-            "disabled_implementation_ids": value.get(
-                "disabled_implementation_ids", []
-            ),
-        }
 
 
 class RuntimeImplementationPreferencesStore:
@@ -68,7 +45,15 @@ class RuntimeImplementationPreferencesStore:
             if len(raw) > 16 * 1024:
                 raise RuntimeImplementationPreferencesUnavailable("Runtime 实现偏好超过固定大小上限。")
             try:
-                value = RuntimeImplementationPreferences.model_validate_json(raw)
+                payload = json.loads(raw)
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise RuntimeImplementationPreferencesUnavailable("Runtime 实现偏好格式无效。") from exc
+            if isinstance(payload, dict) and payload.get("version") != 2:
+                value = RuntimeImplementationPreferences()
+                self.save(value)
+                return value
+            try:
+                value = RuntimeImplementationPreferences.model_validate(payload)
             except ValidationError as exc:
                 raise RuntimeImplementationPreferencesUnavailable("Runtime 实现偏好格式无效。") from exc
             identifiers = [

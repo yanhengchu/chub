@@ -1,15 +1,19 @@
 from __future__ import annotations
 
-from tests.session_fixtures import CodexSession
+from tests.session_fixtures import AiSessionFixture
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
-from app.codex.models import (
-    QuickInteractionWeixinRoute,
+from app.ai_session.api_models import (
     WorkspaceInfo,
+)
+from app.ai_interactions.models import (
+    QuickInteractionWeixinRoute,
+)
+from app.ai_session.models import (
     utc_now,
 )
 from app.core.config import Settings
@@ -18,6 +22,7 @@ from app.services.openclaw_weixin_chub_messages import (
     build_task_name,
 )
 from app.services.openclaw_weixin_chub_mode import WeixinChubModeManager
+from chub_codex_runtime.weixin_commands import parse_weixin_command
 
 
 def delivery_route(
@@ -35,7 +40,6 @@ def submitted_task_message(settings: Settings, prompt: str) -> str:
     mode = settings.openclaw.weixin_chub_mode
     return (
         "Submitted\n\n"
-        "Sessions\n\n"
         f"▶ S1 · [Chub] {build_session_title(prompt, mode.session_name_max_width)}\n\n"
         f"Task · {build_task_name(prompt, mode.task_name_max_width)}"
     )
@@ -62,24 +66,24 @@ def configured_manager(
     settings.openclaw.weixin_chub_mode.enabled = True
     settings.openclaw.quick_interaction_completion.enabled = True
     settings.openclaw.quick_interaction_completion.weixin_recipient = "recipient"
-    codex_manager = MagicMock()
-    codex_manager.runtime_id = "codex"
-    codex_manager.select_new_session_runtime.return_value = (
+    ai_session_manager = MagicMock()
+    ai_session_manager.runtime_id = "codex"
+    ai_session_manager.select_new_session_runtime.return_value = (
         "codex",
         "codex-runtime-dev",
     )
-    codex_manager.session_implementation_id.return_value = "codex-runtime-dev"
-    codex_manager.runtime_settings_store.read_general.return_value = SimpleNamespace(
+    ai_session_manager.session_implementation_id.return_value = "codex-runtime-dev"
+    ai_session_manager.runtime_settings_store.read_general.return_value = SimpleNamespace(
         default_runtime_id="codex",
         model="translation-model",
         reasoning_effort="medium",
     )
-    codex_manager.workspaces.return_value = [
+    ai_session_manager.workspaces.return_value = [
         WorkspaceInfo(id="chub", name="Chub", path="/project", available=True)
     ]
-    codex_manager.available.return_value = True
-    codex_manager.create_session.return_value = SimpleNamespace(id="session-1")
-    codex_manager.get_session.return_value = CodexSession(
+    ai_session_manager.available.return_value = True
+    ai_session_manager.create_session.return_value = SimpleNamespace(id="session-1")
+    ai_session_manager.get_session.return_value = AiSessionFixture(
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",
@@ -88,8 +92,8 @@ def configured_manager(
         status="stopped",
         activity="idle",
     )
-    codex_manager.has_active_writer.return_value = False
-    codex_manager.wait_for_writer_release.return_value = True
+    ai_session_manager.has_active_writer.return_value = False
+    ai_session_manager.wait_for_writer_release.return_value = True
     quick_interactions = MagicMock()
     quick_interactions.deferred_restart = None
     quick_interactions.is_running.return_value = False
@@ -103,16 +107,17 @@ def configured_manager(
     quick_interactions.submit.return_value = SimpleNamespace(id="task-1")
     manager = WeixinChubModeManager(
         settings,
-        codex_manager,
+        ai_session_manager,
         quick_interactions,
         MagicMock(return_value=None),
+        codex_command_parser=lambda: parse_weixin_command,
     )
     manager.session_archiver = MagicMock()
     manager.session_deleter = MagicMock()
     manager._status_cache["readiness"] = (manager.status(), utc_now())
     return (
         manager,
-        codex_manager,
+        ai_session_manager,
         quick_interactions,
     )
 

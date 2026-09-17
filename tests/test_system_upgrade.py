@@ -11,7 +11,7 @@ import yaml
 
 from app.ai_session import AiSessionManager
 from app.application import create_app
-from app.codex.models import QuickInteractionWeixinRoute
+from app.ai_interactions.models import QuickInteractionWeixinRoute
 from app.core.build_info import SESSION_SCHEMA_VERSION, WEB_CODE_VERSION
 from app.core.config import Settings
 from app.quick_worker import PROTOCOL_VERSION
@@ -174,8 +174,9 @@ def test_plan_loader_allows_fixed_runtime_data_reset(tmp_path: Path) -> None:
 def test_app_uses_ai_session_manager_without_reading_legacy_store(
     settings: Settings,
 ) -> None:
-    settings.ai_runtime.codex.data_file.write_text("[]", encoding="utf-8")
-    settings.ai_runtime.codex.data_file.chmod(0o600)
+    legacy_session_file = settings.ai_runtime.shared.state_dir / "sessions.json"
+    legacy_session_file.write_text("[]", encoding="utf-8")
+    legacy_session_file.chmod(0o600)
 
     application = create_app(settings)
     try:
@@ -771,7 +772,7 @@ def test_prepare_restart_removes_actual_and_declared_worker_protocol_state(
     loaded = load_system_upgrade_plan(plan_path)
     assert loaded is not None
     coordinator = SystemUpgradeCoordinator(
-        settings.ai_runtime.codex.data_file.with_name("system-upgrade.json"),
+        settings.ai_runtime.shared.state_dir / "system-upgrade.json",
         plan_path,
         "old",
     )
@@ -813,8 +814,8 @@ def test_prepare_restart_removes_actual_and_declared_worker_protocol_state(
         path.mkdir(parents=True)
         os.chmod(path, 0o700)
     for path in (
-        settings.ai_runtime.codex.data_file,
-        settings.ai_runtime.codex.data_file.with_name("ai-sessions.json"),
+        settings.ai_runtime.shared.state_dir / "sessions.json",
+        settings.ai_runtime.shared.state_dir / "ai-sessions.json",
     ):
         path.write_text("[]", encoding="utf-8")
         path.chmod(0o600)
@@ -829,9 +830,90 @@ def test_prepare_restart_removes_actual_and_declared_worker_protocol_state(
     assert all(not path.exists() for path in source_paths)
     assert all(not path.exists() for path in actual_paths)
     assert all(path.is_dir() for path in unrelated_paths)
-    assert not settings.ai_runtime.codex.data_file.exists()
-    assert not settings.ai_runtime.codex.data_file.with_name("ai-sessions.json").exists()
+    assert not (settings.ai_runtime.shared.state_dir / "sessions.json").exists()
+    assert not (settings.ai_runtime.shared.state_dir / "ai-sessions.json").exists()
     assert not worker_restart_request_dir(settings).exists()
+
+
+def test_prepare_restart_uses_current_state_and_clears_retired_codex_state(
+    settings: Settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan_path = tmp_path / "plan.json"
+    write_plan(plan_path)
+    loaded = load_system_upgrade_plan(plan_path)
+    assert loaded is not None
+    active_state_dir = tmp_path / "ai-runtime"
+    retired_root = tmp_path / "retired-runtime-state"
+    legacy_state_dir = retired_root / "data/local/state/codex"
+    legacy_runtime_dir = retired_root / "data/local/runtime/codex"
+    settings.ai_runtime.shared.state_dir = active_state_dir
+    unrelated_state_dir = tmp_path / "unrelated-state"
+    unrelated_runtime_dir = tmp_path / "unrelated-runtime"
+    monkeypatch.setattr("app.system_upgrade_cli.PROJECT_ROOT", retired_root)
+    coordinator = SystemUpgradeCoordinator(
+        active_state_dir / "system-upgrade.json",
+        plan_path,
+        "current",
+    )
+    operation = coordinator.begin(
+        loaded,
+        source_ip="127.0.0.1",
+        old_worker_generation=None,
+        runner=lambda _operation_id: None,
+    )
+    coordinator.mark_started(operation.operation_id)
+    coordinator.update(
+        operation.operation_id,
+        stage="restarting_services",
+        destructive_started=True,
+        restart_launch_state="launched",
+        restart_process_id=os.getpid(),
+    )
+    legacy_state_dir.mkdir(parents=True, exist_ok=True)
+    (legacy_state_dir / "system-upgrade.json").write_text("{}", encoding="utf-8")
+    (legacy_state_dir / "ai-sessions.json").write_text("[]", encoding="utf-8")
+    os.chmod(legacy_state_dir, 0o700)
+    os.chmod(legacy_state_dir / "system-upgrade.json", 0o600)
+    os.chmod(legacy_state_dir / "ai-sessions.json", 0o600)
+    legacy_runtime_dir.mkdir(parents=True)
+    os.chmod(legacy_runtime_dir, 0o700)
+    (legacy_runtime_dir / "restart-request.json").write_text("{}", encoding="utf-8")
+    os.chmod(legacy_runtime_dir / "restart-request.json", 0o600)
+    legacy_files = (
+        retired_root / "data/codex-sessions.json",
+        retired_root / "data/codex-quick-interactions.json",
+    )
+    for path in legacy_files:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("[]", encoding="utf-8")
+        path.chmod(0o600)
+    legacy_directories = (
+        retired_root / "data/state/codex",
+        retired_root / "data/codex-quick-interactions",
+        retired_root / "data/runtime/codex/quick-interactions",
+    )
+    for path in legacy_directories:
+        path.mkdir(parents=True, exist_ok=True)
+        path.chmod(0o700)
+        (path / "record.json").write_text("{}", encoding="utf-8")
+        (path / "record.json").chmod(0o600)
+    unrelated_state_dir.mkdir()
+    unrelated_runtime_dir.mkdir()
+    os.chmod(unrelated_state_dir, 0o700)
+    os.chmod(unrelated_runtime_dir, 0o700)
+
+    with patch("app.system_upgrade_cli.load_settings", return_value=settings):
+        prepare_restart(operation.operation_id)
+
+    assert (active_state_dir / "system-upgrade.json").is_file()
+    assert not legacy_state_dir.exists()
+    assert not legacy_runtime_dir.exists()
+    assert all(not path.exists() for path in legacy_files)
+    assert all(not path.exists() for path in legacy_directories)
+    assert unrelated_state_dir.is_dir()
+    assert unrelated_runtime_dir.is_dir()
 
 
 def test_system_upgrade_restart_uses_fixed_linux_services(
@@ -843,7 +925,7 @@ def test_system_upgrade_restart_uses_fixed_linux_services(
     loaded = load_system_upgrade_plan(plan_path)
     assert loaded is not None
     coordinator = SystemUpgradeCoordinator(
-        settings.ai_runtime.codex.data_file.with_name("system-upgrade.json"),
+        settings.ai_runtime.shared.state_dir / "system-upgrade.json",
         plan_path,
         "old",
     )
@@ -881,14 +963,17 @@ def test_system_upgrade_restart_uses_fixed_linux_services(
                 "app": {"name": "Hub", "version": "0.1.0"},
                 "node": {"id": "test", "name": "Test", "type": "ubuntu"},
                     "server": {"port": 8080},
-                "security": {"allow_tailscale": False},
-                "ai_runtime": {
-                    "codex": {
-                        "workspace": str(settings.ai_runtime.codex.workspace),
-                        "data_file": str(settings.ai_runtime.codex.data_file),
-                        "runtime_dir": str(settings.ai_runtime.codex.runtime_dir),
+                    "security": {"allow_tailscale": False},
+                    "ai_runtime": {
+                        "shared": {
+                            "workspace": str(settings.ai_runtime.shared.workspace),
+                            "state_dir": str(settings.ai_runtime.shared.state_dir),
+                            "runtime_dir": str(tmp_path / "active-runtime"),
+                        },
+                        "codex": {
+                            "enabled": True,
+                        },
                     },
-                },
             }
         ),
         encoding="utf-8",
@@ -1204,7 +1289,7 @@ async def test_upgrade_preview_allows_recovery_from_corrupt_session_store(
     app.state.system_upgrade.plan_path = plan_path
     app.state.system_upgrade_restart_readiness = lambda: None
     app.state.quick_interactions._recovery_ready = True
-    ai_session_path = settings.ai_runtime.codex.data_file.with_name("ai-sessions.json")
+    ai_session_path = settings.ai_runtime.shared.state_dir / "ai-sessions.json"
     ai_session_path.write_text("not-json", encoding="utf-8")
     ai_session_path.chmod(0o600)
     transport = httpx.ASGITransport(app=app)
@@ -1230,7 +1315,7 @@ async def test_upgrade_preview_rejects_unsafe_session_runtime_path(
     app.state.system_upgrade.plan_path = tmp_path / "system-upgrade.json"
     app.state.system_upgrade_restart_readiness = lambda: None
     app.state.quick_interactions._recovery_ready = True
-    ai_session_path = settings.ai_runtime.codex.data_file.with_name("ai-sessions.json")
+    ai_session_path = settings.ai_runtime.shared.state_dir / "ai-sessions.json"
     ai_session_path.symlink_to(tmp_path / "unexpected-session-state")
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(

@@ -265,7 +265,10 @@ async def test_codex_runtime_account_check_reports_api_mode_when_usage_is_unavai
     assert response.json()["data"]["weekly_remaining_percent"] is None
     assert response.json()["data"]["checked_at"]
     assert response.json()["data"]["login_page_available"] is False
-    app.state.ai_usage.read.assert_called_once_with(force=True)
+    app.state.ai_usage.read.assert_called_once_with(
+        force=True,
+        runtime_id="codex-runtime-dev",
+    )
 
 
 @pytest.mark.anyio
@@ -341,7 +344,10 @@ async def test_codex_runtime_account_check_includes_remaining_quota_percentages(
     assert data["five_hour_remaining_percent"] == 42
     assert data["weekly_remaining_percent"] == 78
     assert data["checked_at"] == checked_at
-    app.state.ai_usage.read.assert_called_once_with(force=True)
+    app.state.ai_usage.read.assert_called_once_with(
+        force=True,
+        runtime_id="codex-runtime-dev",
+    )
 
 
 @pytest.mark.anyio
@@ -373,7 +379,10 @@ async def test_codex_runtime_account_check_reports_unknown_authentication(
     assert response.json()["data"]["auth_mode"] == "unknown"
     assert response.json()["data"]["message"] == "登录状态暂不可用"
     assert response.json()["data"]["checked_at"]
-    app.state.ai_usage.read.assert_called_once_with(force=True)
+    app.state.ai_usage.read.assert_called_once_with(
+        force=True,
+        runtime_id="codex-runtime-dev",
+    )
 
 
 @pytest.mark.anyio

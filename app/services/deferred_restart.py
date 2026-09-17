@@ -12,7 +12,7 @@ from typing import Callable, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.codex.models import utc_now
+from app.ai_session.models import utc_now
 from app.core.response import ApiError
 from app.services.operation_log import write_operation
 from app.services.restart_command import (
@@ -64,18 +64,9 @@ class DeferredRestartState(_StrictModel):
     next: DeferredRestartRequest | None = None
 
 
-class _LegacyDeferredRestartState(DeferredRestartRequest):
-    version: Literal[1] = 1
-
-
 def parse_deferred_restart_state(payload: object) -> DeferredRestartState:
-    if isinstance(payload, dict) and payload.get("version") == 1:
-        legacy = _LegacyDeferredRestartState.model_validate(payload)
-        return DeferredRestartState(
-            current=DeferredRestartRequest.model_validate(
-                legacy.model_dump(exclude={"version"})
-            )
-        )
+    if not isinstance(payload, dict) or payload.get("version") != 2:
+        raise ValueError("Deferred restart state uses an incompatible version")
     return DeferredRestartState.model_validate(payload)
 
 
@@ -113,12 +104,20 @@ class DeferredRestartCoordinator:
     def _load(self) -> DeferredRestartState | None:
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
-            return parse_deferred_restart_state(payload)
         except FileNotFoundError:
             return None
         except (OSError, ValueError, json.JSONDecodeError):
             self._state_error = True
             LOGGER.warning("Deferred restart state is unavailable", exc_info=True)
+            return None
+        try:
+            return parse_deferred_restart_state(payload)
+        except ValueError:
+            try:
+                self._delete_state()
+            except OSError:
+                self._state_error = True
+                LOGGER.warning("Unable to discard deferred restart state", exc_info=True)
             return None
 
     def set_ready_check(

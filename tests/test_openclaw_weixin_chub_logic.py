@@ -24,6 +24,7 @@ from app.services.openclaw_weixin_chub_messages import (
     session_matches_configuration,
     with_task_summary,
 )
+from app.services.weixin_orchestration_plugin_dev import WeixinDevelopmentStage
 from app.services.openclaw_weixin_chub_models import (
     WeixinChubModeRuntimeConfig,
     WeixinChubModeState,
@@ -85,7 +86,7 @@ def test_parse_weixin_chub_command_contract(
     task_prompt: str | None,
     invalid_usage: bool,
 ) -> None:
-    command = parse_weixin_chub_command(prompt)
+    command = WeixinDevelopmentStage().command_parser()(prompt) or parse_weixin_chub_command(prompt)
 
     assert command.kind == kind
     assert command.requested_index == requested_index
@@ -224,10 +225,19 @@ def test_model_command_indices_are_parsed(
     model_index: int | None,
     level_index: int | None,
 ) -> None:
-    command = parse_weixin_chub_command(prompt)
+    command = WeixinDevelopmentStage().command_parser()(prompt) or parse_weixin_chub_command(prompt)
 
     assert command.model_index == model_index
     assert command.level_index == level_index
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    ("text", "text list", "text-check confirm this", "text help"),
+)
+def test_core_parser_leaves_refinement_commands_for_an_imported_module(prompt: str) -> None:
+    assert parse_weixin_chub_command(prompt).kind == "normal"
+    assert WeixinDevelopmentStage().command_parser()(prompt) is not None
 
 
 def test_fixed_reply_uses_english_labels_and_preserves_task_title() -> None:
@@ -434,10 +444,10 @@ def test_task_summary_is_inserted_before_status_suffix_once() -> None:
     assert with_task_summary(result, "不会重复") == result
 
 
-def test_state_round_trip_rejects_retired_session_configuration_fields() -> None:
+def test_current_state_rejects_unknown_configuration_fields() -> None:
     now = datetime(2026, 8, 15, tzinfo=timezone.utc)
     payload = {
-        "version": 1,
+        "version": 2,
         "configuration": {
             "enabled": True,
             "workspace_id": "chub",

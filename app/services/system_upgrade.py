@@ -15,7 +15,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from app.codex.models import utc_now
+from app.ai_session.models import utc_now
+from app.core.config import PROJECT_ROOT
 from app.core.build_info import (
     SESSION_SCHEMA_VERSION,
     SYSTEM_UPGRADE_CONTRACT_VERSION,
@@ -30,6 +31,27 @@ from app.services.operation_log import write_operation
 LOGGER = logging.getLogger("hub.system_upgrade")
 MAX_PLAN_BYTES = 32 * 1024
 MAX_STATE_BYTES = 256 * 1024
+
+
+def retired_ai_runtime_state_files(
+    project_root: Path = PROJECT_ROOT,
+) -> tuple[Path, ...]:
+    return (
+        project_root / "data/codex-sessions.json",
+        project_root / "data/codex-quick-interactions.json",
+    )
+
+
+def retired_ai_runtime_directories(
+    project_root: Path = PROJECT_ROOT,
+) -> tuple[Path, ...]:
+    return (
+        project_root / "data/state/codex",
+        project_root / "data/codex-quick-interactions",
+        project_root / "data/runtime/codex/quick-interactions",
+        project_root / "data/local/state/codex",
+        project_root / "data/local/runtime/codex",
+    )
 
 
 class _StrictModel(BaseModel):
@@ -239,16 +261,15 @@ def runtime_recovery_plan() -> LoadedSystemUpgradePlan:
 
 def runtime_cleanup_readiness(settings) -> str | None:
     """Validate the fixed local paths before accepting a destructive reset."""
-    files = tuple(
-        path
-        for path in (
-            settings.ai_runtime.shared.legacy_state_file,
-            settings.ai_runtime.shared.state_dir / "sessions.json",
-            settings.ai_runtime.shared.state_dir / "ai-sessions.json",
-        )
-        if path is not None
+    files = (
+        settings.ai_runtime.shared.state_dir / "sessions.json",
+        settings.ai_runtime.shared.state_dir / "ai-sessions.json",
+        *retired_ai_runtime_state_files(),
     )
-    directories = (worker_restart_request_dir(settings),)
+    directories = (
+        worker_restart_request_dir(settings),
+        *retired_ai_runtime_directories(),
+    )
     for path in files:
         try:
             metadata = path.lstat()

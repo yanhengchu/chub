@@ -25,6 +25,24 @@ WEB_RESTART = PROJECT_ROOT / "scripts" / "chub-web-restart"
 
 @pytest.fixture
 def service_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
+    class HealthHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            if self.path != "/api/health":
+                self.send_error(404)
+                return
+            body = b'{"success":true}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: object) -> None:
+            return
+
+    health_server = ThreadingHTTPServer(("127.0.0.1", 0), HealthHandler)
+    health_thread = threading.Thread(target=health_server.serve_forever, daemon=True)
+    health_thread.start()
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     shutil.copytree(PROJECT_ROOT / "scripts", workspace / "scripts")
@@ -47,17 +65,19 @@ def service_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
                 "  name: Test Node",
                 "  type: unknown",
                 "server:",
-                "  port: 8080",
+                f"  port: {health_server.server_port}",
                 "security: {}",
                 "logs:",
                 f"  file: {tmp_path / 'hub.log'}",
                 f"  operations_file: {tmp_path / 'operations.log'}",
                 f"  worker_operations_file: {tmp_path / 'worker-operations.log'}",
                 "ai_runtime:",
-                "  codex:",
+                "  shared:",
                 f"    workspace: {tmp_path / 'workspace'}",
-                f"    data_file: {tmp_path / 'state' / 'sessions.json'}",
+                f"    state_dir: {tmp_path / 'state'}",
                 f"    runtime_dir: {tmp_path / 'runtime'}",
+                "  codex:",
+                "    enabled: true",
                 "",
             ]
         ),
@@ -99,7 +119,12 @@ def service_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
             "CHUB_TEST_SCRIPT": str(workspace / "scripts" / "chub"),
         }
     )
-    return env, calls
+    try:
+        yield env, calls
+    finally:
+        health_server.shutdown()
+        health_server.server_close()
+        health_thread.join(timeout=3)
 
 
 def run_chub(

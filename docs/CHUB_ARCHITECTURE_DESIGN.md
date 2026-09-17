@@ -77,7 +77,7 @@ AI Runtime 层提供 Chub 的 AI 能力。当前完整接入的 Runtime 是 Code
 - Quick Worker、固定 Runner、Runtime Adapter 和本机 AI Agent 调用。
 - 模型、推理等级、AI 用量及 AI 任务相关的业务终态。
 
-当前部署只启用一个后端固定注册的 Runtime，现有实例为 Codex；客户端不能选择 Runtime。设置页可启用或停用已注册 Runtime。停用只拒绝新的 AI 任务受理，不取消、迁移或重放已受理任务，也不改变 Worker 服务健康。Runtime 缺失、不健康或被停用时，新任务必须失败关闭，不自动降级到其他 Runtime；查看、停止、归档等已有 Session 维护能力按各自契约保持可用。多个 Runtime 的选择、聚合和切换语义由 Runtime 专项设计在真实接入前单独定义。
+当前唯一接入的 Runtime 是 Codex；核心已支持通过 Runtime 契约并存加载多个 Runtime。外部调用方不能选择 Runtime；维护者只能在设置页切换后续新 Session 的默认 Runtime 或其当前实现版本。停用只拒绝对应 Runtime 的后续新任务，不取消、迁移或重放已受理任务，也不改变 Worker 服务健康。Runtime 缺失、不健康或被停用时，新任务必须失败关闭，不自动降级到其他 Runtime；查看、停止、归档等已有 Session 维护能力按其创建时固定的 Runtime 与实现契约保持可用。多 Runtime 的具体私有认证、用量、Native 数据和平台验收仍由对应专项设计定义。
 
 ### 2.3 第三方服务层
 
@@ -138,7 +138,7 @@ AI Runtime 层
 | --- | --- | --- |
 | `app/core/`、`app/tasks/`、`app/automations/`、`app/notifications/`、`app/requests/` | 核心层 | 配置、安全、日志、维护任务、固定自动化、通知和需求储备 |
 | `app/application.py`、`app/api/`、`app/web/`、`scripts/`、`config/` | 部署组合根与核心层入口 | Web、CLI、受控服务维护与配置；仅注册或调用对应层公开能力 |
-| `app/ai_runtime/`、`app/ai_session/`、`app/codex/`、`app/quick_worker*.py`、`app/ai_usage/`、`runtime-modules/` | AI Runtime 层 | Runtime 契约、插件 ZIP、Session、Worker、Runner，以及由 Runtime 归属的 AI 用量与专属设置 |
+| `app/ai_runtime/`、`app/ai_session/`、`app/ai_interactions/`、`app/api/ai.py`、`app/quick_worker*.py`、`app/ai_usage/`、`runtime-modules/` | AI Runtime 层 | Runtime 契约、插件 ZIP、Session、快速交互与 Worker、Runner、`/api/ai/*` 入口，以及由 Runtime 归属的 AI 用量与专属设置 |
 | `integrations/openclaw/chub/`、OpenClaw/微信适配协调 | 第三方服务层 | 插件、通道、绑定、固定路由和第三方协议 |
 | `app/services/` | 过渡区 | 已有跨领域协调；新增逻辑不得以此作为新的通用领域，应按三层归属落位 |
 
@@ -213,6 +213,7 @@ Debug Chrome 是核心层的受管浏览器基础能力；固定自动化、账�
 ## 8. 跨层不可违反约束
 
 - 受保护接口只接受真实 loopback，或配置允许时的真实 Tailnet socket；不信任客户端转发 Header。
+- Web 必定监听 loopback；启动时仅在发现且能绑定 Tailscale 地址时追加 Tailnet listener。Tailscale 未启动、无地址或地址失效时只保留 loopback，Web 仍是健康可用状态，并在下一次 Web 启动重新发现；不得为等待 Tailnet 阻塞、失败或重启 Web。
 - 客户端不能提供任意文件路径、系统命令、Runtime、Session 原生 ID、收件人、版本或恢复目标。
 - 第三方服务和入口适配器只能调用公开用例，不能直接修改核心层或 AI Runtime 层私有状态。
 - 同一逻辑 Session 同时只有一个 writer；Chub 不接管其他应用占用的原生 Session。

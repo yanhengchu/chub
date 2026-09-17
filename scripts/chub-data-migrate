@@ -259,14 +259,8 @@ PY
   move_path "$source" "$target"
 }
 
-merge_json_array data/codex-sessions.json data/local/state/codex/sessions.json
-merge_json_array data/codex-quick-interactions.json data/local/state/codex/quick-interactions.json
-merge_json_array data/state/codex/sessions.json data/local/state/codex/sessions.json
-merge_json_array data/state/codex/quick-interactions.json data/local/state/codex/quick-interactions.json
 merge_archived_document_state data/project-documents.json data/local/state/project-documents.json
 merge_archived_document_state data/state/project-documents.json data/local/state/project-documents.json
-merge_directory data/codex-quick-interactions data/local/runtime/codex/quick-interactions
-merge_directory data/runtime/codex/quick-interactions data/local/runtime/codex/quick-interactions
 
 merge_directory data/automations/states data/local/state/automations
 move_path data/automations/runtime/browser-profile-initialization.json \

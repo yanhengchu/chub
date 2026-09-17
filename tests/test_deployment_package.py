@@ -219,7 +219,7 @@ def test_release_configuration_persists_without_changing_app_version(
     saved = service.save_configuration(configuration)
 
     assert saved.app_version == settings.app.version
-    assert saved.configuration == configuration
+    assert saved.configuration == configuration.model_copy(update={"release_note": ""})
     assert json.loads(settings.deployment_package.state_file.read_text())["configuration"]["chub_release_version"] == "9.9.9"
 
 
@@ -261,11 +261,13 @@ def test_release_note_generation_reuses_a_general_internal_session_and_marks_sta
         )
     )
 
+    draft_token = "a" * 32
     requested = service.generate_release_note(
         release_version="1.0.0",
         include_development_sources=False,
         source_ip="127.0.0.1",
         operation_id="release-note-operation",
+        release_note_draft_token=draft_token,
     )
 
     assert sessions.created_with == ("chub",)
@@ -281,7 +283,7 @@ def test_release_note_generation_reuses_a_general_internal_session_and_marks_sta
     service.record_release_note_task_finished(quick.task)
 
     persisted = json.loads(settings.deployment_package.state_file.read_text())
-    assert persisted["configuration"]["release_note"] == "- 支持正式发布\n- 补充部署流程"
+    assert persisted["configuration"]["release_note"] == ""
     assert persisted["release_note_generation"]["status"] == "succeeded"
     assert operation_log == [
         {
@@ -293,11 +295,16 @@ def test_release_note_generation_reuses_a_general_internal_session_and_marks_sta
             "reason": None,
         }
     ]
-    completed = service.status()
+    completed = service.status(release_note_draft_token=draft_token)
 
-    assert completed.configuration.release_note == "- 支持正式发布\n- 补充部署流程"
-    assert completed.configuration.release_note_generated_for_commit == "b" * 40
+    assert completed.configuration.release_note == ""
+    assert completed.generated_release_note == "- 支持正式发布\n- 补充部署流程"
     assert completed.release_note_generation.status == "succeeded"
+    assert service.status().generated_release_note is None
+    assert service.status(release_note_draft_token="b" * 32).generated_release_note is None
+    assert DeploymentPackageService(settings, sessions, quick).status().generated_release_note is None
+    service._release_note_draft_expires_at = 0
+    assert service.status(release_note_draft_token=draft_token).generated_release_note is None
     head["fingerprint"] = "c" * 64
     stale = service.status()
 
@@ -387,6 +394,7 @@ async def test_release_note_generation_api_records_no_premature_success(
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             "/api/settings/deployment-package/release-note",
+            headers={"X-Chub-Release-Note-Draft-Token": "a" * 32},
             json={"release_version": "1.0.0"},
         )
 
@@ -397,6 +405,7 @@ async def test_release_note_generation_api_records_no_premature_success(
             "include_development_sources": False,
             "source_ip": "127.0.0.1",
             "operation_id": "release-note-operation",
+            "release_note_draft_token": "a" * 32,
         }
     ]
     assert [item["status"] for item in logs] == ["requested", "started"]
@@ -697,15 +706,14 @@ async def test_deployment_package_settings_api_reads_and_updates_configuration(
     payload = {
         "release_version": "4.0.0",
         "include_development_sources": True,
-        "release_note": "发布说明。",
     }
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         before = await client.get("/api/settings/deployment-package")
         updated = await client.put("/api/settings/deployment-package", json=payload)
-        cleared = await client.put(
+        rejected_note = await client.put(
             "/api/settings/deployment-package",
-            json={**payload, "release_note": "   "},
+            json={**payload, "release_note": "不应保存。"},
         )
         visibility_before = await client.get(
             "/api/settings/deployment-package/release-note-session"
@@ -720,7 +728,7 @@ async def test_deployment_package_settings_api_reads_and_updates_configuration(
     assert before.json()["data"]["app_version"] == settings.app.version
     assert set(before.json()["data"]["source_versions"]) == {"chub", "runtime", "weixin"}
     assert updated.status_code == 200
-    assert cleared.status_code == 200
+    assert rejected_note.status_code == 422
     assert visibility_before.json()["data"] == {"show_sessions": False}
     assert visibility_updated.json()["data"] == {"show_sessions": True}
     assert opened_output.status_code == 200
@@ -731,10 +739,43 @@ async def test_deployment_package_settings_api_reads_and_updates_configuration(
     assert configuration["runtime_release_version"] == payload["release_version"]
     assert configuration["weixin_release_version"] == payload["release_version"]
     assert configuration["include_development_sources"] is payload["include_development_sources"]
-    assert configuration["release_note"] == payload["release_note"]
+    assert configuration["release_note"] == ""
     assert configuration["runtime_implementation_id"] == "codex-010000"
     assert "AI Session" in configuration["runtime_description"]
-    assert cleared.json()["data"]["configuration"]["release_note"] == ""
+    assert rejected_note.json()["error"]["code"] == "invalid_request"
+
+
+@pytest.mark.anyio
+async def test_deployment_package_build_api_uses_the_current_request_configuration(
+    settings,
+    tmp_path: Path,
+) -> None:
+    settings.deployment_package.artifacts_dir = tmp_path / "releases"
+    settings.deployment_package.state_file = tmp_path / "state.json"
+    app = create_app(settings)
+    captured: dict[str, object] = {}
+
+    def start(*, source_ip: str, configuration) -> object:
+        captured["source_ip"] = source_ip
+        captured["configuration"] = configuration
+        return app.state.deployment_package.status()
+
+    app.state.deployment_package.start = start
+    transport = httpx.ASGITransport(app=app)
+    payload = {
+        "release_version": "4.0.0",
+        "include_development_sources": True,
+        "release_note": "仅供本次发布的说明。",
+    }
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/api/settings/deployment-package/build", json=payload)
+
+    assert response.status_code == 200
+    configuration = captured["configuration"]
+    assert configuration.chub_release_version == payload["release_version"]
+    assert configuration.include_development_sources is True
+    assert configuration.release_note == payload["release_note"]
 
 
 def test_release_build_snapshots_configuration_at_start(
@@ -758,7 +799,7 @@ def test_release_build_snapshots_configuration_at_start(
     _DeferredThread.calls = []
     monkeypatch.setattr("app.services.deployment_package.threading.Thread", _DeferredThread)
 
-    service.start(source_ip="127.0.0.1")
+    service.start(source_ip="127.0.0.1", configuration=initial)
     service.save_configuration(initial.model_copy(update={"chub_release_version": "2.0.0"}))
 
     assert _DeferredThread.calls[0][1][2].chub_release_version == "1.0.0"
@@ -956,6 +997,6 @@ def test_interrupted_release_build_is_closed_and_can_be_retried(
         "_require_git_release_baseline",
         lambda _configuration: SimpleNamespace(commit="a" * 40, tag_name="chub-v1.0.0", previous_tag_ref=None, previous_tag_commit=None),
     )
-    retried = retried_service.start(source_ip="127.0.0.1")
+    retried = retried_service.start(source_ip="127.0.0.1", configuration=configuration)
     assert retried.operation is not None
     assert retried.operation.status == "requested"

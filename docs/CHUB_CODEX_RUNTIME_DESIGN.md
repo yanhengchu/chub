@@ -44,6 +44,10 @@ Codex 通过 Runtime 共享契约接入 Chub。通用的 Session、Worker、Adap
 | 登录恢复 | 在已明确的 Sub2API 未登录状态下，打开固定 provider 登录页 | 本文第 2.2 节 |
 | 部署级配置 | 使用固定 `ai_runtime.codex` 与 `CODEX_HOME`；调用方不能指定路径或上游地址 | 本文与项目说明 |
 
+旧 `ai_runtime.codex` 中曾属于共享 Runtime 的工作区、并发、超时和运行态字段已移除；本机配置含有这些字段时必须删除，不能迁移到 `ai_runtime.shared`，也不会改变当前 Codex Runtime 的目录、默认实现或清理边界。
+
+修改 Codex 私有行为时，本文的专属验收不能替代共享契约或模块生命周期验证：能力、Descriptor、Runner 请求/结果或 Native/writer 规则变化时，必须按[AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)复检；ZIP、开发实现或实现槽位变化时，必须按[Runtime 插件模块设计](CHUB_RUNTIME_PLUGIN_DESIGN.md)确认 Web 与 Quick Worker 的最终注册状态。
+
 ### 1.1 维护者认证方式切换
 
 这是一项“认证方式切换”，不是多账户管理：当前固定在 ChatGPT 账户登录与既有 API Key 配置之间切换，不接受维护者传入账号、URL、配置路径或凭据。自动化页的“Codex Runtime 账户”是唯一页面入口，底层由唯一固定脚本 `scripts/codex-auth-switch` 执行 `account` 或 `api` 模式；它不依赖 Codex Session、Quick Worker、额度或普通任务是否可用。
@@ -100,7 +104,7 @@ Codex Adapter 将上述数据规范化为共享 `RuntimeNativeSession`：
 
 Codex Runner 将 `read-only` 映射为 Codex 的只读执行隔离。2026年9月16日的今日关注排障确认：同一受管 Debug Chrome 已能正常打开固定 AI 来源，且 Chub 宿主直接执行 `chub capability page-read --url <URL>` 可以读取正文；但由 `read-only` 后台任务执行该固定命令时，域名解析在连接浏览器前失败。通用 `full-access` 后台任务可读取同一来源。
 
-因此该现象是当前 Codex 只读运行环境与本机 `page-read` 命令的网络解析兼容性限制，不得表述为 Debug Chrome 未打开、等待不足、网页正文解析失败或站点反爬。今日关注已不再由任务自行调用 `page-read`：Chub 核心先在固定能力边界内取得四个固定来源的有界快照，再将快照交给 Session 总结。今日关注创建时仍继承通用会话默认值，通用 `read-only` 不再因该 DNS 限制而阻断刷新；旧搜索/今日关注状态在升级时直接退役并清理其关联内部 Session，不保留旧权限快照或历史结果。
+因此该现象是当前 Codex 只读运行环境与本机 `page-read` 命令的网络解析兼容性限制，不得表述为 Debug Chrome 未打开、等待不足、网页正文解析失败或站点反爬。今日关注已不再由任务自行调用 `page-read`：Chub 核心先在固定能力边界内取得四个固定来源的有界快照，再将快照交给 Session 总结。今日关注创建时仍继承通用会话默认值，通用 `read-only` 不再因该 DNS 限制而阻断刷新；旧搜索/今日关注状态会直接重置为当前空状态，不读取旧权限快照或历史结果，也不据此操作 Runtime 原生 Session。
 
 ## 2. Codex 用量与额度能力
 
@@ -151,7 +155,6 @@ GET /api/ai/usage?refresh=true
 - 普通请求优先返回共享缓存。
 - `refresh=true` 请求一次强制刷新，但仍与并发请求共用同一次采集。
 - 接口需要真实 loopback socket，或在配置允许时接受真实 Tailscale socket 来源。
-- 旧 `/api/codex/quota` 仅保留兼容，不作为新调用入口。
 
 内部消费者直接调用共享用量服务，不通过 HTTP 回调 Chub。
 

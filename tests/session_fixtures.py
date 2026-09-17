@@ -6,10 +6,10 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from app.codex.models import utc_now
+from app.ai_session.models import utc_now
 
 
-class CodexSession(BaseModel):
+class AiSessionFixture(BaseModel):
     """Minimal Session double for callers that only need a public snapshot."""
 
     id: str
@@ -19,7 +19,7 @@ class CodexSession(BaseModel):
     workspace_name: str
     cwd: Path
     title: str | None = None
-    codex_session_id: str | None = None
+    native_session_id: str | None = None
     status: Literal["new", "running", "stopped", "error"] = "new"
     activity: Literal["unknown", "working", "idle"] = "unknown"
     activity_source: Literal["none", "quick"] = "none"
@@ -31,16 +31,8 @@ class CodexSession(BaseModel):
     updated_at: datetime = Field(default_factory=utc_now)
     last_activity_at: datetime | None = None
 
-    @property
-    def native_session_id(self) -> str | None:
-        return self.codex_session_id
-
-    @native_session_id.setter
-    def native_session_id(self, value: str | None) -> None:
-        self.codex_session_id = value
-
     @model_validator(mode="after")
-    def normalize_activity_source(self) -> "CodexSession":
+    def normalize_activity_source(self) -> "AiSessionFixture":
         if self.activity != "working":
             self.activity_source = "none"
         elif self.activity_source == "none":

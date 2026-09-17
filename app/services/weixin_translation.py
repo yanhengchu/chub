@@ -11,9 +11,10 @@ from pathlib import Path
 from typing import Callable, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from app.codex.models import QuickInteractionWeixinRoute, utc_now
+from app.ai_interactions.models import QuickInteractionWeixinRoute
+from app.ai_session.models import utc_now
 from app.core.config import OpenClawWeixinChubModeConfig
 from app.core.response import ApiError
 from app.services.operation_log import write_operation
@@ -71,8 +72,8 @@ class TranslationEntry(_StrictModel):
     ] = "queued"
     quick_task_id: str | None = None
     worker_submission_started_at: datetime | None = None
-    # New entries always snapshot the selected Runtime. None is reserved for
-    # pre-snapshot history, which is never used to create a new Worker task.
+    # Confirm-mode entries without an explicit Session receive their target only
+    # when their confirmation is ready to publish.
     runtime_id: str | None = Field(default=None, min_length=1, max_length=32)
     model: str | None = Field(default=None, max_length=128)
     reasoning_effort: str | None = Field(default=None, max_length=32)
@@ -105,8 +106,7 @@ class TranslationRetiredSession(_StrictModel):
 
 
 class TranslationState(_StrictModel):
-    version: Literal[2] = 2
-    enabled_override: bool | None = None
+    version: Literal[4] = 4
     processing_mode_override: Literal["direct", "auto", "confirm"] | None = None
     model: str | None = Field(default=None, max_length=128)
     reasoning_effort: str | None = Field(default=None, max_length=32)
@@ -124,17 +124,6 @@ class TranslationState(_StrictModel):
     native_cleanup_error: str | None = Field(default=None, max_length=1000)
     native_cleanup_retry_required: bool = False
     entries: list[TranslationEntry] = Field(default_factory=list, max_length=50)
-
-    @model_validator(mode="before")
-    @classmethod
-    def discard_legacy_runtime_selection(cls, value: object) -> object:
-        if not isinstance(value, dict):
-            return value
-        migrated = dict(value)
-        migrated.pop("runtime_id", None)
-        migrated["version"] = 2
-        return migrated
-
 
 class TranslationSettingsStatus(_StrictModel):
     mode: Literal["direct", "auto", "confirm"]
@@ -174,11 +163,11 @@ class WeixinTranslationManager:
     def __init__(
         self,
         config: OpenClawWeixinChubModeConfig,
-        codex_manager,
+        ai_session_manager,
         quick_interactions,
     ) -> None:
         self.config = config
-        self.codex_manager = codex_manager
+        self.ai_session_manager = ai_session_manager
         self.quick_interactions = quick_interactions
         self.path = config.state_file.with_name("weixin-translation.json")
         self._lock = threading.RLock()
@@ -747,6 +736,29 @@ class WeixinTranslationManager:
                 for item in self._state.entries
             )
 
+    def assign_target_session(
+        self,
+        entry_id: str,
+        session_id: str,
+    ) -> TranslationEntry:
+        """Persist the target selected for a current confirmation entry."""
+        with self._lock:
+            next_state = self._state.model_copy(deep=True)
+            entry = next(
+                (item for item in next_state.entries if item.id == entry_id),
+                None,
+            )
+            if entry is None:
+                raise OSError("Weixin translation entry is unavailable")
+            if entry.status != "ready_confirmation":
+                raise OSError("Weixin translation entry cannot receive a target")
+            if entry.target_session_id is None:
+                entry.target_session_id = session_id
+                entry.updated_at = utc_now()
+                self._write(next_state)
+                self._state = next_state
+            return entry.model_copy(deep=True)
+
     def active_confirmation(
         self,
         route: QuickInteractionWeixinRoute,
@@ -1222,7 +1234,7 @@ class WeixinTranslationManager:
             return TranslationSettingsStatus(
                 mode=self._processing_mode_locked(),
                 enabled=self._enabled_locked(),
-                configured_default=self.config.translation_enabled,
+                configured_default=self.config.translation_mode != "direct",
                 runtime_id=self._configured_translation_runtime_id(),
                 model=self._state.model,
                 reasoning_effort=self._state.reasoning_effort,
@@ -1238,9 +1250,6 @@ class WeixinTranslationManager:
                 native_cleanup_error=self._state.native_cleanup_error,
                 native_cleanup_retry_required=self._state.native_cleanup_retry_required,
             )
-
-    def set_enabled(self, enabled: bool) -> TranslationSettingsStatus:
-        return self.set_processing_mode("auto" if enabled else "direct")
 
     def set_model(
         self,
@@ -1358,9 +1367,9 @@ class WeixinTranslationManager:
         implementation_id: str | None,
     ) -> tuple[str, str]:
         if implementation_id is None:
-            catalog = self.codex_manager.read_model_catalog()
+            catalog = self.ai_session_manager.read_model_catalog()
         else:
-            catalog = self.codex_manager.read_model_catalog(
+            catalog = self.ai_session_manager.read_model_catalog(
                 implementation_id=implementation_id
             )
         models = tuple(
@@ -1396,28 +1405,28 @@ class WeixinTranslationManager:
         return selected_model.id, selected_reasoning_effort
 
     def _select_translation_runtime(self) -> tuple[str, str | None]:
-        selector = getattr(type(self.codex_manager), "select_new_session_runtime", None)
+        selector = getattr(type(self.ai_session_manager), "select_new_session_runtime", None)
         if callable(selector):
-            runtime_id, implementation_id = self.codex_manager.select_new_session_runtime(
+            runtime_id, implementation_id = self.ai_session_manager.select_new_session_runtime(
                 required_capabilities=frozenset({"background_turn"})
             )
             return runtime_id, implementation_id
 
-        runtime_id = getattr(self.codex_manager, "runtime_id", None)
+        runtime_id = getattr(self.ai_session_manager, "runtime_id", None)
         if not isinstance(runtime_id, str) or not runtime_id:
             raise ApiError(
                 503,
                 "weixin_translation_runtime_unavailable",
                 "默认 AI Runtime 当前不可用。",
             )
-        self.codex_manager.require_runtime_submission(runtime_id)
+        self.ai_session_manager.require_runtime_submission(runtime_id)
         return runtime_id, None
 
     def _configured_translation_runtime_id(self) -> str:
-        reader = getattr(type(self.codex_manager), "configured_default_runtime_id", None)
+        reader = getattr(type(self.ai_session_manager), "configured_default_runtime_id", None)
         if callable(reader):
-            return self.codex_manager.configured_default_runtime_id()
-        runtime_id = getattr(self.codex_manager, "runtime_id", None)
+            return self.ai_session_manager.configured_default_runtime_id()
+        runtime_id = getattr(self.ai_session_manager, "runtime_id", None)
         if not isinstance(runtime_id, str) or not runtime_id:
             raise ApiError(
                 503,
@@ -1434,9 +1443,9 @@ class WeixinTranslationManager:
         implementation_id: str | None,
     ) -> None:
         if implementation_id is None:
-            self.codex_manager.validate_model(model, reasoning_effort)
+            self.ai_session_manager.validate_model(model, reasoning_effort)
         else:
-            self.codex_manager.validate_model(
+            self.ai_session_manager.validate_model(
                 model,
                 reasoning_effort,
                 implementation_id=implementation_id,
@@ -1467,7 +1476,6 @@ class WeixinTranslationManager:
             if current != mode or self._state.processing_mode_override is None:
                 next_state = self._state.model_copy(deep=True)
                 next_state.processing_mode_override = mode
-                next_state.enabled_override = None
                 if mode == "direct":
                     self._retire_current_session(next_state)
                 elif current == "direct":
@@ -1496,11 +1504,7 @@ class WeixinTranslationManager:
         override = state.processing_mode_override
         if override is not None:
             return override
-        override = state.enabled_override
-        enabled = self.config.translation_enabled if override is None else override
-        if self.config.translation_mode is not None and override is None:
-            return self.config.translation_mode
-        return "auto" if enabled else "direct"
+        return self.config.translation_mode
 
     @staticmethod
     def _retire_current_session(state: TranslationState) -> None:
@@ -1570,7 +1574,6 @@ class WeixinTranslationManager:
             )
             generation = self._state.generation + (0 if already_reset else 1)
             next_state = TranslationState(
-                enabled_override=self._state.enabled_override,
                 processing_mode_override=self._state.processing_mode_override,
                 model=self._state.model,
                 reasoning_effort=self._state.reasoning_effort,
@@ -1590,17 +1593,14 @@ class WeixinTranslationManager:
             if len(content) > MAX_TRANSLATION_STATE_BYTES:
                 raise ValueError("Weixin translation state is too large")
             payload = json.loads(content.decode("utf-8"))
-            legacy_session_display_snapshot = False
-            legacy_runtime_selection = isinstance(payload, dict) and "runtime_id" in payload
-            if isinstance(payload, dict) and isinstance(payload.get("entries"), list):
-                for item in payload["entries"]:
-                    if not isinstance(item, dict):
-                        continue
-                    for field in ("target_session_slot", "target_session_title"):
-                        if field in item:
-                            item.pop(field, None)
-                            legacy_session_display_snapshot = True
-            state = TranslationState.model_validate(payload)
+            if not isinstance(payload, dict) or payload.get("version") != 4:
+                self._replace_with_empty_state()
+                return TranslationState()
+            try:
+                state = TranslationState.model_validate(payload)
+            except ValidationError:
+                self._replace_with_empty_state()
+                return TranslationState()
         except FileNotFoundError:
             return TranslationState()
         except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError):
@@ -1614,7 +1614,7 @@ class WeixinTranslationManager:
             LOGGER.warning("Unable to protect Weixin translation state", exc_info=True)
             return TranslationState()
         next_state = state.model_copy(deep=True)
-        changed = legacy_session_display_snapshot or legacy_runtime_selection
+        changed = False
         enabled = self._processing_mode_for_state(next_state) != "direct"
         if not enabled and next_state.session_id is not None:
             self._retire_current_session(next_state)
@@ -1637,6 +1637,22 @@ class WeixinTranslationManager:
             state = next_state
         return state
 
+    def _replace_with_empty_state(self) -> None:
+        """Discard an incompatible translation queue instead of migrating it."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.path.parent, 0o700)
+        temporary = self.path.with_name(f".{self.path.name}.{uuid4().hex}.tmp")
+        try:
+            temporary.write_text(TranslationState().model_dump_json(), encoding="utf-8")
+            os.chmod(temporary, 0o600)
+            temporary.replace(self.path)
+            os.chmod(self.path, 0o600)
+        finally:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+
     def _ensure_session(self, generation: int | None = None) -> str:
         with self._lock:
             resolved_generation = (
@@ -1658,7 +1674,7 @@ class WeixinTranslationManager:
                 )
             if session_id:
                 try:
-                    session = self.codex_manager.get_session(session_id)
+                    session = self.ai_session_manager.get_session(session_id)
                     if (
                         session.workspace_id == "weixin-translation"
                         and session.permission_mode == "read-only"
@@ -1671,8 +1687,8 @@ class WeixinTranslationManager:
             # Sessions before either one records its ID, leaving later native
             # binding to race between those records.
             with self.quick_interactions.session_creation_guard():
-                self.codex_manager.cleanup_translation_sessions_for_replacement()
-                created = self.codex_manager.create_translation_session()
+                self.ai_session_manager.cleanup_translation_sessions_for_replacement()
+                created = self.ai_session_manager.create_translation_session()
             next_state = self._state.model_copy(deep=True)
             if (
                 resolved_generation == next_state.generation
@@ -1690,7 +1706,7 @@ class WeixinTranslationManager:
             try:
                 self._write(next_state)
             except OSError:
-                self.codex_manager.discard_unstarted_session(created.id)
+                self.ai_session_manager.discard_unstarted_session(created.id)
                 raise
             self._state = next_state
             return created.id
@@ -1712,11 +1728,11 @@ class WeixinTranslationManager:
                 ]
             for binding in candidates:
                 try:
-                    removed = self.codex_manager.discard_unstarted_session(
+                    removed = self.ai_session_manager.discard_unstarted_session(
                         binding.session_id
                     )
                     if not removed:
-                        self.codex_manager.delete_session(binding.session_id)
+                        self.ai_session_manager.delete_session(binding.session_id)
                 except Exception:
                     LOGGER.warning(
                         "Unable to delete retired Weixin translation Session",
@@ -1750,7 +1766,7 @@ class WeixinTranslationManager:
         if self._closed:
             return
         try:
-            result = self.codex_manager.cleanup_stale_translation_native_sessions()
+            result = self.ai_session_manager.cleanup_stale_translation_native_sessions()
             pending = getattr(result, "pending", 0)
             reason = getattr(result, "reason", None)
             retry_required = getattr(result, "retry_required", False)

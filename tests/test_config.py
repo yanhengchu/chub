@@ -46,7 +46,7 @@ def test_load_settings_rejects_removed_tailnet_host(tmp_path: Path) -> None:
         load_settings(config_file)
 
 
-def test_load_settings_ignores_removed_legacy_tasks_config(
+def test_load_settings_rejects_removed_legacy_tasks_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config_file = tmp_path / "settings.yaml"
@@ -54,12 +54,11 @@ def test_load_settings_ignores_removed_legacy_tasks_config(
         f"{VALID_CONFIG}\ntasks:\n  default_timeout: 30\n",
         encoding="utf-8",
     )
-    settings = load_settings(config_file)
+    with pytest.raises(RuntimeError, match="tasks"):
+        load_settings(config_file)
 
-    assert "tasks" not in settings.model_fields_set
 
-
-def test_load_settings_discards_retired_weixin_chub_session_profile(tmp_path: Path) -> None:
+def test_load_settings_rejects_retired_weixin_chub_session_profile(tmp_path: Path) -> None:
     config_file = tmp_path / "settings.yaml"
     config_file.write_text(
         f"""{VALID_CONFIG}
@@ -72,9 +71,23 @@ openclaw:
         encoding="utf-8",
     )
 
-    settings = load_settings(config_file)
+    with pytest.raises(RuntimeError, match="permission_mode"):
+        load_settings(config_file)
 
-    assert settings.openclaw.weixin_chub_mode.workspace_id == "chub"
+
+def test_load_settings_rejects_legacy_translation_enabled_config(tmp_path: Path) -> None:
+    config_file = tmp_path / "settings.yaml"
+    config_file.write_text(
+        f"""{VALID_CONFIG}
+openclaw:
+  weixin_chub_mode:
+    translation_enabled: true
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="translation_enabled"):
+        load_settings(config_file)
 
 
 def test_load_settings_rejects_removed_ai_usage_config(tmp_path: Path) -> None:
@@ -128,7 +141,7 @@ ai_runtime:
     assert settings.ai_runtime.shared.extra_workspaces[0].path == tmp_path / "deliveryline"
 
 
-def test_legacy_codex_shared_fields_map_without_overwriting_local_config(
+def test_rejects_retired_codex_shared_fields(
     tmp_path: Path,
 ) -> None:
     config_file = tmp_path / "settings.yaml"
@@ -143,14 +156,49 @@ ai_runtime:
         encoding="utf-8",
     )
 
-    settings = load_settings(config_file)
+    with pytest.raises(RuntimeError, match="Extra inputs are not permitted"):
+        load_settings(config_file)
 
-    assert settings.ai_runtime.shared.workspace == tmp_path / "workspace"
-    assert settings.ai_runtime.shared.state_dir == tmp_path / "legacy-state"
-    assert settings.ai_runtime.shared.runtime_dir == tmp_path / "legacy-runtime"
-    assert settings.ai_runtime.shared.legacy_state_file == (
-        tmp_path / "legacy-state/sessions.json"
+
+def test_rejects_retired_shared_cleanup_fields(
+    tmp_path: Path,
+) -> None:
+    config_file = tmp_path / "settings.yaml"
+    config_file.write_text(
+        f"""{VALID_CONFIG}
+ai_runtime:
+  shared:
+    legacy_state_file: {tmp_path}/outside/sessions.json
+    legacy_state_dir: {tmp_path}/outside/state
+    legacy_runtime_dir: {tmp_path}/outside/runtime
+""",
+        encoding="utf-8",
     )
+
+    with pytest.raises(RuntimeError, match="Extra inputs are not permitted"):
+        load_settings(config_file)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("state_dir", "data/local/state/codex"),
+        ("runtime_dir", "data/local/runtime/codex"),
+    ],
+)
+def test_shared_runtime_config_rejects_retired_codex_directories(
+    tmp_path: Path,
+    key: str,
+    value: str,
+) -> None:
+    config_file = tmp_path / "settings.yaml"
+    config_file.write_text(
+        f"{VALID_CONFIG}\nai_runtime:\n  shared:\n    {key}: {value}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="must not use retired"):
+        load_settings(config_file)
 
 
 @pytest.mark.parametrize(
@@ -282,7 +330,7 @@ def test_runtime_data_defaults_are_separated(
     config_file.write_text(VALID_CONFIG, encoding="utf-8")
     settings = load_settings(config_file)
 
-    assert settings.ai_runtime.shared.state_dir.parts[-3:] == ("local", "state", "codex")
+    assert settings.ai_runtime.shared.state_dir.parts[-3:] == ("local", "state", "ai-runtime")
     assert settings.ai_runtime.shared.runtime_dir.parts[-3:] == ("local", "runtime", "ai-runtime")
     assert settings.automations.state_dir.parts[-3:] == ("local", "state", "automations")
     assert settings.automations.runtime_dir.parts[-3:] == ("local", "runtime", "automations")

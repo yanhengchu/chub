@@ -78,7 +78,7 @@ def test_session_manager_discards_legacy_development_implementation_snapshot(
     settings,
     tmp_path: Path,
 ) -> None:
-    store = AiSessionStore(settings.ai_runtime.codex.data_file.with_name("ai-sessions.json"))
+    store = AiSessionStore(settings.ai_runtime.shared.state_dir / "ai-sessions.json")
     session = AiSession(
         id=str(uuid4()),
         runtime_id="codex",

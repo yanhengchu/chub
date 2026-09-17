@@ -27,7 +27,7 @@ from app.automations.lock import file_lock
 from chub_codex_runtime.usage_service import AiUsageService
 from app.application import create_app
 from chub_codex_runtime.local_usage import CodexLocalUsageUnavailable
-from app.codex.models import CodexQuotaData, CodexQuotaWindow, CodexTokenUsageData
+from app.ai_usage.models import CodexQuotaData, CodexQuotaWindow, CodexTokenUsageData
 from chub_codex_runtime.rate_limits import CodexAccountCollection, CodexRateLimitService
 from chub_codex_runtime.usage_settings import (
     CodexProviderConfigReader,
