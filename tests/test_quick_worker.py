@@ -19,12 +19,14 @@ from pydantic import ValidationError
 
 import app.quick_worker as quick_worker
 from app.ai_runtime import (
+    DISCOVERED_RUNTIME_WORKSPACE_ID,
     RuntimeNativeSession,
     RuntimeSessionDiscoveryResult,
     RuntimeTurnRequest,
     RuntimeWorkerLaunchRequest,
 )
 from chub_codex_runtime.worker_runtime import CodexWorkerRuntime
+from chub_codex_runtime.runtime_adapter import CodexRuntimeAdapter
 from app.quick_worker import (
     HEALTH_PROTOCOL_VERSION,
     PROTOCOL_VERSION,
@@ -319,6 +321,49 @@ def test_worker_uses_native_discovered_workspace_without_fixed_directory_gate(
     index = launch.argv.index("--working-directory")
     assert launch.argv[index + 1] == str(native_target)
     assert adapter.discover_sessions.call_count == 2
+
+
+def test_worker_recovers_valid_workspace_when_codex_discovery_skips_bad_record(
+    settings,
+    tmp_path: Path,
+) -> None:
+    native_target = tmp_path / "external-project"
+    native_target.mkdir()
+    native_session_id = "11111111-1111-4111-8111-111111111111"
+    adapter = CodexRuntimeAdapter(settings, codex_home=tmp_path)
+    invalid = MagicMock(
+        codex_session_id="invalid-native",
+        cwd=tmp_path,
+        title="Invalid",
+        created_at="not-a-datetime",
+        updated_at=datetime.now(UTC),
+    )
+    valid = MagicMock(
+        codex_session_id=native_session_id,
+        cwd=native_target,
+        title="Valid",
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    adapter.discovery = MagicMock()
+    adapter.discovery.discover.return_value = [invalid, valid]
+    adapter.discovery.session_archive_states.return_value = {native_session_id: False}
+    adapter.discovery.last_discovery_complete = True
+    runtime = CodexWorkerRuntime(
+        adapter,
+        executable=str(_fake_codex(tmp_path)),
+        workspaces={},
+    )
+
+    workspace = runtime._workspace_for_turn(
+        DISCOVERED_RUNTIME_WORKSPACE_ID,
+        RuntimeTurnRequest(
+            permission_profile="read-only",
+            native_session_id=native_session_id,
+        ),
+    )
+
+    assert workspace == native_target.resolve()
 
 
 def test_worker_remains_available_when_shortcut_directory_is_missing(

@@ -75,7 +75,7 @@ Runner 只能在 Worker 提供的固定工作区、固定可执行文件和受�
 
 ## Native Session 与 writer
 
-Adapter discovery 将 Runtime 原生数据规范化为只读 `RuntimeNativeSession`，并返回本次扫描是否完整及可选归档状态索引。发现失败只影响该 Runtime 的 Native 列表，不阻断已有 Chub Session、Worker 已受理任务或无关 Runtime。Runtime 应隔离单项记录和辅助元数据来源的读取失败：可用项继续作为本次只读结果返回，下一次 discovery 重新读取原生来源；不完整结果不得用原生项缺席推断删除。只有完整扫描与可用状态索引共同确认缺席时，Chub 才可清理对应绑定；明确归档状态可直接收敛。不得把本机历史数据量或单一辅助来源异常扩大为全局提交门禁。具体 Runtime 的数据源、字段、资源释放和可选元数据消费规则只在其专项设计中维护。
+Adapter discovery 将 Runtime 原生数据规范化为只读 `RuntimeNativeSession`，并返回本次扫描是否完整及可选归档状态索引。`RuntimeNativeSession` 将 naive 创建/更新时间按 UTC 规范化，并将带时区值转换为 UTC；Runtime 不得用 naive 值表达本地时区时间。发现失败只影响该 Runtime 的 Native 列表，不阻断已有 Chub Session、Worker 已受理任务或无关 Runtime。Runtime 应隔离单项记录和辅助元数据来源的读取失败：可用项继续作为本次只读结果返回，下一次 discovery 重新读取原生来源；跳过任一原生记录时必须将本次结果标为不完整，不完整结果不得用原生项缺席推断删除。只有完整扫描与可用状态索引共同确认缺席时，Chub 才可清理对应绑定；明确归档状态可直接收敛。不得把本机历史数据量或单一辅助来源异常扩大为全局提交门禁。具体 Runtime 的数据源、字段、资源释放和可选元数据消费规则只在其专项设计中维护。
 
 writer probe 的结果只回答当前 Native Session 是否由外部进程占用。明确占用时，Chub 拒绝会造成双写的提交与生命周期操作；探测失败时，具体高风险操作失败关闭。无 writer 或可安全尝试的 Native 操作必须由执行层给出最终结果，不能仅因历史状态、旧 PID 或页面投影拒绝。
 

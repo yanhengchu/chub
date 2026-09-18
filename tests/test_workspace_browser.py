@@ -1357,6 +1357,137 @@ async def _mock_workspace_api_with_quick_sessions(route) -> None:
     await route.fulfill(status=200, content_type="application/json", body=json.dumps(payload))
 
 
+async def test_workspace_native_session_lock_state_refreshes_and_gates_actions(
+    workspace_browser_server: str,
+) -> None:
+    browser_session = session_factory()
+    response_index = 0
+    snapshots = [
+        {
+            "writer_lock_state": "free",
+            "chub_writer_lock_state": "free",
+            "native_action_ref": "native-action-external-123456",
+            "chub_action_ref": "native-action-chub-123456",
+        },
+        {
+            "writer_lock_state": "held",
+            "chub_writer_lock_state": "free",
+            "native_action_ref": None,
+            "chub_action_ref": None,
+        },
+        None,
+        {
+            "writer_lock_state": "free",
+            "chub_writer_lock_state": "free",
+            "native_action_ref": "native-action-external-123456",
+            "chub_action_ref": "native-action-chub-123456",
+        },
+    ]
+
+    async def mock_api(route) -> None:
+        nonlocal response_index
+        if urlsplit(route.request.url).path != "/api/ai/sessions":
+            await _mock_workspace_api(route)
+            return
+        snapshot = snapshots[min(response_index, len(snapshots) - 1)]
+        response_index += 1
+        if snapshot is None:
+            await route.fulfill(
+                status=503,
+                content_type="application/json",
+                body=json.dumps({
+                    "success": False,
+                    "error": {"message": "会话状态暂时无法读取。"},
+                }),
+            )
+            return
+        payload = {
+            "success": True,
+            "data": {
+                "available": True,
+                "runtime_registered": True,
+                "default_runtime_id": "codex",
+                "quick_creation": {"available": True},
+                "workspaces": [],
+                "sessions": [],
+                "runtime_groups": [{"runtime_id": "codex", "name": "Codex"}],
+                "native_sessions": [
+                    {
+                        "runtime_id": "codex",
+                        "cwd": "~/workspace/external",
+                        "title": "外部占用候选",
+                        "created_at": "2026-09-18T09:00:00Z",
+                        "updated_at": "2026-09-18T09:00:00Z",
+                        "writer_lock_state": snapshot["writer_lock_state"],
+                        "chub_writer_lock_state": snapshot["chub_writer_lock_state"],
+                        "native_action_ref": snapshot["native_action_ref"],
+                    },
+                    {
+                        "runtime_id": "codex",
+                        "cwd": "~/workspace/chub-action",
+                        "title": "Chub 操作候选",
+                        "created_at": "2026-09-18T08:00:00Z",
+                        "updated_at": "2026-09-18T08:00:00Z",
+                        "writer_lock_state": "free",
+                        "chub_writer_lock_state": (
+                            "held"
+                            if snapshot["chub_action_ref"] is None
+                            else "free"
+                        ),
+                        "native_action_ref": snapshot["chub_action_ref"],
+                    },
+                ],
+            },
+        }
+        await route.fulfill(status=200, content_type="application/json", body=json.dumps(payload))
+
+    async with browser_session(ensure_page=False) as chrome:
+        context = await chrome.browser.new_context(
+            viewport={"width": 1280, "height": 900},
+            reduced_motion="reduce",
+        )
+        try:
+            await context.route(f"{workspace_browser_server}/api/**", mock_api)
+            page = await context.new_page()
+            page_errors: list[str] = []
+            page.on("pageerror", lambda error: page_errors.append(str(error)))
+            response = await page.goto(workspace_browser_server, wait_until="domcontentloaded")
+            assert response is not None and response.status == 200
+
+            external_row = page.locator(
+                ".workspace-preview-native-session",
+            ).filter(has_text="外部占用候选")
+            chub_row = page.locator(
+                ".workspace-preview-native-session",
+            ).filter(has_text="Chub 操作候选")
+            await expect(external_row).to_have_class(re.compile("has-actions"))
+            await expect(chub_row).to_have_class(re.compile("has-actions"))
+            await expect(external_row.locator(".workspace-preview-session-more")).to_have_count(1)
+            await expect(chub_row.locator(".workspace-preview-session-more")).to_have_count(1)
+
+            await expect(external_row).to_have_class(re.compile("is-unavailable"), timeout=5000)
+            await expect(external_row).to_contain_text("其他应用 · 正在使用")
+            await expect(external_row.locator(".workspace-preview-session-more")).to_have_count(0)
+            await expect(chub_row).to_have_class(re.compile("is-unavailable"))
+            await expect(chub_row).to_contain_text("Chub 正在处理 · 请稍候")
+            await expect(chub_row.locator(".workspace-preview-session-more")).to_have_count(0)
+
+            await expect(external_row).to_have_class(re.compile("is-unavailable"), timeout=5000)
+            await expect(chub_row).to_have_class(re.compile("is-unavailable"))
+            await expect(external_row).to_contain_text("其他应用 · 正在使用")
+            await expect(chub_row).to_contain_text("Chub 正在处理 · 请稍候")
+
+            await expect(external_row).not_to_have_class(re.compile("is-unavailable"), timeout=12000)
+            await expect(chub_row).not_to_have_class(re.compile("is-unavailable"))
+            await expect(external_row.locator(".workspace-preview-session-more")).to_have_count(1)
+            await expect(chub_row.locator(".workspace-preview-session-more")).to_have_count(1)
+        finally:
+            await context.close()
+
+    assert response_index >= 3
+    assert page_errors == []
+
+
 async def _mock_workspace_api_with_task_orchestration(route) -> None:
     path = urlsplit(route.request.url).path
     payload = {

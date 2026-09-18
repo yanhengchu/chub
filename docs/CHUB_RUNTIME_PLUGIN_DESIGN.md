@@ -45,7 +45,7 @@ ZIP 不以文件名或存放路径决定身份。压缩包、清单、文件数�
 
 `runtime/<module>/` 是一个 Runtime 开发模块的根目录：根目录放 `chub-module.json` 与该模块私有依赖声明；需要多个 Python 文件时，模块在根目录下定义自己的 Python 包，例如 Codex 的 `chub_codex_runtime/`。该包是 Manifest `entry` 的导入命名空间，不是额外的模块类型或生命周期层级。`orchestration/` 与 `business/` 的目录职责由总体架构定义，不由 Runtime 加载器解释。
 
-`chub-local-modules/` 是维护者授信的设备定制代码，不属于发布包、部署包、升级或恢复的清理边界。`chub install` 仅在该目录不存在时创建目录及空索引模板，之后绝不覆盖、补写、迁移或删除其中内容。外置 Runtime 仅在 Manifest 精确匹配当前 Chub 版本时进入可用列表；不匹配时不展示为可用，也不影响 Chub、内置 Runtime 或其他模块。加载期间仅临时使用模块自己的依赖路径，随后恢复原 `sys.path`；外置目录不会成为进程的长期全局导入路径。
+`chub-local-modules/` 是维护者授信的设备定制代码，不属于发布包、部署包、升级或恢复的清理边界。`chub install` 仅在该目录不存在时创建目录及空索引模板，之后绝不覆盖、补写、迁移或删除其中内容。外置 Runtime 仅在 Manifest 精确匹配当前 Chub 版本时进入可用列表；不匹配时不展示为可用，也不影响 Chub、内置 Runtime 或其他模块。加载期间仅临时使用模块自己的依赖路径，随后恢复原 `sys.path`；外置目录不会成为进程的长期全局导入路径。外置 Runtime 的私有专项设计与验收记录随其受控模块源交付；在目标节点的 Web 与 Quick Worker 均确认加载前，主项目 README、能力清单和正式部署包不得把它列为当前已接入能力。
 
 正式 ZIP 与开发源码都由 Web 和 Quick Worker 独立发现。启动扫描与导入预检验证清单、Chub 版本、可选依赖、入口、显示信息、Descriptor 身份和共享能力。Adapter 与 Runner 应从同一 Descriptor 构造；若未来允许独立构造，必须新增完整身份比较及拒绝测试。当前 Codex 正式槽位标识为 `codex-` 加六位数字；这是 Codex 私有发布规则，不是通用协议要求。
 

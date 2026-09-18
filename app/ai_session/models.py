@@ -14,6 +14,12 @@ def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+def normalize_utc_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
 SessionStatus = Literal["new", "running", "stopped", "error"]
 TurnActivity = Literal["unknown", "working", "idle"]
 ActivitySource = Literal["none", "quick"]
@@ -86,6 +92,11 @@ class AiSession(_StrictModel):
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     last_activity_at: datetime | None = None
+
+    @field_validator("created_at", "updated_at", "last_activity_at")
+    @classmethod
+    def normalize_timestamps(cls, value: datetime | None) -> datetime | None:
+        return normalize_utc_datetime(value) if value is not None else None
 
     @field_validator("id")
     @classmethod

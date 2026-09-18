@@ -994,6 +994,7 @@ def test_system_upgrade_restart_uses_fixed_linux_services(
 
     assert process.returncode == 0, stderr or stdout
     assert calls.read_text(encoding="utf-8").splitlines() == [
+        "--user daemon-reload",
         "--user --no-block start chub-system-upgrade.service",
         "--user stop chub.service",
         "--user stop chub-quick-worker.service",

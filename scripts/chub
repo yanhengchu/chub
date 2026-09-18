@@ -185,7 +185,6 @@ install_system_upgrade_service() {
 }
 
 recover_system_upgrade_service() {
-    install_system_upgrade_service
     local result=0
     (
         cd "$PROJECT_ROOT"
@@ -193,9 +192,15 @@ recover_system_upgrade_service() {
     ) >/dev/null 2>&1 || result=$?
     case "$result" in
         0)
+            install_system_upgrade_service
             echo "System upgrade service is installed"
             ;;
         1)
+            if [[ "$(run_platform_service_action system-upgrade-running)" == "running" ]]; then
+                echo "System upgrade service recovery is already running"
+                return
+            fi
+            install_system_upgrade_service
             run_platform_service_action system-upgrade-start >/dev/null
             echo "System upgrade service recovery started"
             ;;

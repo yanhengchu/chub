@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fcntl
+import logging
 import os
 import re
 import stat
@@ -39,6 +40,7 @@ from app.core.config import Settings
 
 
 CODEX_SESSION_ID_PATTERN = r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}"
+LOGGER = logging.getLogger("chub.ai_runtime.codex")
 CODEX_RUNTIME_CAPABILITIES: frozenset[RuntimeCapability] = (
     RUNTIME_CAPABILITIES - {"runtime_settings"}
 )
@@ -217,27 +219,32 @@ class CodexRuntimeAdapter:
                 "Unable to discover Codex sessions",
             ) from exc
         sessions: list[RuntimeNativeSession] = []
+        complete = self.discovery.last_discovery_complete is True
         for session in discovered:
-            native_session_id = session.codex_session_id
-            if not is_valid_codex_session_id(native_session_id):
-                raise RuntimeOperationError(
-                    "codex_session_invalid",
-                    "Codex Session ID is invalid",
+            try:
+                native_session_id = session.codex_session_id
+                if not is_valid_codex_session_id(native_session_id):
+                    raise ValueError("Codex Session ID is invalid")
+                sessions.append(
+                    RuntimeNativeSession(
+                        runtime_id="codex",
+                        native_session_id=native_session_id,
+                        cwd=session.cwd,
+                        title=session.title[:500] if session.title is not None else None,
+                        created_at=session.created_at,
+                        updated_at=session.updated_at,
+                    )
                 )
-            sessions.append(
-                RuntimeNativeSession(
-                    runtime_id="codex",
-                    native_session_id=native_session_id,
-                    cwd=session.cwd,
-                    title=session.title[:500] if session.title is not None else None,
-                    created_at=session.created_at,
-                    updated_at=session.updated_at,
+            except (AttributeError, TypeError, ValueError) as exc:
+                complete = False
+                LOGGER.warning(
+                    "Skipping one invalid Codex Session discovery record: %s",
+                    type(exc).__name__,
                 )
-            )
         return RuntimeSessionDiscoveryResult(
             sessions=tuple(sessions),
             archive_states=archive_states,
-            complete=self.discovery.last_discovery_complete is True,
+            complete=complete,
         )
 
     def has_active_writer(

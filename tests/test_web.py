@@ -2500,7 +2500,16 @@ async def test_native_session_without_a_title_is_marked_as_unavailable(
     assert response.status_code == 200
     assert 'return title || "标题暂未读取到";' in response.text
     assert 'const nativeSessionDirectoryName = (session) => {' in response.text
-    assert 'return `${nativeSessionDirectoryName(session)} · ${new Date(timestamp).toLocaleString("zh-CN")}`;' in response.text
+    assert 'const nativeSessionState = (session) => {' in response.text
+    assert 'const nativeLockState = (value) => (' in response.text
+    assert 'return "其他应用 · 正在使用";' in response.text
+    assert 'return "Chub 正在处理 · 请稍候";' in response.text
+    assert 'return "占用状态未知 · 请刷新";' in response.text
+    assert 'return stateLabel ? `${stateLabel} · ${base}` : base;' in response.text
+    assert 'const scheduleRefresh = (sessions, nativeSessionList = []) => {' in response.text
+    assert '|| nativeSessionList.length > 0) {' in response.text
+    assert 'scheduleRefresh(data.sessions, nativeSessions);' in response.text
+    assert 'scheduleRefresh([...sessionsById.values()], nativeSessions);' in response.text
     assert "nativeSessionDetailLines" not in response.text
     assert '"未命名 Native Session"' not in response.text
     assert 'empty.textContent = "暂无会话。";' in response.text

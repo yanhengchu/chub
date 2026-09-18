@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, Protocol, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 RuntimeCapability = Literal[
     "runtime_status",
@@ -54,6 +54,12 @@ RuntimeErrorKind = Literal[
     "conflict",
     "unavailable",
 ]
+
+
+def normalize_utc_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 class _StrictModel(BaseModel):
@@ -131,6 +137,11 @@ class RuntimeNativeSession(_StrictModel):
     title: str | None = Field(default=None, max_length=500)
     created_at: datetime
     updated_at: datetime
+
+    @field_validator("created_at", "updated_at")
+    @classmethod
+    def normalize_timestamps(cls, value: datetime) -> datetime:
+        return normalize_utc_datetime(value)
 
 
 class RuntimeSessionDiscoveryResult(_StrictModel):

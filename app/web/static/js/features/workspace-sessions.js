@@ -226,11 +226,32 @@
 
   const sessionIsExternallyOccupied = (session) => session.usage?.owner === "external";
 
-  const nativeSessionIsUnavailable = (session) => (
-    session.writer_lock_state === "unknown"
-    || session.chub_writer_lock_state === "unknown"
-    || (session.writer_lock_state === "held" && session.chub_writer_lock_state !== "held")
+  const nativeLockState = (value) => (
+    ["held", "free", "unknown"].includes(value) ? value : "unknown"
   );
+
+  const nativeSessionState = (session) => {
+    const writerLockState = nativeLockState(session.writer_lock_state);
+    const chubWriterLockState = nativeLockState(session.chub_writer_lock_state);
+    if (
+      writerLockState === "unknown"
+      || chubWriterLockState === "unknown"
+    ) {
+      return "占用状态未知 · 请刷新";
+    }
+    if (chubWriterLockState === "held") {
+      return "Chub 正在处理 · 请稍候";
+    }
+    if (
+      writerLockState === "held"
+      && chubWriterLockState !== "held"
+    ) {
+      return "其他应用 · 正在使用";
+    }
+    return null;
+  };
+
+  const nativeSessionIsUnavailable = (session) => nativeSessionState(session) !== null;
 
   const sessionNeedsRefresh = (session) => {
     const usage = session.usage;
@@ -654,7 +675,9 @@
 
   const nativeSessionDetail = (session) => {
     const timestamp = session.updated_at || session.created_at;
-    return `${nativeSessionDirectoryName(session)} · ${new Date(timestamp).toLocaleString("zh-CN")}`;
+    const stateLabel = nativeSessionState(session);
+    const base = `${nativeSessionDirectoryName(session)} · ${new Date(timestamp).toLocaleString("zh-CN")}`;
+    return stateLabel ? `${stateLabel} · ${base}` : base;
   };
 
   const nativeSessionTitle = (session) => {
@@ -704,7 +727,7 @@
         if (event.pointerType !== "mouse") return;
         row.querySelectorAll(".workspace-preview-native-session small").forEach(updateSessionMarquee);
       });
-      if (session.native_action_ref) {
+      if (session.native_action_ref && !unavailable) {
         const actions = document.createElement("div");
         const more = document.createElement("button");
         const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -882,13 +905,13 @@
     );
   };
 
-  const scheduleRefresh = (sessions) => {
+  const scheduleRefresh = (sessions, nativeSessionList = []) => {
     window.clearTimeout(refreshTimer);
     if (sessions.some((session) => (
       session.quick_interaction_running
       || session.activity === "working"
       || sessionNeedsRefresh(session)
-    ))) {
+    )) || nativeSessionList.length > 0) {
       refreshTimer = window.setTimeout(loadSessions, 3000);
     }
   };
@@ -945,7 +968,7 @@
       });
       cacheSessions(data);
       if (!selectedSessionUnavailable) setSidebarMessage("");
-      scheduleRefresh(data.sessions);
+      scheduleRefresh(data.sessions, nativeSessions);
     } catch (error) {
       if (requestGeneration !== sessionRequestGeneration) return;
       if (!hasSessionSnapshot) {
@@ -954,9 +977,14 @@
         setSidebarMessage(error.message || "会话读取失败，请稍后重试。");
         return;
       }
-      nativeSessions = [];
       renderSessions([...sessionsById.values()], runtimeSessionGroups, nativeSessions);
-      setSidebarMessage("会话状态暂时无法更新；Native Sessions 暂不展示。");
+      if (nativeSessions.length > 0) {
+        setSidebarMessage("会话状态暂时无法更新；保留最近一次 Native Sessions 状态。");
+        window.clearTimeout(refreshTimer);
+        refreshTimer = window.setTimeout(loadSessions, 3000);
+      } else {
+        setSidebarMessage("会话状态暂时无法更新；Native Sessions 暂不展示。");
+      }
     }
   };
 
@@ -1167,7 +1195,7 @@
       ));
       cacheSessions(cachedSessions);
     }
-    scheduleRefresh([...sessionsById.values()]);
+    scheduleRefresh([...sessionsById.values()], nativeSessions);
     return true;
   };
 

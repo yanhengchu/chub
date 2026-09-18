@@ -360,16 +360,21 @@ stop_core_services_if_installed() {
 }
 
 load_system_upgrade_service() {
+    local restart_script="$PROJECT_ROOT/scripts/maintenance/chub-system-upgrade-restart"
+    [[ -x "$restart_script" ]] || fail "system upgrade service runner is unavailable"
     case "$PLATFORM" in
         Darwin)
             local plist_path
             plist_path="$(macos_system_upgrade_plist_path)"
-            [[ -f "$plist_path" ]] || fail "system upgrade service is not installed; run chub install"
-            if ! launchctl print "$(macos_domain)/$SYSTEM_UPGRADE_MACOS_LABEL" >/dev/null 2>&1; then
-                launchctl bootstrap "$(macos_domain)" "$plist_path"
-            fi
+            write_macos_system_upgrade_service
+            launchctl bootout "$(macos_domain)/$SYSTEM_UPGRADE_MACOS_LABEL" >/dev/null 2>&1 || true
+            wait_for_macos_unload "$SYSTEM_UPGRADE_MACOS_LABEL"
+            launchctl bootstrap "$(macos_domain)" "$plist_path"
             ;;
-        Linux) : ;;
+        Linux)
+            write_systemd_system_upgrade_service
+            systemctl --user daemon-reload
+            ;;
         *) fail "unsupported platform: $PLATFORM" ;;
     esac
 }
@@ -381,6 +386,7 @@ start_system_upgrade_service() {
             launchctl kickstart "$(macos_domain)/$SYSTEM_UPGRADE_MACOS_LABEL"
             ;;
         Linux)
+            load_system_upgrade_service
             systemctl --user --no-block start "$SYSTEM_UPGRADE_SERVICE_NAME.service"
             ;;
         *) fail "unsupported platform: $PLATFORM" ;;
@@ -394,6 +400,31 @@ system_upgrade_service_state() {
             ;;
         Linux)
             [[ -f "$(systemd_system_upgrade_unit_path)" ]] && echo installed || echo missing
+            ;;
+        *) fail "unsupported platform: $PLATFORM" ;;
+    esac
+}
+
+system_upgrade_service_running_state() {
+    case "$PLATFORM" in
+        Darwin)
+            local plist_path details
+            plist_path="$(macos_system_upgrade_plist_path)"
+            [[ -f "$plist_path" ]] || { echo missing; return 0; }
+            if details="$(launchctl print "$(macos_domain)/$SYSTEM_UPGRADE_MACOS_LABEL" 2>/dev/null)" \
+                && [[ "$details" == *"state = running"* ]]; then
+                echo running
+            else
+                echo stopped
+            fi
+            ;;
+        Linux)
+            [[ -f "$(systemd_system_upgrade_unit_path)" ]] || { echo missing; return 0; }
+            if systemctl --user is-active --quiet "$SYSTEM_UPGRADE_SERVICE_NAME.service"; then
+                echo running
+            else
+                echo stopped
+            fi
             ;;
         *) fail "unsupported platform: $PLATFORM" ;;
     esac
@@ -791,7 +822,7 @@ uninstall_all_services() {
     esac
 }
 
-[[ "$#" -ge 1 ]] || fail "usage: service-management.sh <core-service-definitions|core-stop|system-upgrade-load|system-upgrade-start|system-upgrade-status|web-start|web-restart|web-restart-async|web-stop|web-status|worker-start|worker-restart|worker-stop|worker-status|worker-definition-exists|chrome-supervisor-reconcile|chrome-supervisor-write-unit|chrome-supervisor-definitions|chrome-supervisor-stop|chrome-supervisor-status|service-details|all-services-uninstall>"
+[[ "$#" -ge 1 ]] || fail "usage: service-management.sh <core-service-definitions|core-stop|system-upgrade-load|system-upgrade-start|system-upgrade-status|system-upgrade-running|web-start|web-restart|web-restart-async|web-stop|web-status|worker-start|worker-restart|worker-stop|worker-status|worker-definition-exists|chrome-supervisor-reconcile|chrome-supervisor-write-unit|chrome-supervisor-definitions|chrome-supervisor-stop|chrome-supervisor-status|service-details|all-services-uninstall>"
 case "$1" in
     core-service-definitions)
         shift
@@ -817,6 +848,11 @@ case "$1" in
         shift
         [[ "$#" -eq 0 ]] || fail "usage: service-management.sh system-upgrade-status"
         system_upgrade_service_state
+        ;;
+    system-upgrade-running)
+        shift
+        [[ "$#" -eq 0 ]] || fail "usage: service-management.sh system-upgrade-running"
+        system_upgrade_service_running_state
         ;;
     web-start)
         shift

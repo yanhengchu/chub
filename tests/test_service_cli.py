@@ -10,12 +10,14 @@ import socket
 import stat
 import subprocess
 import threading
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
 
 from app.quick_worker import PROTOCOL_VERSION
+from app.services.system_upgrade import SystemUpgradeOperation, runtime_recovery_plan
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -121,6 +123,8 @@ def service_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
                 f"#!/bin/sh\nprintf '%s %s\\n' '{command}' \"$*\""
                 " >> \"$CHUB_TEST_CALLS\"\n"
                 f"if [ '{command}' = launchctl ] && [ \"$1\" = print ]; then"
+                " if [ \"${CHUB_TEST_LAUNCHCTL_PRINT:-}\" = running ]; then"
+                " printf 'state = running\\n'; exit 0; fi;"
                 " [ \"${CHUB_TEST_LAUNCHCTL_PRINT:-}\" = available ] && exit 0;"
                 " exit 1; fi\n"
                 f"if [ '{command}' = systemctl ] && [ \"$2\" = is-active ] &&"
@@ -1135,6 +1139,90 @@ def test_maintenance_service_adapters_delegate_platform_manager() -> None:
         assert "scripts/platform/service-management.sh" in content
         assert "launchctl" not in content
         assert "systemctl" not in content
+
+
+def test_system_upgrade_start_reconciles_the_current_oneshot_definition() -> None:
+    content = (
+        PROJECT_ROOT / "scripts" / "platform" / "service-management.sh"
+    ).read_text(encoding="utf-8")
+    start_body = content[
+        content.index("load_system_upgrade_service() {") : content.index(
+            "start_system_upgrade_service() {"
+        )
+    ]
+
+    assert "write_macos_system_upgrade_service" in start_body
+    assert "write_systemd_system_upgrade_service" in start_body
+    assert "launchctl bootout" in start_body
+    assert "launchctl bootstrap" in start_body
+    assert "systemctl --user daemon-reload" in start_body
+
+
+def test_macos_upgrade_recovery_does_not_reload_an_active_executor(
+    service_env: tuple[dict[str, str], Path],
+) -> None:
+    env, calls = service_env
+    env["CHUB_TEST_PLATFORM"] = "Darwin"
+    env["CHUB_TEST_LAUNCHCTL_PRINT"] = "running"
+    state_dir = Path(env["CHUB_TEST_ROOT"]).parent / "state"
+    state_dir.mkdir(mode=0o700)
+    loaded = runtime_recovery_plan()
+    now = datetime.now(UTC)
+    operation = SystemUpgradeOperation(
+        operation_id="a" * 32,
+        plan=loaded.plan,
+        fingerprint=loaded.fingerprint,
+        status="started",
+        stage="restarting_services",
+        source_ip="127.0.0.1",
+        old_instance_id="old-instance",
+        destructive_started=True,
+        restart_launch_state="launched",
+        message="正在重启 Chub Web 和 Quick Worker。",
+        requested_at=now,
+        updated_at=now,
+    )
+    state_path = state_dir / "system-upgrade.json"
+    state_path.write_text(operation.model_dump_json(), encoding="utf-8")
+    state_path.chmod(0o600)
+    launch_agents = Path(env["CHUB_LAUNCH_AGENTS_DIR"])
+    launch_agents.mkdir(mode=0o700)
+    (launch_agents / "com.chub.system-upgrade.plist").write_text(
+        "placeholder", encoding="utf-8"
+    )
+
+    result = run_chub("upgrade", env, "service")
+
+    assert result.returncode == 0, result.stderr
+    assert "already running" in result.stdout
+    manager_calls = calls.read_text(encoding="utf-8")
+    assert "launchctl print gui/" in manager_calls
+    assert "launchctl bootout" not in manager_calls
+    assert "launchctl bootstrap" not in manager_calls
+    assert "launchctl kickstart" not in manager_calls
+
+
+def test_macos_upgrade_start_reloads_an_inactive_oneshot_definition(
+    service_env: tuple[dict[str, str], Path],
+) -> None:
+    env, calls = service_env
+    env["CHUB_TEST_PLATFORM"] = "Darwin"
+    platform_script = Path(env["CHUB_TEST_ROOT"]) / "scripts" / "platform" / "service-management.sh"
+
+    result = subprocess.run(
+        [str(platform_script), "system-upgrade-start"],
+        cwd=Path(env["CHUB_TEST_ROOT"]),
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    manager_calls = calls.read_text(encoding="utf-8")
+    assert manager_calls.index("launchctl bootout gui/") < manager_calls.index(
+        "launchctl bootstrap gui/"
+    ) < manager_calls.index("launchctl kickstart gui/")
 
 
 def test_stop_controls_only_chub_web_without_worker_precondition(

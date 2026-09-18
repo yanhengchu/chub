@@ -1,8 +1,10 @@
 import asyncio
 import json
+import logging
 import sqlite3
+import threading
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1137,6 +1139,62 @@ def test_discovered_native_actions_revalidate_and_bound_references(
     manager.runtime_adapter.run_native_action.assert_called_once()
 
 
+def test_discovered_native_action_releases_manager_lock_without_reissuing_reference(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    native_id = "native-session-1"
+    now = datetime(2026, 9, 8, 10, tzinfo=UTC)
+    native = RuntimeNativeSession(
+        runtime_id="codex",
+        native_session_id=native_id,
+        cwd=Path("/workspace/unbound"),
+        created_at=now,
+        updated_at=now,
+    )
+    manager._native_discovery_implementations = {
+        ("codex", native_id): "codex-runtime-dev"
+    }
+    reference = manager._issue_native_action_ref(native_id)
+    manager._sync_bound_native_sessions = MagicMock(return_value=(native,))
+    manager.store.list = MagicMock(return_value=[])
+    manager._refresh_status = MagicMock()
+    manager._reconcile_quick_activity = MagicMock()
+    adapter = MagicMock()
+    adapter.has_active_writer.return_value = False
+    adapter.native_session_archive_state.return_value = True
+    manager.runtime_adapters["codex-runtime-dev"] = adapter
+    started = threading.Event()
+    release = threading.Event()
+    errors: list[Exception] = []
+
+    def run_native_action(_action: str, _native_session_id: str) -> None:
+        started.set()
+        assert release.wait(timeout=2)
+
+    def run_action() -> None:
+        try:
+            manager.run_discovered_native_action("archive", reference)
+        except Exception as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    adapter.run_native_action.side_effect = run_native_action
+    action_thread = threading.Thread(target=run_action)
+    action_thread.start()
+    assert started.wait(timeout=2)
+
+    _sessions, native_sessions = manager.list_sessions_with_native_sessions()
+
+    assert native_sessions[0].chub_writer_lock_state == "held"
+    assert native_sessions[0].native_action_ref is None
+    release.set()
+    action_thread.join(timeout=2)
+    assert not action_thread.is_alive()
+    assert errors == []
+    adapter.run_native_action.assert_called_once_with("archive", native_id)
+    assert manager._native_actions_in_progress == set()
+
+
 def test_native_discovery_keeps_bound_session_when_record_is_missing(
     settings: Settings,
 ) -> None:
@@ -1812,6 +1870,40 @@ def test_codex_adapter_normalizes_discovery_and_model_catalog(
     assert catalog.models[0].levels[0].id == "high"
 
 
+def test_codex_adapter_skips_one_invalid_discovery_record_without_logging_record_data(
+    settings: Settings,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    adapter = CodexRuntimeAdapter(settings, codex_home=tmp_path)
+    invalid = SimpleNamespace(
+        cwd=tmp_path,
+        title="Invalid",
+        codex_session_id="invalid-native",
+        created_at="private-invalid-timestamp",
+        updated_at=datetime.now(UTC),
+    )
+    valid = SimpleNamespace(
+        cwd=tmp_path,
+        title="Valid",
+        codex_session_id="native-1",
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    adapter.discovery = MagicMock()
+    adapter.discovery.discover.return_value = [invalid, valid]
+    adapter.discovery.session_archive_states.return_value = {"native-1": False}
+    adapter.discovery.last_discovery_complete = True
+
+    with caplog.at_level(logging.WARNING, logger="chub.ai_runtime.codex"):
+        discovery = adapter.discover_sessions()
+
+    assert [item.native_session_id for item in discovery.sessions] == ["native-1"]
+    assert discovery.complete is False
+    assert "private-invalid-timestamp" not in caplog.text
+    assert "ValidationError" in caplog.text
+
+
 def test_codex_native_discovery_does_not_read_thread_settings(tmp_path: Path) -> None:
     session_id = "11111111-1111-4111-8111-111111111111"
     session_path = tmp_path / "sessions" / "2026" / "09" / "08" / "rollout.jsonl"
@@ -2149,7 +2241,23 @@ def test_translation_native_cleanup_keeps_a_session_with_an_active_writer(
     manager.runtime_adapter.run_native_action.assert_not_called()
 
 
-def test_native_discovery_projects_only_title_and_timestamp_to_chub_session() -> None:
+@pytest.mark.parametrize(
+    ("native_updated", "session_updated"),
+    [
+        (
+            datetime(2026, 9, 8, 10, 2),
+            datetime(2026, 9, 8, 10, tzinfo=UTC),
+        ),
+        (
+            datetime(2026, 9, 8, 10, 2, tzinfo=UTC),
+            datetime(2026, 9, 8, 10),
+        ),
+    ],
+)
+def test_native_discovery_projects_only_title_and_timestamp_to_chub_session(
+    native_updated: datetime,
+    session_updated: datetime,
+) -> None:
     session = AiSession.model_validate(
         {
             "id": "11111111-1111-4111-8111-111111111111",
@@ -2159,6 +2267,7 @@ def test_native_discovery_projects_only_title_and_timestamp_to_chub_session() ->
             "workspace_name": "Chub",
             "cwd": "/workspace/chub",
             "permission_mode": "read-only",
+            "updated_at": session_updated,
         }
     )
     native = RuntimeNativeSession(
@@ -2167,10 +2276,122 @@ def test_native_discovery_projects_only_title_and_timestamp_to_chub_session() ->
         cwd=Path("/workspace/chub"),
         title="Native title",
         created_at=datetime(2026, 9, 8, 10, tzinfo=UTC),
-        updated_at=datetime(2026, 9, 8, 10, 1, tzinfo=UTC),
+        updated_at=native_updated,
     )
 
     changed = AiSessionManager._project_native_state(session, native)
 
     assert changed is True
     assert session.title == "Native title"
+    assert session.updated_at == datetime(2026, 9, 8, 10, 2, tzinfo=UTC)
+
+
+def test_runtime_and_chub_session_timestamps_normalize_to_utc(
+    settings: Settings,
+) -> None:
+    created_at = datetime(2026, 9, 8, 10)
+    updated_at = datetime(2026, 9, 8, 18, tzinfo=timezone(timedelta(hours=8)))
+    native = RuntimeNativeSession(
+        runtime_id="codex",
+        native_session_id="native-session",
+        cwd=Path("/workspace/chub"),
+        created_at=created_at,
+        updated_at=updated_at,
+    )
+    session = AiSession(
+        id="11111111-1111-4111-8111-111111111111",
+        runtime_id="codex",
+        implementation_id="codex-runtime-dev",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd=Path("/workspace/chub"),
+        created_at=created_at,
+        updated_at=created_at,
+        last_activity_at=created_at,
+    )
+
+    assert native.created_at == datetime(2026, 9, 8, 10, tzinfo=UTC)
+    assert native.updated_at == datetime(2026, 9, 8, 10, tzinfo=UTC)
+    assert session.created_at == datetime(2026, 9, 8, 10, tzinfo=UTC)
+    assert session.updated_at == datetime(2026, 9, 8, 10, tzinfo=UTC)
+    assert session.last_activity_at == datetime(2026, 9, 8, 10, tzinfo=UTC)
+
+    manager = AiSessionManager(settings)
+    manager.store.save(session)
+    manager.update_session_timestamp(session.id, datetime(2026, 9, 8, 10, 1))
+    manager.set_activity(
+        session.id,
+        "working",
+        "quick",
+        updated_at=datetime(2026, 9, 8, 10, 2),
+    )
+
+    stored = manager.store.get(session.id)
+    assert stored is not None
+    assert stored.updated_at == datetime(2026, 9, 8, 10, 2, tzinfo=UTC)
+
+
+def test_native_discovery_skips_one_projection_error(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = AiSessionManager(settings)
+    now = datetime(2026, 9, 8, 10, tzinfo=UTC)
+    bad = SimpleNamespace(
+        id="bad-session",
+        runtime_id="codex",
+        implementation_id="codex-runtime-dev",
+        native_session_id="native-bad",
+        title=None,
+        updated_at=now,
+    )
+    good = SimpleNamespace(
+        id="good-session",
+        runtime_id="codex",
+        implementation_id="codex-runtime-dev",
+        native_session_id="native-good",
+        title=None,
+        updated_at=now,
+    )
+    adapter = MagicMock()
+    adapter.status.return_value = RuntimeStatus(runtime_id="codex", available=True)
+    adapter.descriptor = SimpleNamespace(runtime_id="codex")
+    adapter.discover_sessions.return_value = RuntimeSessionDiscoveryResult(
+        sessions=(
+            RuntimeNativeSession(
+                runtime_id="codex",
+                native_session_id="native-bad",
+                cwd=Path("/workspace/chub"),
+                title="Bad",
+                created_at=now,
+                updated_at=now,
+            ),
+            RuntimeNativeSession(
+                runtime_id="codex",
+                native_session_id="native-good",
+                cwd=Path("/workspace/chub"),
+                title="Good",
+                created_at=now,
+                updated_at=now,
+            ),
+        ),
+    )
+    manager.runtime_adapters = {"codex-runtime-dev": adapter}
+    manager.default_implementation_ids = {"codex": "codex-runtime-dev"}
+    manager.store.list = MagicMock(return_value=[bad, good])
+    manager.store.save = MagicMock()
+
+    def project(session: SimpleNamespace, native: RuntimeNativeSession) -> bool:
+        if session.id == "bad-session":
+            raise TypeError("invalid timestamp")
+        session.title = native.title
+        return True
+
+    monkeypatch.setattr(manager, "_project_native_state", project)
+
+    discovered = manager._sync_bound_native_sessions()
+
+    assert [item.native_session_id for item in discovered] == ["native-bad", "native-good"]
+    assert bad.title is None
+    assert good.title == "Good"
+    manager.store.save.assert_called_once_with(good)

@@ -8,7 +8,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -50,6 +50,7 @@ from app.ai_session.models import (
     AiSession,
     PermissionMode,
     TurnActivity,
+    normalize_utc_datetime,
     utc_now,
 )
 from app.ai_session.store import AiSessionStore, AiSessionStoreUnavailable
@@ -188,6 +189,7 @@ class AiSessionManager:
         self._lock = threading.RLock()
         self._native_action_refs: dict[str, tuple[str, str, str, float]] = {}
         self._native_action_refs_by_native_id: dict[tuple[str, str], str] = {}
+        self._native_actions_in_progress: set[tuple[str, str]] = set()
         self._native_discovery_implementations: dict[tuple[str, str], str] = {}
         self._quick_interaction_is_running: Callable[[str], bool] = lambda _id: False
         self._passive_session_cleanup: Callable[[str], bool] = lambda _id: True
@@ -1053,13 +1055,20 @@ class AiSessionManager:
                         created_at=item.created_at,
                         updated_at=item.updated_at,
                         writer_lock_state=(writer_state := native_writer_state(item)),
-                        chub_writer_lock_state="free",
+                        chub_writer_lock_state=(
+                            "held"
+                            if (item.runtime_id, item.native_session_id)
+                            in self._native_actions_in_progress
+                            else "free"
+                        ),
                         native_action_ref=(
                             self._issue_native_action_ref(
                                 item.runtime_id,
                                 item.native_session_id,
                             )
                             if writer_state == "free"
+                            and (item.runtime_id, item.native_session_id)
+                            not in self._native_actions_in_progress
                             else None
                         ),
                     )
@@ -1194,21 +1203,32 @@ class AiSessionManager:
                     "native_session_writer_unknown",
                     "Native Session 占用状态无法确认，请刷新后重试。",
                 ) from exc
-            try:
-                adapter.run_native_action(action, native_session_id)
-                confirmed = (
-                    adapter.native_session_archive_state(native_session_id) is True
-                    if action == "archive"
-                    else adapter.native_session_deleted_state(native_session_id) is True
-                )
-            except RuntimeOperationError as exc:
-                raise self._runtime_api_error(exc) from exc
-            if not confirmed:
+            key = (runtime_id, native_session_id)
+            if key in self._native_actions_in_progress:
                 raise ApiError(
-                    503,
-                    "native_session_action_unconfirmed",
-                    "Native Session 操作结果无法确认，请刷新后重试。",
+                    409,
+                    "native_session_action_in_progress",
+                    "Native Session 操作正在进行，请等待后刷新。",
                 )
+            self._native_actions_in_progress.add(key)
+        try:
+            adapter.run_native_action(action, native_session_id)
+            confirmed = (
+                adapter.native_session_archive_state(native_session_id) is True
+                if action == "archive"
+                else adapter.native_session_deleted_state(native_session_id) is True
+            )
+        except RuntimeOperationError as exc:
+            raise self._runtime_api_error(exc) from exc
+        finally:
+            with self._lock:
+                self._native_actions_in_progress.discard(key)
+        if not confirmed:
+            raise ApiError(
+                503,
+                "native_session_action_unconfirmed",
+                "Native Session 操作结果无法确认，请刷新后重试。",
+            )
 
     def get_session(self, session_id: str, *, reconcile: bool = True) -> AiSession:
         with self._lock:
@@ -1720,6 +1740,7 @@ class AiSessionManager:
             return self._public(session)
 
     def update_session_timestamp(self, session_id: str, updated_at: datetime) -> None:
+        updated_at = normalize_utc_datetime(updated_at)
         with self._lock:
             self._require_store()
             session = self.store.get(session_id)
@@ -1745,7 +1766,7 @@ class AiSessionManager:
                 raise ApiError(404, "session_not_found", "AI Session not found")
             session.activity = activity
             session.activity_source = source
-            activity_at = updated_at or utc_now()
+            activity_at = normalize_utc_datetime(updated_at) if updated_at else utc_now()
             session.updated_at = max(session.updated_at, activity_at)
             self.store.save(session)
 
@@ -2309,7 +2330,19 @@ class AiSessionManager:
             )
             changed = False
             if current is not None:
-                changed = self._project_native_state(session, current) or changed
+                try:
+                    changed = self._project_native_state(session, current) or changed
+                except (TypeError, ValueError, OverflowError):
+                    LOGGER.warning(
+                        "Unable to project one discovered native Session",
+                        extra={
+                            "session_id": session.id,
+                            "runtime_id": session.runtime_id,
+                            "native_session_id": native_session_id,
+                        },
+                        exc_info=True,
+                    )
+                    continue
             elif discovery.archive_states is not None and (
                 discovery.archive_states.get(native_session_id) is True
                 or (
@@ -2351,8 +2384,14 @@ class AiSessionManager:
         if native.title and not session.title:
             session.title = native.title[:48]
             changed = True
-        if native.updated_at > session.updated_at:
-            session.updated_at = native.updated_at
+        native_updated = native.updated_at
+        session_updated = session.updated_at
+        if native_updated.tzinfo is None:
+            native_updated = native_updated.replace(tzinfo=UTC)
+        if session_updated.tzinfo is None:
+            session_updated = session_updated.replace(tzinfo=UTC)
+        if native_updated > session_updated:
+            session.updated_at = native_updated
             changed = True
         return changed
 
