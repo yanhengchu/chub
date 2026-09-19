@@ -266,7 +266,7 @@ class OpenClawCompletionNotificationConfig(StrictModel):
 
 
 class OpenClawWeixinChubModeConfig(StrictModel):
-    enabled: bool = False
+    enabled: bool = True
     workspace_id: Literal["home", "workspace", "chub"] = "chub"
     state_file: Path = Path("data/local/state/openclaw/weixin-chub-mode.json")
     # Orchestration plugin ZIPs are intentionally separate from Runtime plugins. They

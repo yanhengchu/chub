@@ -1163,6 +1163,7 @@ def test_recovery_reset_stops_the_upgrade_executor_before_core_services(
 ) -> None:
     env, calls = service_env
     env["CHUB_TEST_PLATFORM"] = "Linux"
+    env["CHUB_TEST_SYSTEMCTL_INACTIVE"] = "1"
     platform_script = (
         Path(env["CHUB_TEST_ROOT"]) / "scripts" / "platform" / "service-management.sh"
     )
@@ -1181,6 +1182,11 @@ def test_recovery_reset_stops_the_upgrade_executor_before_core_services(
         "systemctl --user stop chub-system-upgrade.service",
         "systemctl --user stop chub.service",
         "systemctl --user stop chub-quick-worker.service",
+        "systemctl --user stop chub-debug-chrome.service",
+        "systemctl --user is-active --quiet chub-system-upgrade.service",
+        "systemctl --user is-active --quiet chub.service",
+        "systemctl --user is-active --quiet chub-quick-worker.service",
+        "systemctl --user is-active --quiet chub-debug-chrome.service",
     ]
 
 
@@ -1224,6 +1230,7 @@ def test_recovery_reset_bypasses_upgrade_state_but_keeps_fixed_boundaries() -> N
     assert "recovery reset must be run from a local terminal" in recovery_body
     assert "recovery-core-stop" in script
     assert "app.system_recovery_cli force-reset" in script
+    assert "chrome-supervisor-reconcile --restart" in script
     assert "chub-web-restart" in script
     assert "launchctl" not in script
     assert "systemctl" not in script

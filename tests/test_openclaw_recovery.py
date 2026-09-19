@@ -52,6 +52,26 @@ def test_patch_state_distinguishes_missing_partial_and_applied(tmp_path: Path) -
     assert _patch_state(root, patch_file) == "applied"
 
 
+def test_patch_state_uses_patch_context_not_added_text_markers(tmp_path: Path) -> None:
+    root = tmp_path / "package"
+    target = root / "src" / "module.ts"
+    target.parent.mkdir(parents=True)
+    patch_file = tmp_path / "change.patch"
+    patch_file.write_text(
+        "--- a/src/module.ts\n"
+        "+++ b/src/module.ts\n"
+        "@@ -1,2 +1,3 @@\n"
+        " existing marker\n"
+        " old\n"
+        "+added\n",
+        encoding="utf-8",
+    )
+
+    target.write_text("existing marker\nold\n", encoding="utf-8")
+
+    assert _patch_state(root, patch_file) == "missing"
+
+
 def test_patch_state_rejects_missing_target(tmp_path: Path) -> None:
     root = tmp_path / "package"
     root.mkdir()

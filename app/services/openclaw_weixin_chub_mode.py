@@ -469,12 +469,22 @@ class WeixinChubModeManager:
         command = self._parse_dispatch_command(prompt)
         if self.requires_system_upgrade_write_guard(command):
             return True
-        # A missing Codex Runtime cannot load its parser, but this known
-        # maintenance write must remain inside the existing upgrade gate.
-        return (
-            self._mode_enabled
-            and command.command_group == "codex"
-            and normalize_fixed_prompt(prompt).casefold() == "codex auth switch"
+        # A missing module or Runtime cannot load its parser, but these known
+        # fixed writes must remain inside the existing upgrade gate.
+        normalized = normalize_fixed_prompt(prompt).casefold()
+        return self._mode_enabled and (
+            (
+                command.command_group == "codex"
+                and normalized == "codex auth switch"
+            )
+            or (
+                command.command_group == "text"
+                and normalized in {
+                    "text mode direct",
+                    "text mode auto",
+                    "text mode confirm",
+                }
+            )
         )
 
     def _parse_dispatch_command(self, prompt: str):

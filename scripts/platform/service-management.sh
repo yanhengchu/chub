@@ -371,6 +371,16 @@ stop_recovery_services() {
             systemctl --user stop "$SYSTEM_UPGRADE_SERVICE_NAME.service" >/dev/null 2>&1 || true
             systemctl --user stop "$CORE_SERVICE_NAME.service" >/dev/null 2>&1 || true
             systemctl --user stop "$WORKER_SERVICE_NAME.service" >/dev/null 2>&1 || true
+            systemctl --user stop "$SERVICE_NAME.service" >/dev/null 2>&1 || true
+            for service in \
+                "$SYSTEM_UPGRADE_SERVICE_NAME" \
+                "$CORE_SERVICE_NAME" \
+                "$WORKER_SERVICE_NAME" \
+                "$SERVICE_NAME"; do
+                if systemctl --user is-active --quiet "$service.service"; then
+                    fail "service did not stop: $service"
+                fi
+            done
             ;;
         *) fail "unsupported platform: $PLATFORM" ;;
     esac

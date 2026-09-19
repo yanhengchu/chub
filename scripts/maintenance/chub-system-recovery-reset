@@ -68,16 +68,19 @@ if any(data.get(name) != 0 for name in (
 )):
     raise SystemExit(1)
 ' <<<"$payload"; then
-                return 0
+                supervisor_status="$(run_platform_action chrome-supervisor-status 2>/dev/null || true)"
+                if [[ "$supervisor_status" == "running" || "$supervisor_status" == "not-managed" ]]; then
+                    return 0
+                fi
             fi
         fi
         sleep 0.5
     done
-    echo "chub-system-recovery-reset: Web and Quick Worker did not become healthy" >&2
+    echo "chub-system-recovery-reset: Chub services did not become healthy" >&2
     return 1
 }
 
-echo "chub-system-recovery-reset: scope=chub_ai_runtime,chub_web,quick_worker excludes=openclaw,debug_chrome,native_sessions,configuration,logs,documents"
+echo "chub-system-recovery-reset: scope=chub_rebuildable_state,chub_web,quick_worker,debug_chrome excludes=openclaw,native_sessions,configuration,logs,documents"
 run_platform_action recovery-core-stop
 (
     cd "$PROJECT_ROOT"
@@ -85,6 +88,7 @@ run_platform_action recovery-core-stop
 )
 run_platform_action core-service-definitions
 run_platform_action system-upgrade-load
+run_platform_action chrome-supervisor-reconcile --restart
 run_platform_action worker-restart
 "$PROJECT_ROOT/scripts/maintenance/chub-web-restart"
 wait_for_recovery_health

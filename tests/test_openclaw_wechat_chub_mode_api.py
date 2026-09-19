@@ -285,6 +285,7 @@ async def test_upgrade_blocks_weixin_runtime_writes(
 async def test_upgrade_keeps_disabled_weixin_chub_mode_on_pass_path(
     settings: Settings,
 ) -> None:
+    settings.openclaw.weixin_chub_mode.enabled = False
     app = create_app(settings)
     app.state.system_upgrade._writes_blocked = True
 

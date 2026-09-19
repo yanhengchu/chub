@@ -284,6 +284,10 @@ def test_weixin_chub_display_name_limits_are_configurable() -> None:
     assert configured.task_name_max_width == 72
 
 
+def test_weixin_chub_mode_is_enabled_by_default() -> None:
+    assert OpenClawWeixinChubModeConfig().enabled is True
+
+
 def test_openclaw_integration_paths_are_optional_and_resolved(tmp_path: Path) -> None:
     config_file = tmp_path / "settings.yaml"
     config_file.write_text(

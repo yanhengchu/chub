@@ -874,7 +874,7 @@ def test_prepare_restart_uses_current_state_and_clears_retired_codex_state(
     assert unrelated_runtime_dir.is_dir()
 
 
-def test_force_recovery_discards_only_chub_owned_ai_runtime_state(
+def test_force_recovery_discards_chub_owned_rebuildable_state(
     settings: Settings,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -885,15 +885,38 @@ def test_force_recovery_discards_only_chub_owned_ai_runtime_state(
     retired_root = tmp_path / "retired-runtime-state"
     monkeypatch.setattr("app.system_recovery_cli.PROJECT_ROOT", retired_root)
 
-    upgrade_state = state_dir / "system-upgrade.json"
+    settings.ai_runtime.shared.runtime_dir = tmp_path / "active-runtime"
+    settings.automations.state_dir = tmp_path / "automation-state"
+    settings.automations.artifacts_dir = tmp_path / "automation-artifacts"
+    settings.automations.runtime_dir = tmp_path / "automation-runtime"
+    settings.ai_runtime.modules.install_dir = tmp_path / "runtime-modules"
+    settings.business_modules.install_dir = tmp_path / "business-modules"
+    settings.business_modules.state_file = tmp_path / "business-state/deliveryline.json"
+    settings.business_modules.deliveryline_state_dir = tmp_path / "deliveryline-state"
+    settings.deployment_package.state_file = tmp_path / "deployment-state.json"
+    settings.deployment_package.artifacts_dir = tmp_path / "release-artifacts"
+    plugin_lifecycle = settings.business_modules.state_file.with_name("plugin-lifecycle.json")
+
+    removable_directories = (
+        state_dir,
+        settings.ai_runtime.shared.runtime_dir,
+        settings.automations.state_dir,
+        settings.automations.artifacts_dir,
+        settings.ai_runtime.modules.install_dir,
+        settings.business_modules.install_dir,
+        settings.business_modules.deliveryline_state_dir,
+        settings.deployment_package.artifacts_dir,
+        settings.automations.runtime_dir / "locks",
+    )
+    for path in removable_directories:
+        path.mkdir(parents=True, exist_ok=True)
+        path.chmod(0o700)
+        (path / "record.json").write_text("{}", encoding="utf-8")
+
     removable_files = (
-        state_dir / "sessions.json",
-        state_dir / "ai-sessions.json",
-        state_dir / "deferred-restart.json",
-        state_dir / "quick-interactions.json",
-        state_dir / "quick-worker-maintenance.json",
-        upgrade_state,
-        component_report_path(upgrade_state),
+        settings.deployment_package.state_file,
+        settings.business_modules.state_file,
+        plugin_lifecycle,
         *retired_ai_runtime_state_files(retired_root),
     )
     for path in removable_files:
@@ -901,37 +924,22 @@ def test_force_recovery_discards_only_chub_owned_ai_runtime_state(
         path.write_text("{}", encoding="utf-8")
         path.chmod(0o600)
 
-    worker_root = state_dir / "quick-worker"
-    worker_root.mkdir(mode=0o700)
-    (worker_root / "tasks-v999").mkdir(mode=0o700)
-    (worker_root / "tasks-v999" / "task.json").write_text("{}", encoding="utf-8")
     for path in retired_ai_runtime_directories(retired_root):
         path.mkdir(parents=True, exist_ok=True)
         path.chmod(0o700)
         (path / "record.json").write_text("{}", encoding="utf-8")
 
-    preserved_files = (
-        state_dir / "runtime-enablement.json",
-        state_dir / "runtime-implementation-preferences.json",
-        state_dir / "weekly-report-generation.json",
-        state_dir / "ai-search.json",
-    )
-    for path in preserved_files:
-        path.write_text("keep", encoding="utf-8")
-        path.chmod(0o600)
+    preserved_file = tmp_path / "preserved.log"
+    preserved_file.write_text("keep", encoding="utf-8")
+    preserved_file.chmod(0o600)
 
     with patch("app.system_recovery_cli.load_settings", return_value=settings):
         force_reset_runtime_state()
 
     assert all(not path.exists() for path in removable_files)
-    assert not worker_root.exists()
+    assert all(not path.exists() for path in removable_directories)
     assert all(not path.exists() for path in retired_ai_runtime_directories(retired_root))
-    assert [path.read_text(encoding="utf-8") for path in preserved_files] == [
-        "keep",
-        "keep",
-        "keep",
-        "keep",
-    ]
+    assert preserved_file.read_text(encoding="utf-8") == "keep"
 
 
 def test_force_recovery_uses_default_when_local_configuration_is_invalid(

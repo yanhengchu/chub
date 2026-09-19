@@ -99,8 +99,9 @@ openclaw:
   # integration_config_path: "~/.openclaw/openclaw.json"
   # integration_state_dir: "~/.openclaw"
   weixin_chub_mode:
-    # Explicitly enable only after the single-Owner WeChat private-message route is ready.
-    enabled: false
+    # Enabled by default; the fixed single-Owner private-message route still
+    # fails closed when its identity or routing checks are not satisfied.
+    enabled: true
     workspace_id: "chub"
     session_name_max_width: 30
     task_name_max_width: 64

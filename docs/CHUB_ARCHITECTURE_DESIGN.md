@@ -208,10 +208,10 @@ Debug Chrome 是核心层的受管浏览器基础能力；固定自动化、账�
 | --- | --- | --- | --- |
 | Web 启动、停止与重启 | 核心层 Chub | 启动/重启以 Web 健康确认，重启还须确认新实例 ID；停止以服务管理器停止确认 | Quick Worker、OpenClaw Gateway、原生 Codex、已受理任务 |
 | Worker 重启 | AI Runtime 层 Quick Worker 任务、租约和运行映射 | 新 generation、协议和健康确认 | Chub、OpenClaw Gateway、原生 Codex |
-| 升级与恢复 | Chub 自有 AI 运行态、Chub Web 与 Quick Worker | Web 新实例、Worker、目标协议、Session 映射和写入恢复确认；AI Runtime 在完成后独立展示可用性 | 原生 Codex、用户配置、日志、项目资料、OpenClaw、Debug Chrome 与无关服务 |
+| 升级与恢复 | 升级按 Chub 核心与 AI Runtime 范围；`chub recovery reset --force` 另包含 Chub Debug Chrome Supervisor，并清理 Chub 自有可重建运行态 | 升级按各自组件确认；强制重置还须确认 Web、Worker 与 Supervisor 终态 | 原生 Codex、用户配置、日志、项目资料、OpenClaw Gateway/插件/补丁、浏览器 Profile 与无关服务 |
 | OpenClaw Gateway 重启与恢复 | 第三方服务层 Gateway、微信通道与固定运行产物 | Gateway、已配置通道和兼容基线确认 | 核心层、AI Runtime |
 
-门禁只覆盖直接冲突或数据破坏风险，按资源局部生效。升级与恢复只处理 Chub 自有 AI 运行态、Web 与 Quick Worker；不扩展到原生 Runtime 数据、用户配置、日志、项目资料、OpenClaw、Debug Chrome 或无关服务。每项维护操作必须按表中的最终状态确认，不能以受理、进程创建或 HTTP 成功替代业务完成。
+门禁只覆盖直接冲突或数据破坏风险，按资源局部生效。普通升级与恢复不扩展到 Debug Chrome；仅本机终端的 `chub recovery reset --force` 会把 Chub Debug Chrome Supervisor 纳入停止、重建和最终健康确认，同时不删除浏览器 Profile。所有操作都不扩展到原生 Runtime 数据、用户配置、日志、项目资料、OpenClaw 或无关服务。每项维护操作必须按表中的最终状态确认，不能以受理、进程创建或 HTTP 成功替代业务完成。
 
 升级执行、Worker 恢复、Runtime 状态、OpenClaw Gateway 维护和自动化浏览器维护分别由对应专项文档定义。总体架构不维护具体清理步骤、页面状态文案、操作日志字段或某次实机验证结论。
 

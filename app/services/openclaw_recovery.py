@@ -513,6 +513,7 @@ def synchronize_openclaw_runtime(executable: str, gateway_version: str | None) -
                 "install",
                 str(PROJECT_ROOT / "integrations/openclaw/chub"),
                 "--force",
+                "--accept-capabilities",
             ],
             cwd=PROJECT_ROOT,
             timeout=SYNC_TIMEOUT_SECONDS,
@@ -527,7 +528,13 @@ def synchronize_openclaw_runtime(executable: str, gateway_version: str | None) -
     if _adapter_needs_sync(adapter_info, expected_package, expected_adapter, expected_integrity):
         _run_command(
             executable,
-            ["plugins", "install", f"{expected_package}@{expected_adapter}", "--force"],
+            [
+                "plugins",
+                "install",
+                f"{expected_package}@{expected_adapter}",
+                "--force",
+                "--accept-capabilities",
+            ],
             cwd=PROJECT_ROOT,
             timeout=SYNC_TIMEOUT_SECONDS,
             message="微信适配器固定版本同步失败。",
@@ -549,7 +556,13 @@ def synchronize_openclaw_runtime(executable: str, gateway_version: str | None) -
     if _manifest_patch_state(adapter_root, patches) != "applied":
         _run_command(
             executable,
-            ["plugins", "install", f"{expected_package}@{expected_adapter}", "--force"],
+            [
+                "plugins",
+                "install",
+                f"{expected_package}@{expected_adapter}",
+                "--force",
+                "--accept-capabilities",
+            ],
             cwd=PROJECT_ROOT,
             timeout=SYNC_TIMEOUT_SECONDS,
             message="微信适配器补丁基线恢复失败。",
@@ -950,26 +963,45 @@ def _patch_state(root: Path, patch_file: Path) -> str:
         elif current is not None and line.startswith("+") and not line.startswith("+++"):
             if line[1:]:
                 additions[current].append(line[1:])
-    if not additions or not any(additions.values()):
+    targets = list(additions)
+    has_change = any(
+        line.startswith(("+", "-")) and not line.startswith(("+++", "---"))
+        for line in lines
+    )
+    if not targets or not has_change:
         raise _sync_error("补丁文件不包含可校验内容。")
-    present = 0
-    total = 0
-    for relative, markers in additions.items():
+    patch = shutil.which("patch")
+    if not patch:
+        raise _sync_error("系统未安装固定 patch 工具。")
+
+    def can_apply() -> bool:
+        arguments = [patch, "--batch", "--forward", "--dry-run", "--fuzz=0", "-p1"]
+        arguments.extend(["-i", str(patch_file)])
         try:
-            target = (root / relative).resolve()
-        except (OSError, ValueError):
-            continue
-        total += len(markers)
-        if root not in target.parents or not target.is_file():
-            continue
-        content = target.read_text(encoding="utf-8")
-        for marker in markers:
-            present += marker in content
-    if present == total:
+            result = subprocess.run(
+                arguments,
+                cwd=root,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=PATCH_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise _sync_error("补丁状态检查失败。") from exc
+        return result.returncode == 0
+
+    if can_apply():
+        return "missing"
+    if all(not (root / target).is_file() for target in targets):
+        return "missing"
+    if all(
+        all(addition in (root / target).read_text(encoding="utf-8") for addition in markers)
+        for target, markers in additions.items()
+        if (root / target).is_file()
+    ):
         return "applied"
-    if present:
-        return "partial"
-    return "missing"
+    return "partial"
 
 
 def _apply_patch(root: Path, patch_file: Path) -> None:

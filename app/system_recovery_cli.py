@@ -9,7 +9,6 @@ from pathlib import Path
 from app.core.config import PROJECT_ROOT, load_settings
 from app.quick_worker_tasks import worker_state_dir
 from app.services.system_upgrade import (
-    component_report_path,
     retired_ai_runtime_directories,
     retired_ai_runtime_state_files,
 )
@@ -45,28 +44,44 @@ def _remove_private_directory(path: Path) -> None:
 
 
 def force_reset_runtime_state() -> None:
-    """Discard only fixed Chub-owned AI runtime state after services stop."""
+    """Discard Chub-owned rebuildable state after services stop.
+
+    User configuration, shared documents, logs, OpenClaw state, native
+    Runtime data, and browser Profiles are intentionally outside this reset.
+    """
     settings = load_settings()
     state_dir = settings.ai_runtime.shared.state_dir
-    upgrade_state = state_dir / "system-upgrade.json"
+    plugin_lifecycle_state = settings.business_modules.state_file.with_name(
+        "plugin-lifecycle.json"
+    )
 
+    # These paths contain only Chub-owned state or generated outputs. Keep
+    # configuration, shared business data, logs, and external Runtime data.
     for path in (
-        state_dir / "sessions.json",
-        state_dir / "ai-sessions.json",
-        state_dir / "deferred-restart.json",
-        state_dir / "quick-interactions.json",
-        state_dir / "quick-worker-maintenance.json",
-        upgrade_state,
-        component_report_path(upgrade_state),
-        *retired_ai_runtime_state_files(PROJECT_ROOT),
-    ):
-        _remove_private_file(path)
-
-    for path in (
+        state_dir,
+        settings.ai_runtime.shared.runtime_dir,
+        settings.automations.state_dir,
+        settings.automations.artifacts_dir,
+        settings.ai_runtime.modules.install_dir,
+        settings.business_modules.install_dir,
+        settings.business_modules.deliveryline_state_dir,
+        settings.deployment_package.artifacts_dir,
         worker_state_dir(settings),
         *retired_ai_runtime_directories(PROJECT_ROOT),
     ):
         _remove_private_directory(path)
+
+    for path in (
+        settings.deployment_package.state_file,
+        settings.business_modules.state_file,
+        plugin_lifecycle_state,
+        *retired_ai_runtime_state_files(PROJECT_ROOT),
+    ):
+        _remove_private_file(path)
+
+    # Automation logs live beside locks and task state but remain useful for
+    # post-recovery diagnosis, so only the rebuildable lock directory goes.
+    _remove_private_directory(settings.automations.runtime_dir / "locks")
 
 
 def main() -> None:

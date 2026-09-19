@@ -136,7 +136,7 @@ openclaw plugins inspect chub --runtime --json
 openclaw channels status --probe --json
 ```
 
-以上是底层手动命令。Chub 首页的“重启与恢复”使用 `restart` API action；微信端使用 `restart clawbot`。两者只会按完整 `validated` 基线同步 Chub 插件、微信适配器补丁和 OpenClaw 运行产物补丁，再执行 Gateway 重启和最终状态检查；不要用任意插件路径或未验证版本替代该流程。
+以上是底层手动命令。Chub 首页的“重启与恢复”使用 `restart` API action；微信端使用 `restart clawbot`。两者只会按完整 `validated` 基线同步 Chub 插件、微信适配器补丁和 OpenClaw 运行产物补丁，再执行 Gateway 重启和最终状态检查。固定同步会明确接受这两个已登记插件声明的能力，不接受调用方提供的任意插件路径、版本或能力范围。
 
 验收时确认插件状态为 `loaded`、运行时来源位于 OpenClaw 扩展目录、部署产物与仓库构建版本一致，并确认微信账号恢复 `running`；存在仓库来源记录时还需确认其指向本目录。不兼容协议变更必须与 Chub 配套切换；版本不一致期间只允许统一失败关闭，不能回退 Agent。
 
@@ -175,7 +175,8 @@ openclaw channels status --probe --json
 ```
 
 确认插件为 `loaded`、Chub 本机固定地址可达、目标微信账号为 `running`，并在 Chub 首页确认
-Owner 和微信 Chub 模式就绪。只启用 Agent Tool 时可保持 `weixinChubMode` 和 Chub 业务开关关闭。
+Owner 和微信 Chub 模式就绪。Chub 的发布默认配置会开启业务侧开关；只启用 Agent Tool 时，
+需显式关闭 `weixinChubMode` 和 Chub 业务开关。
 
 ### 8.2 协议升级同步清单
 
