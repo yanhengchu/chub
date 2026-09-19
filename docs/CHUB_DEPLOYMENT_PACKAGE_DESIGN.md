@@ -11,7 +11,7 @@
 2. 版本发布使用维护页填写的一个发布版本生成当前 Codex Runtime 和微信任务编排的正式 ZIP。填写版本必须与 `pyproject.toml`、Codex Runtime 源清单和微信任务编排源清单中的已提交版本完全一致；发布只校验，不修改这些源文件或当前节点版本。任一扩展产物无法构建或摘要无法确认时，主包不得生成成功结果。
 3. 发版说明默认不保存，页面首次打开或刷新时为空。维护者可直接手工填写，或点击“生成发版说明”由固定“版本发布说明”内部 Session 生成；生成任务复用新 Session 通用设置，以本次操作前最近一次成功发版记录保存的 tag/commit 到当前 HEAD 为基线，并综合当前暂存、未暂存和未跟踪的项目改动；同版本重复发布后的记录和 tag 以其最新位置为准。首次发布改为概括当前工作区内容。AI 结果只在当前页面流程自动填入，可编辑；服务端只为发起页面的短期随机令牌保留当前一个草稿，令牌仅通过受保护请求头传递，有效期固定为 30 分钟。重新生成、失败、过期、发布开始或 Web 重启时清理。刷新或 Web 重启后丢弃，绝不自动发布。
 4. 主包只随包交付插件 ZIP；核心部署流程不导入、不启用 Runtime 或微信任务编排插件，也不将它们纳入部署成功条件。工作站启动后，维护者根据实际环境手动决定是否将所需 ZIP 放入对应固定制品目录，并通过“插件管理”的统一生命周期显式导入、启用和选择版本。
-5. 包内包含 Chub 内置 Debug Chrome 实现，但不得包含来源设备的本机配置、账号、Token、Cookie、浏览器 Profile、Session、任务、运行锁、日志、缓存、构建环境或第三方运行态。目标设备必须重新创建本机配置，并按需初始化独立 Profile 和完成外部账号授权。
+5. 包内包含 Chub 内置 Debug Chrome 实现和可独立运行的 `config/settings.yaml` 默认配置，但不得包含来源设备的本机覆盖配置、账号、Token、Cookie、浏览器 Profile、Session、任务、运行锁、日志、缓存、构建环境或第三方运行态。目标设备仅在需要覆盖默认值时创建 `config/settings.local.yaml`，并按需初始化独立 Profile 和完成外部账号授权。
 6. Chub 核心部署与 OpenClaw、Runtime、插件包及其他第三方能力的后续配置相互独立。部署 Agent 不安装、接入或检查这些能力；维护者在工作站启动后按实际环境手动处理。它们未安装、配置失败或未验收不得使 Chub 核心部署失败，也不得自动清理已成功部署的 Chub。
 7. 包内 `DEPLOY_WITH_AI.md` 是目标设备 AI 的唯一通用部署操作入口：它先执行核心依赖、安装、配置、健康和最终状态确认，再按 macOS、原生 Ubuntu 或 Ubuntu WSL2 进入必要的平台关注事项。Ubuntu 用户服务确认 linger 配置；WSL2 还必须确认当前会话为 Version 2，并额外验证 Windows localhost 和经维护者确认的恢复验收。AI 必须在部署目录平级目录生成不含秘密、可在重连后继续更新的部署报告及长期 `DEPLOYMENT_NOTES.md`；报告固定命名为 `<source-zip-stem>-report.md`，同名时仅追加受控序号，并使用唯一隐藏检查点恢复报告路径、状态和阶段。Runtime、插件包、OpenClaw 和其他第三方能力不属于部署流程，工作站启动后由维护者按实际环境手动配置。
 8. 正式 ZIP 必须将 Chub 运行脚本以 Unix `0755` 元数据写入，不能依赖构建环境当前 umask。目标设备在首次执行脚本前仍固定执行 `find scripts -type f -exec chmod u+x {} +` 并确认 `scripts/chub` 可执行，以覆盖 Windows 解压工具、WSL 挂载文件系统和不保留 ZIP 权限元数据的解压实现；该步骤只作用于新解压目录，不修改来源 ZIP 或既有部署。内部平台适配脚本同样属于该权限范围，但不形成新的维护者 CLI。
@@ -22,12 +22,12 @@
 
 所有部署包正式 ZIP 统一命名为 `<名称>-release-<版本>-<UTC分钟>-<Git短hash>.zip`。一次部署包构建中的三个产物使用同一个构建标识：主包为 `chub-release-<版本>-<构建标识>.zip`，随包模块为 `codex-runtime-release-<版本>-<构建标识>.zip` 与 `weixin-refinement-release-<版本>-<构建标识>.zip`；构建标识使用 UTC 到分钟和当前 HEAD 的 12 位短 hash。主包固定写入 `data/local/artifacts/releases/`。每个包包含：
 
-- Chub 主程序、页面资源、固定脚本、内置 Debug Chrome 实现、示例配置、依赖声明和目标设备安装所需服务定义；
+- Chub 主程序、页面资源、固定脚本、内置 Debug Chrome 实现、完整默认配置、依赖声明和目标设备安装所需服务定义；
 - 受控的项目文档及包内 `DEPLOY_WITH_AI.md`；
 - 当前构建出的 Codex Runtime 正式 ZIP 与微信任务编排正式 ZIP；
 - 发布清单：Chub 版本、构建标识、构建时间、维护者填写的发版说明、每个内含扩展的文件名、版本/标识和 SHA-256，以及每个文件的受控清单与摘要。构建测试还必须从解压后的主包冷导入 Chub 内置 Debug Chrome 调用层，不能只按文件名判断该能力可用。
 
-构建不复制 `.venv`、`node_modules`、`.git`、本机 `config/*.local.yaml`、`data/local/`、日志、测试缓存、Python 缓存、临时文件或既有发布物。配置只固定包含示例配置、自动化模板和系统升级计划，不随包复制 `config/automations.yaml` 或其他未登记配置。Chub OpenClaw 插件的仓库源码、构建说明和已验证补丁清单可随主程序交付；OpenClaw 本体、其运行目录、账号、配置和依赖不属于 Chub 发布包。插件模块开发源码是否随包由本次发布配置决定；无论是否包含源码，两个正式插件模块 ZIP 都必须随包交付。
+构建不复制 `.venv`、`node_modules`、`.git`、本机 `config/*.local.yaml`、`data/local/`、日志、测试缓存、Python 缓存、临时文件或既有发布物。配置只固定包含 `config/settings.yaml`、自动化模板和系统升级计划，不随包复制 `config/automations.yaml` 或其他未登记配置。Chub OpenClaw 插件的仓库源码、构建说明和已验证补丁清单可随主程序交付；OpenClaw 本体、其运行目录、账号、配置和依赖不属于 Chub 发布包。插件模块开发源码是否随包由本次发布配置决定；无论是否包含源码，两个正式插件模块 ZIP 都必须随包交付。
 
 发布包使用临时文件完成构建。两个随包插件 ZIP 必须先在独立临时安装目录按各自导入预检验证协议、版本兼容性和入口可加载性；随后主 ZIP 与发布清单必须完成成员和摘要校验，才原子发布。生成按钮只创建当前构建产物并展示构建标识、时间、内含扩展、大小和摘要；它不重启 Web/Worker、不修改当前 Runtime 默认实现、不导入扩展，也不影响已受理任务。
 
@@ -64,7 +64,7 @@ Codex Runtime 与微信任务编排插件继续遵循各自现有 ZIP 协议、�
 
 1. 检查支持的平台、发行版默认 Python 版本和基础命令；当前支持 macOS LaunchAgent 与 Ubuntu systemd user service。Windows WSL 只允许以 Ubuntu WSL2、systemd 已启用且 `systemctl --user` 可用的路径部署，不把 WSL1、非 Ubuntu 发行版或未启用 systemd 的环境视为可部署平台。
 2. 创建新的 Python 环境并通过受控超时的正常网络安装声明的依赖；只有维护者已提供可信镜像时才使用镜像重试。
-3. 从示例创建 `config/settings.local.yaml`，完成新设备节点与核心可信网络配置；Runtime、插件包和第三方服务配置留待工作站启动后由维护者按环境处理。
+3. 直接使用随包的 `config/settings.yaml` 启动核心服务；仅在需要设备标识或可信网络等差异时创建 `config/settings.local.yaml` 覆盖。Runtime、插件包和第三方服务配置留待工作站启动后由维护者按环境处理。
 4. 安装 Chub Web、Quick Worker 及固定服务定义；首次安装同时创建平级 `chub-local-modules/` 与空模块索引，若该目录已存在则绝不修改。随后确认 Web 和 Worker 的健康状态，并在部署目录平级目录写入脱敏的部署报告与长期部署问题记录。两者不得包含配置、日志、账号或秘密；它们不授权将项目、虚拟环境或运行态写入 Windows 挂载目录。
 
 Web 健康、Quick Worker 健康和服务安装后的可恢复状态都已确认，才表示 Chub 核心部署成功。仅解压、依赖安装完成、服务进程创建或 HTTP 200 均不单独表示部署成功。

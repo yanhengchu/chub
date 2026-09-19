@@ -14,7 +14,6 @@ from app.services.system_upgrade import (
     retired_ai_runtime_state_files,
 )
 
-
 def _remove_private_file(path: Path) -> None:
     try:
         metadata = path.lstat()

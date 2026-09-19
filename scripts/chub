@@ -27,7 +27,7 @@ LOCAL_MODULES_ROOT="$(cd "$PROJECT_ROOT/.." && pwd)/chub-local-modules"
 
 PYTHON_BIN="$PROJECT_ROOT/.venv/bin/python"
 MAIN_FILE="$PROJECT_ROOT/main.py"
-CONFIG_FILE="$PROJECT_ROOT/config/settings.local.yaml"
+SETTINGS_FILE="$PROJECT_ROOT/config/settings.yaml"
 COMMAND_DIR="${CHUB_COMMAND_DIR:-$HOME/.local/bin}"
 COMMAND_PATH="$COMMAND_DIR/chub"
 RUNTIME_PATH="$PROJECT_ROOT/.venv/bin:$HOME/.local/bin:$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -120,7 +120,7 @@ platform_name() {
 check_project() {
     [[ -x "$PYTHON_BIN" ]] || fail "Python environment not found: $PYTHON_BIN"
     [[ -f "$MAIN_FILE" ]] || fail "Hub entry point not found: $MAIN_FILE"
-    [[ -f "$CONFIG_FILE" ]] || fail "configuration not found: $CONFIG_FILE"
+    [[ -f "$SETTINGS_FILE" ]] || fail "configuration not found: $SETTINGS_FILE"
 }
 
 require_system_upgrade_idle() {
@@ -140,12 +140,12 @@ configured_value() {
     local name="$1"
     (
         cd "$PROJECT_ROOT"
-        "$PYTHON_BIN" - "$name" "$CONFIG_FILE" <<'PY'
+        "$PYTHON_BIN" - "$name" <<'PY'
 import sys
 
 from app.core.config import load_settings
 
-settings = load_settings(sys.argv[2])
+settings = load_settings()
 values = {
     "health_url": f"http://127.0.0.1:{settings.server.port}/api/health",
     "status_url": f"http://127.0.0.1:{settings.server.port}/api/status",
@@ -384,16 +384,14 @@ require_worker_idle_for_maintenance() {
 clear_retired_worker_state() {
     (
         cd "$PROJECT_ROOT"
-        "$PYTHON_BIN" - "$CONFIG_FILE" <<'PY'
+        "$PYTHON_BIN" - <<'PY'
 import os
 import shutil
 import stat
-import sys
-
 from app.core.config import load_settings
 from app.quick_worker_tasks import worker_state_dir
 
-root = worker_state_dir(load_settings(sys.argv[1]))
+root = worker_state_dir(load_settings())
 try:
     root_metadata = root.lstat()
 except FileNotFoundError:

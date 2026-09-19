@@ -56,6 +56,7 @@ def service_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
     (workspace / ".venv").symlink_to(PROJECT_ROOT / ".venv", target_is_directory=True)
     (workspace / "main.py").symlink_to(PROJECT_ROOT / "main.py")
     (workspace / "config").mkdir()
+    shutil.copy(PROJECT_ROOT / "config" / "settings.yaml", workspace / "config")
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
     calls = tmp_path / "manager-calls.log"
@@ -1218,6 +1219,8 @@ def test_recovery_reset_bypasses_upgrade_state_but_keeps_fixed_boundaries() -> N
 
     assert "require_system_upgrade_idle" not in recovery_body
     assert "require_worker_idle_for_maintenance" not in recovery_body
+    assert "check_project" in recovery_body
+    assert "check_recovery_project" not in recovery_body
     assert "recovery reset must be run from a local terminal" in recovery_body
     assert "recovery-core-stop" in script
     assert "app.system_recovery_cli force-reset" in script

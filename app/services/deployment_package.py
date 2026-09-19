@@ -910,8 +910,8 @@ class DeploymentPackageService:
     @staticmethod
     def _chub_source_declarations_match(chub_version: str) -> bool:
         try:
-            settings_example = yaml.safe_load(
-                (PROJECT_ROOT / "config" / "settings.example.yaml").read_text("utf-8")
+            settings_file = yaml.safe_load(
+                (PROJECT_ROOT / "config" / "settings.yaml").read_text("utf-8")
             )
             runtime_manifest = json.loads(
                 (PROJECT_ROOT / "modules" / "runtime" / "codex-runtime" / "chub-module.json").read_text("utf-8")
@@ -926,9 +926,9 @@ class DeploymentPackageService:
                 ).read_text("utf-8")
             )
             return (
-                isinstance(settings_example, dict)
-                and isinstance(settings_example.get("app"), dict)
-                and settings_example["app"].get("version") == chub_version
+                isinstance(settings_file, dict)
+                and isinstance(settings_file.get("app"), dict)
+                and settings_file["app"].get("version") == chub_version
                 and runtime_manifest.get("chub_version") == chub_version
                 and weixin_manifest.get("chub_version") == chub_version
             )
@@ -1326,7 +1326,7 @@ class DeploymentPackageService:
             "main.py",
             "pyproject.toml",
             "requirements.txt",
-            "config/settings.example.yaml",
+            "config/settings.yaml",
             "config/automations.example.yaml",
             "config/notifications.example.yaml",
             "config/automation_templates",

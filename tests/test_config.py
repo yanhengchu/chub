@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 import pytest
@@ -7,8 +8,10 @@ from app.core.config import (
     NetworkRecoveryConfig,
     OpenClawConfig,
     OpenClawWeixinChubModeConfig,
+    log_local_config_fallback,
     load_settings,
 )
+from app.core.logger import configure_logging
 
 
 VALID_CONFIG = """
@@ -352,8 +355,8 @@ def test_runtime_data_defaults_are_separated(
     )
 
 
-def test_shared_config_example_is_valid() -> None:
-    settings = load_settings(config.PROJECT_ROOT / "config" / "settings.example.yaml")
+def test_tracked_default_config_is_valid() -> None:
+    settings = load_settings(config.PROJECT_ROOT / "config" / "settings.yaml")
 
     assert settings.node.type == "unknown"
     assert settings.security.allow_tailscale is True
@@ -363,3 +366,105 @@ def test_shared_config_example_is_valid() -> None:
 def test_load_settings_rejects_missing_file(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="Configuration file not found"):
         load_settings(tmp_path / "missing.yaml")
+
+
+def test_local_config_overrides_the_tracked_default(tmp_path: Path) -> None:
+    base_file = tmp_path / "settings.yaml"
+    local_file = tmp_path / "settings.local.yaml"
+    base_file.write_text(VALID_CONFIG, encoding="utf-8")
+    local_file.write_text(
+        "node:\n  name: Local Node\nserver:\n  port: 9090\n", encoding="utf-8"
+    )
+
+    settings = load_settings(base_file, local_config_file=local_file)
+
+    assert settings.node.id == "test"
+    assert settings.node.name == "Local Node"
+    assert settings.server.port == 9090
+
+
+def test_invalid_local_config_is_discarded_as_a_whole(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    base_file = tmp_path / "settings.yaml"
+    local_file = tmp_path / "settings.local.yaml"
+    base_file.write_text(VALID_CONFIG, encoding="utf-8")
+    local_file.write_text(
+        "node:\n  name: Local Node\nremoved_setting: secret-value\n",
+        encoding="utf-8",
+    )
+
+    settings = load_settings(base_file, local_config_file=local_file)
+    log_local_config_fallback(settings)
+
+    assert settings.node.name == "Test"
+    assert settings.server.port == 8080
+    assert local_file.read_text(encoding="utf-8").endswith("secret-value\n")
+    assert "Ignoring local configuration override settings.local.yaml" in caplog.text
+    assert "invalid fields: removed_setting" in caplog.text
+    assert "secret-value" not in caplog.text
+
+
+def test_malformed_local_config_uses_default_and_logs_a_redacted_error(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    base_file = tmp_path / "settings.yaml"
+    local_file = tmp_path / "settings.local.yaml"
+    base_file.write_text(VALID_CONFIG, encoding="utf-8")
+    local_file.write_text("node: [broken\n", encoding="utf-8")
+
+    settings = load_settings(base_file, local_config_file=local_file)
+    log_local_config_fallback(settings)
+
+    assert settings.node.name == "Test"
+    assert "invalid YAML at line" in caplog.text
+    assert "[broken" not in caplog.text
+
+
+def test_missing_local_config_uses_the_default_without_a_warning(tmp_path: Path) -> None:
+    base_file = tmp_path / "settings.yaml"
+    base_file.write_text(VALID_CONFIG, encoding="utf-8")
+
+    settings = load_settings(
+        base_file, local_config_file=tmp_path / "settings.local.yaml"
+    )
+
+    assert settings.node.name == "Test"
+
+
+def test_unreadable_local_config_is_discarded_with_a_redacted_error(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    base_file = tmp_path / "settings.yaml"
+    local_file = tmp_path / "settings.local.yaml"
+    base_file.write_text(VALID_CONFIG, encoding="utf-8")
+    local_file.mkdir()
+
+    settings = load_settings(base_file, local_config_file=local_file)
+    log_local_config_fallback(settings)
+
+    assert settings.node.name == "Test"
+    assert "cannot be read" in caplog.text
+
+
+def test_local_config_fallback_is_written_after_logging_is_configured(
+    tmp_path: Path,
+) -> None:
+    base_file = tmp_path / "settings.yaml"
+    local_file = tmp_path / "settings.local.yaml"
+    base_file.write_text(VALID_CONFIG, encoding="utf-8")
+    local_file.write_text("removed_setting: secret-value\n", encoding="utf-8")
+
+    settings = load_settings(base_file, local_config_file=local_file)
+    settings.logs.file = tmp_path / "hub.log"
+    settings.logs.operations_file = tmp_path / "operations.log"
+    settings.logs.worker_operations_file = tmp_path / "worker-operations.log"
+    configure_logging(settings.logs)
+    log_local_config_fallback(settings)
+    for handler in logging.getLogger().handlers:
+        handler.flush()
+
+    log_text = settings.logs.file.read_text(encoding="utf-8")
+    assert "Ignoring local configuration override settings.local.yaml" in log_text
+    assert "invalid fields: removed_setting" in log_text
+    assert "secret-value" not in log_text

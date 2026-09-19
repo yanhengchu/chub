@@ -284,4 +284,4 @@ merge_shared_requests
 
 find data/local/state data/local/runtime data/local/artifacts -type d -exec chmod 700 {} + 2>/dev/null || true
 find data/local/state data/local/runtime data/local/artifacts -type f -exec chmod 600 {} + 2>/dev/null || true
-printf '%s\n' 'Chub data migration completed. Review config/settings.local.yaml, then start Chub.'
+printf '%s\n' 'Chub data migration completed. Review config/settings.yaml and any optional config/settings.local.yaml override, then start Chub.'

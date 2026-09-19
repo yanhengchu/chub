@@ -139,7 +139,7 @@ def test_release_build_contains_formal_modules_and_excludes_local_state(
             "unzip -t \"$SOURCE_ZIP\"",
             "core_services_verified",
             "不得使用无上下文正则替换 YAML 字段",
-            'app["page_title"] = f"{sys.argv[2]} · Hub"',
+            '"app": {"name": sys.argv[2], "page_title": f"{sys.argv[2]} · Hub"}',
             "Windows localhost 请求再次返回 `200`",
             "Runtime、插件包、OpenClaw 和其他第三方能力不属于本条件",
         ):
@@ -148,7 +148,7 @@ def test_release_build_contains_formal_modules_and_excludes_local_state(
         assert "app/automations/debug_chrome/playwright_session.py" in names
         assert not any(name.startswith(".agents/") for name in names)
         assert "config/automations.yaml" not in names
-        assert "config/settings.example.yaml" in names
+        assert "config/settings.yaml" in names
         assert "modules/runtime/codex-runtime/chub-module.json" not in names
         assert "modules/chub-local-modules.example.json" in names
         for script in (
@@ -167,7 +167,7 @@ def test_release_build_contains_formal_modules_and_excludes_local_state(
         ):
             assert (archive.getinfo(script).external_attr >> 16) & 0o777 == 0o755
         assert archive.read("pyproject.toml").decode("utf-8").count(f'version = "{source_versions.chub}"') == 1
-        assert f'version: "{source_versions.chub}"' in archive.read("config/settings.example.yaml").decode("utf-8")
+        assert f'version: "{source_versions.chub}"' in archive.read("config/settings.yaml").decode("utf-8")
         manifest = json.loads(archive.read("release-manifest.json"))
         assert manifest["chub_release_version"] == source_versions.chub
         assert manifest["build_id"] == built.build_id
@@ -505,7 +505,7 @@ def test_release_source_versions_require_all_chub_declarations_to_match(
     (project / "modules" / "runtime" / "codex-runtime").mkdir(parents=True)
     (project / "modules" / "orchestration" / "weixin-refinement").mkdir(parents=True)
     (project / "pyproject.toml").write_text('[project]\nversion = "1.2.3"\n')
-    (project / "config" / "settings.example.yaml").write_text('app:\n  version: "1.2.3"\n')
+    (project / "config" / "settings.yaml").write_text('app:\n  version: "1.2.3"\n')
     (project / "modules" / "runtime" / "codex-runtime" / "chub-module.json").write_text(
         '{"version":"1.2.3","chub_version":"1.2.3"}\n'
     )

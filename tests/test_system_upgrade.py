@@ -13,7 +13,7 @@ from app.ai_session import AiSessionManager
 from app.application import create_app
 from app.ai_interactions.models import QuickInteractionWeixinRoute
 from app.core.build_info import SESSION_SCHEMA_VERSION, WEB_CODE_VERSION
-from app.core.config import Settings
+from app.core.config import Settings, load_settings
 from app.quick_worker import PROTOCOL_VERSION
 from app.services.openclaw import OpenClawManager
 from app.services.system_upgrade import (
@@ -934,6 +934,39 @@ def test_force_recovery_discards_only_chub_owned_ai_runtime_state(
     ]
 
 
+def test_force_recovery_uses_default_when_local_configuration_is_invalid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    config_dir = project_root / "config"
+    config_dir.mkdir(parents=True)
+    base_config_path = config_dir / "settings.yaml"
+    shutil.copy(PROJECT_ROOT / "config" / "settings.yaml", base_config_path)
+    config_path = config_dir / "settings.local.yaml"
+    config_path.write_text("node: [not-a-mapping\n", encoding="utf-8")
+    config_path.chmod(0o600)
+    state_dir = project_root / "data/local/state/ai-runtime"
+    state_dir.mkdir(parents=True, mode=0o700)
+    session_file = state_dir / "ai-sessions.json"
+    session_file.write_text("[]", encoding="utf-8")
+    session_file.chmod(0o600)
+
+    monkeypatch.setattr("app.core.config.PROJECT_ROOT", project_root)
+    monkeypatch.setattr("app.core.config.SETTINGS_FILE", base_config_path)
+    monkeypatch.setattr("app.core.config.LOCAL_SETTINGS_FILE", config_path)
+    monkeypatch.setattr("app.system_recovery_cli.PROJECT_ROOT", project_root)
+
+    assert force_reset_runtime_state() is None
+
+    recovered = load_settings()
+    assert recovered.security.allow_tailscale is True
+    assert recovered.ai_runtime.shared.state_dir == state_dir
+    assert config_path.read_text(encoding="utf-8") == "node: [not-a-mapping\n"
+    assert not (config_dir / "settings.recovery.local.yaml").exists()
+    assert not session_file.exists()
+
+
 def test_system_upgrade_restart_uses_fixed_linux_services(
     settings: Settings,
     tmp_path: Path,
@@ -974,6 +1007,7 @@ def test_system_upgrade_restart_uses_fixed_linux_services(
     (workspace / ".venv").symlink_to(PROJECT_ROOT / ".venv", target_is_directory=True)
     (workspace / "main.py").symlink_to(PROJECT_ROOT / "main.py")
     (workspace / "config").mkdir()
+    shutil.copy(PROJECT_ROOT / "config" / "settings.yaml", workspace / "config")
     config_path = workspace / "config" / "settings.local.yaml"
     config_path.write_text(
         yaml.safe_dump(

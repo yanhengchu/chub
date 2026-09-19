@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import copy
 from functools import lru_cache
+import logging
 from pathlib import Path
 import re
 from typing import Any, Literal
@@ -10,6 +12,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    PrivateAttr,
     ValidationError,
     field_validator,
     model_validator,
@@ -18,7 +21,8 @@ from pydantic import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_CONFIG_FILE = PROJECT_ROOT / "config" / "settings.local.yaml"
+SETTINGS_FILE = PROJECT_ROOT / "config" / "settings.yaml"
+LOCAL_SETTINGS_FILE = PROJECT_ROOT / "config" / "settings.local.yaml"
 
 
 class StrictModel(BaseModel):
@@ -313,6 +317,7 @@ class Settings(StrictModel):
     notifications: NotificationsConfig = NotificationsConfig()
     network_recovery: NetworkRecoveryConfig = NetworkRecoveryConfig()
     openclaw: OpenClawConfig = OpenClawConfig()
+    _local_config_fallback: tuple[str, str] | None = PrivateAttr(default=None)
 
     def resolve_runtime_paths(self) -> "Settings":
         if not self.logs.file.is_absolute():
@@ -422,13 +427,9 @@ def _read_yaml(path: Path) -> dict[str, Any]:
         with path.open("r", encoding="utf-8") as file:
             content = yaml.safe_load(file)
     except FileNotFoundError as exc:
-        if path == DEFAULT_CONFIG_FILE:
-            raise RuntimeError(
-                "Configuration file not found: "
-                f"{path}. Copy config/settings.example.yaml to "
-                "config/settings.local.yaml"
-            ) from exc
         raise RuntimeError(f"Configuration file not found: {path}") from exc
+    except OSError as exc:
+        raise RuntimeError(f"Configuration file cannot be read: {path}") from exc
     except yaml.YAMLError as exc:
         raise RuntimeError(f"Invalid YAML configuration: {path}") from exc
 
@@ -437,19 +438,107 @@ def _read_yaml(path: Path) -> dict[str, Any]:
     return content
 
 
-def load_settings(config_file: str | Path | None = None) -> Settings:
-    path = Path(config_file or DEFAULT_CONFIG_FILE).expanduser()
+def _config_path(value: str | Path) -> Path:
+    path = Path(value).expanduser()
     if not path.is_absolute():
         path = PROJECT_ROOT / path
-    path = path.resolve()
-    data = _read_yaml(path)
-    security = data.setdefault("security", {})
-    if not isinstance(security, dict):
-        raise RuntimeError("Configuration field 'security' must be a mapping")
+    return path.resolve()
+
+
+def _validate_settings(data: dict[str, Any]) -> Settings:
     try:
         return Settings.model_validate(data).resolve_runtime_paths()
     except ValidationError as exc:
         raise RuntimeError(f"Invalid Hub configuration: {exc}") from exc
+
+
+def _merge_settings(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged = copy.deepcopy(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_settings(merged[key], value)
+        else:
+            merged[key] = copy.deepcopy(value)
+    return merged
+
+
+def _local_config_error_summary(error: RuntimeError) -> str:
+    message = str(error)
+    if message.startswith("Configuration file cannot be read"):
+        return "cannot be read"
+    if message.startswith("Invalid YAML configuration"):
+        marker = getattr(error.__cause__, "problem_mark", None)
+        if marker is not None:
+            return f"invalid YAML at line {marker.line + 1}, column {marker.column + 1}"
+        return "invalid YAML"
+    if message.startswith("Configuration root must be a mapping"):
+        return "root is not a mapping"
+    if isinstance(error.__cause__, ValidationError):
+        locations = []
+        for item in error.__cause__.errors(include_url=False):
+            location = item.get("loc")
+            if isinstance(location, tuple) and location:
+                locations.append(".".join(str(part) for part in location))
+        unique_locations = list(dict.fromkeys(locations))
+        if unique_locations:
+            visible = unique_locations[:5]
+            suffix = "" if len(unique_locations) <= 5 else ", ..."
+            return f"invalid fields: {', '.join(visible)}{suffix}"
+    return "does not satisfy the current configuration schema"
+
+
+def _record_local_config_fallback(
+    settings: Settings, path: Path, reason: str
+) -> Settings:
+    settings._local_config_fallback = (path.name, reason)
+    return settings
+
+
+def log_local_config_fallback(settings: Settings) -> None:
+    fallback = settings._local_config_fallback
+    if fallback is None:
+        return
+    settings._local_config_fallback = None
+    file_name, reason = fallback
+    logging.getLogger("hub.config").error(
+        "Ignoring local configuration override %s: %s; using config/settings.yaml",
+        file_name,
+        reason,
+    )
+
+
+def load_settings(
+    config_file: str | Path | None = None,
+    *,
+    local_config_file: str | Path | None = None,
+) -> Settings:
+    """Load the tracked baseline and, when valid, a complete local override layer."""
+    base_path = _config_path(config_file or SETTINGS_FILE)
+    base_data = _read_yaml(base_path)
+    base_settings = _validate_settings(base_data)
+
+    if local_config_file is None:
+        if config_file is not None:
+            return base_settings
+        local_path = _config_path(LOCAL_SETTINGS_FILE)
+    else:
+        local_path = _config_path(local_config_file)
+
+    try:
+        local_data = _read_yaml(local_path)
+    except RuntimeError as exc:
+        if isinstance(exc.__cause__, FileNotFoundError):
+            return base_settings
+        return _record_local_config_fallback(
+            base_settings, local_path, _local_config_error_summary(exc)
+        )
+
+    try:
+        return _validate_settings(_merge_settings(base_data, local_data))
+    except RuntimeError as exc:
+        return _record_local_config_fallback(
+            base_settings, local_path, _local_config_error_summary(exc)
+        )
 
 
 @lru_cache(maxsize=1)

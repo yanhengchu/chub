@@ -7,7 +7,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 PYTHON_BIN="$PROJECT_ROOT/.venv/bin/python"
-CONFIG_FILE="$PROJECT_ROOT/config/settings.local.yaml"
+SETTINGS_FILE="$PROJECT_ROOT/config/settings.yaml"
 
 fail() {
     echo "chub: $*" >&2
@@ -16,7 +16,7 @@ fail() {
 
 check_project() {
     [[ -x "$PYTHON_BIN" ]] || fail "Python environment not found: $PYTHON_BIN"
-    [[ -f "$CONFIG_FILE" ]] || fail "configuration not found: $CONFIG_FILE"
+    [[ -f "$SETTINGS_FILE" ]] || fail "configuration not found: $SETTINGS_FILE"
 }
 
 run_platform_action() {
@@ -126,16 +126,14 @@ for name in ("active_tasks", "queued_tasks", "uncertain_tasks", "corrupt_tasks")
 clear_retired_worker_state() {
     (
         cd "$PROJECT_ROOT"
-        "$PYTHON_BIN" - "$CONFIG_FILE" <<'PY'
+        "$PYTHON_BIN" - <<'PY'
 import os
 import shutil
 import stat
-import sys
-
 from app.core.config import load_settings
 from app.quick_worker_tasks import worker_state_dir
 
-root = worker_state_dir(load_settings(sys.argv[1]))
+root = worker_state_dir(load_settings())
 try:
     root_metadata = root.lstat()
 except FileNotFoundError:
@@ -183,7 +181,7 @@ record_worker_reload_operation() {
     [[ "${CHUB_WORKER_RELOAD_EXTERNAL_LOGGING:-}" != "1" ]] || return 0
     (
         cd "$PROJECT_ROOT"
-        "$PYTHON_BIN" - "$CONFIG_FILE" "$operation_id" "$operation_status" "$generation" "$reason" <<'PY'
+        "$PYTHON_BIN" - "$operation_id" "$operation_status" "$generation" "$reason" <<'PY'
 import re
 import sys
 
@@ -191,12 +189,12 @@ from app.core.config import load_settings
 from app.core.logger import configure_worker_operation_logging
 from app.services.operation_log import write_operation
 
-config_file, operation_id, status, generation, reason = sys.argv[1:]
+operation_id, status, generation, reason = sys.argv[1:]
 if re.fullmatch(r"worker-reload:[a-f0-9]{32}", operation_id) is None:
     raise SystemExit(2)
 if status not in {"requested", "started", "succeeded", "failed"}:
     raise SystemExit(2)
-settings = load_settings(config_file)
+settings = load_settings()
 configure_worker_operation_logging(settings.logs)
 write_operation(
     operation_id=operation_id,

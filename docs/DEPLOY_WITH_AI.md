@@ -159,14 +159,13 @@ unzip -q "$SOURCE_ZIP" -d "$TARGET_DIR"
 cd "$TARGET_DIR"
 test -f pyproject.toml
 test -f requirements.txt
-test -f config/settings.example.yaml
+test -f config/settings.yaml
 test -f scripts/chub
 find scripts -type f -exec chmod u+x {} +
 test -x scripts/chub
 python3 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip --timeout 30 --retries 1
 .venv/bin/python -m pip install --timeout 30 --retries 1 -r requirements.txt
-cp config/settings.example.yaml config/settings.local.yaml
 ```
 
 完成本节后执行 `record_stage in_progress core_dependencies_installed`。后续每个章节完成、失败或进入 WSL 恢复等待时，同样调用 `record_stage` 写入对应状态和阶段。
@@ -181,7 +180,9 @@ cp config/settings.example.yaml config/settings.local.yaml
 
 未提供可信镜像时，报告依赖安装失败，不在本文中猜测或写死公共镜像地址。
 
-AI 从示例创建并结构化填写 `config/settings.local.yaml`。首轮核心验收只需调整下列字段，其余示例字段保持默认；不得使用无上下文正则替换 YAML 字段：
+`config/settings.yaml` 是随包提供的完整默认配置，可直接用于首轮核心启动。仅在本机需要覆盖默认值时，AI 才创建 `config/settings.local.yaml`；该文件只写需要覆盖的字段。读取、解析或完整校验失败时，Chub 记录脱敏错误并完整忽略该覆盖文件，继续使用默认配置；不会自动改写或修复本机文件。
+
+首轮核心验收只需创建下列可选覆盖；不得使用无上下文正则替换 YAML 字段：
 
 ```yaml
 node:
@@ -193,13 +194,13 @@ security:
 ```
 
 - `node.id` 必须是新设备唯一标识，`node.name` 必须可读，`node.type` 必须与已确认的平台匹配；
-- `app.name` 与 `app.page_title` 由部署步骤从 `node.name` 同步生成，页面标题固定为 `<node.name> · Hub`；
+- `app.name` 与 `app.page_title` 可按需由部署步骤从 `node.name` 覆盖，页面标题固定为 `<node.name> · Hub`；
 - `server.port` 默认是 `8080`。仅在端口冲突时修改为未被本机占用的端口；
 - `ai_runtime.shared.workspace` 必须是本机受信工作目录。默认 `~/workspace` 可保留，但目标目录不存在时创建它；
 - 首轮本机验收保持 `security.allow_tailscale: false`，Tailnet 验收另行执行；
 - 不填写或复制通知、OpenClaw、微信、API Key、Token、Cookie、账号或其他凭据。
 
-在项目根目录使用 YAML 解析器精确更新这些路径；新创建的本机配置不要求保留示例注释或排版：
+在项目根目录使用 YAML 解析器创建该覆盖文件；新创建的本机配置不要求保留默认配置的注释或排版：
 
 ```bash
 CHUB_NODE_ID="<new-device-id>"
@@ -212,21 +213,11 @@ from pathlib import Path
 import yaml
 
 path = Path("config/settings.local.yaml")
-payload = yaml.safe_load(path.read_text(encoding="utf-8"))
-if not isinstance(payload, dict) or not isinstance(payload.get("node"), dict):
-    raise SystemExit("settings.local.yaml has no valid node mapping")
-payload["node"].update(
-    {"id": sys.argv[1], "name": sys.argv[2], "type": sys.argv[3]}
-)
-app = payload.get("app")
-if not isinstance(app, dict):
-    raise SystemExit("settings.local.yaml has no valid app mapping")
-app["name"] = sys.argv[2]
-app["page_title"] = f"{sys.argv[2]} · Hub"
-security = payload.setdefault("security", {})
-if not isinstance(security, dict):
-    raise SystemExit("settings.local.yaml has no valid security mapping")
-security["allow_tailscale"] = False
+payload = {
+    "app": {"name": sys.argv[2], "page_title": f"{sys.argv[2]} · Hub"},
+    "node": {"id": sys.argv[1], "name": sys.argv[2], "type": sys.argv[3]},
+    "security": {"allow_tailscale": False},
+}
 path.write_text(yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), encoding="utf-8")
 PY
 ```

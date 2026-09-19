@@ -41,11 +41,10 @@ Chub 的长期定位是“个人本地工作站与统一控制面”：核心自
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
-cp config/settings.example.yaml config/settings.local.yaml
 .venv/bin/python main.py
 ```
 
-`config/settings.local.yaml` 仅保存本机配置，不应提交。按实际设备填写节点信息、Runtime、自动化和可选 OpenClaw 配置；字段说明以 [settings 示例](config/settings.example.yaml) 和对应专项设计为准。
+`config/settings.yaml` 是随项目发布、可独立运行的完整默认配置。`config/settings.local.yaml` 是可选且不提交的本机覆盖层；仅在需要调整设备标识、端口、工作目录、可信网络或第三方能力时创建。覆盖文件读取或校验失败时，Chub 在启动后的 `logs/hub.log` 记录脱敏错误并完整忽略该覆盖层，继续使用 `settings.yaml`；不会改写本机文件。
 
 Chub 始终提供 loopback 访问；启用默认的 Tailnet 可信访问后，会在启动时自动发现并监听当前可用的 Tailscale 地址。Tailscale 未启动、没有可用地址或地址已变化时，Chub 保持仅 loopback 监听并正常运行，这不表示 Web 启动失败；下次 Web 启动会再次尝试发现。不要配置公网监听或普通局域网监听。Android 通过同一 Tailnet 的浏览器访问 Chub；它不是原生 Android 应用或离线 PWA。
 
@@ -65,7 +64,7 @@ Chub 始终提供 loopback 访问；启用默认的 Tailnet 可信访问后，�
 
 ## 数据与安全摘要
 
-- `config/settings.local.yaml`、`config/automations.local.yaml` 和凭据文件只保存本机，不提交。
+- `config/settings.yaml` 随项目发布；`config/settings.local.yaml`、`config/automations.local.yaml` 和凭据文件只保存本机，不提交。
 - `data/shared/` 只保存明确允许 Git 同步的共享资料；`data/local/` 保存本机运行态、缓存和产物，不提交。
 - `modules/` 保存随仓库维护的开发模块，并由 `modules/chub-modules.json` 决定哪些目录可被发现；其中 `runtime/` 放 AI Runtime，`orchestration/` 放受控任务编排，`business/` 放工作台业务模块。与项目目录平级的 `chub-local-modules/` 保存设备定制模块，使用独立索引且不属于发布或升级清理范围。
 - 受保护接口只接受真实 loopback，或在启用时的真实 Tailnet socket 来源；不信任客户端转发 Header。

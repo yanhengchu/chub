@@ -8,7 +8,7 @@ from app.automations.models import AutomationState
 from app.automations.operations import log_final_operation
 from app.automations.runner import AutomationFailed, run_automation
 from app.automations.store import AutomationStateStore
-from app.core.config import load_settings
+from app.core.config import load_settings, log_local_config_fallback
 from app.core.logger import configure_logging
 
 
@@ -26,6 +26,7 @@ def main() -> int:
     args = build_parser().parse_args()
     settings = load_settings()
     configure_logging(settings.logs)
+    log_local_config_fallback(settings)
     try:
         result = run_automation(
             settings,

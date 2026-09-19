@@ -56,7 +56,7 @@ from app.api.ai import (
 from app.api.ai import web_router as ai_web_router
 from app.automations.manager import AutomationManager
 from app.automations.models import RuntimeAccountEnvironmentState
-from app.core.config import PROJECT_ROOT, Settings, load_settings
+from app.core.config import PROJECT_ROOT, Settings, load_settings, log_local_config_fallback
 from app.core.logger import configure_logging
 from app.core.security import require_trusted_network
 from app.core.platform import detect_platform
@@ -248,6 +248,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     resolved_settings = settings or load_settings()
     instance_id = uuid4().hex
     configure_logging(resolved_settings.logs)
+    log_local_config_fallback(resolved_settings)
 
     detected_platform = detect_platform()
     logger = logging.getLogger("hub.startup")
