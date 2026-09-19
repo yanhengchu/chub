@@ -19,12 +19,16 @@ from app.services.openclaw import OpenClawManager
 from app.services.system_upgrade import (
     SystemUpgradeCoordinator,
     SystemUpgradeSession,
+    component_report_path,
     load_system_upgrade_plan,
     load_component_report,
+    retired_ai_runtime_directories,
+    retired_ai_runtime_state_files,
     runtime_recovery_plan,
     system_upgrade_restart_readiness,
 )
 from app.services.system_upgrade_maintenance import SystemUpgradeMaintenanceUseCase
+from app.system_recovery_cli import force_reset_runtime_state
 from app.system_upgrade_cli import prepare_restart
 from app.quick_worker_tasks import (
     worker_leases_dir,
@@ -868,6 +872,66 @@ def test_prepare_restart_uses_current_state_and_clears_retired_codex_state(
     assert all(not path.exists() for path in legacy_directories)
     assert unrelated_state_dir.is_dir()
     assert unrelated_runtime_dir.is_dir()
+
+
+def test_force_recovery_discards_only_chub_owned_ai_runtime_state(
+    settings: Settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_dir = tmp_path / "active-runtime-state"
+    state_dir.mkdir(mode=0o700)
+    settings.ai_runtime.shared.state_dir = state_dir
+    retired_root = tmp_path / "retired-runtime-state"
+    monkeypatch.setattr("app.system_recovery_cli.PROJECT_ROOT", retired_root)
+
+    upgrade_state = state_dir / "system-upgrade.json"
+    removable_files = (
+        state_dir / "sessions.json",
+        state_dir / "ai-sessions.json",
+        state_dir / "deferred-restart.json",
+        state_dir / "quick-interactions.json",
+        state_dir / "quick-worker-maintenance.json",
+        upgrade_state,
+        component_report_path(upgrade_state),
+        *retired_ai_runtime_state_files(retired_root),
+    )
+    for path in removable_files:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}", encoding="utf-8")
+        path.chmod(0o600)
+
+    worker_root = state_dir / "quick-worker"
+    worker_root.mkdir(mode=0o700)
+    (worker_root / "tasks-v999").mkdir(mode=0o700)
+    (worker_root / "tasks-v999" / "task.json").write_text("{}", encoding="utf-8")
+    for path in retired_ai_runtime_directories(retired_root):
+        path.mkdir(parents=True, exist_ok=True)
+        path.chmod(0o700)
+        (path / "record.json").write_text("{}", encoding="utf-8")
+
+    preserved_files = (
+        state_dir / "runtime-enablement.json",
+        state_dir / "runtime-implementation-preferences.json",
+        state_dir / "weekly-report-generation.json",
+        state_dir / "ai-search.json",
+    )
+    for path in preserved_files:
+        path.write_text("keep", encoding="utf-8")
+        path.chmod(0o600)
+
+    with patch("app.system_recovery_cli.load_settings", return_value=settings):
+        force_reset_runtime_state()
+
+    assert all(not path.exists() for path in removable_files)
+    assert not worker_root.exists()
+    assert all(not path.exists() for path in retired_ai_runtime_directories(retired_root))
+    assert [path.read_text(encoding="utf-8") for path in preserved_files] == [
+        "keep",
+        "keep",
+        "keep",
+        "keep",
+    ]
 
 
 def test_system_upgrade_restart_uses_fixed_linux_services(

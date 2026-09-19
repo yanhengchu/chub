@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+PYTHON_BIN="$PROJECT_ROOT/.venv/bin/python"
+
+if [[ "$#" -ne 0 ]]; then
+    echo "chub-system-recovery-reset: takes no arguments" >&2
+    exit 2
+fi
+if [[ -n "${CHUB_QUICK_TASK_ID:-}" ]]; then
+    echo "chub-system-recovery-reset: must run from a local terminal" >&2
+    exit 1
+fi
+if [[ ! -x "$PYTHON_BIN" ]]; then
+    echo "chub-system-recovery-reset: Python environment is unavailable" >&2
+    exit 1
+fi
+
+run_platform_action() {
+    "$PROJECT_ROOT/scripts/platform/service-management.sh" "$@"
+}
+
+wait_for_recovery_health() {
+    local health_url payload
+    health_url="$(
+        cd "$PROJECT_ROOT"
+        "$PYTHON_BIN" - <<'PY'
+from app.core.config import load_settings
+
+print(f"http://127.0.0.1:{load_settings().server.port}/api/health")
+PY
+    ))"
+    for _attempt in $(seq 1 60); do
+        if "$PYTHON_BIN" - "$health_url" <<'PY' >/dev/null 2>&1
+import json
+import sys
+import urllib.request
+
+with urllib.request.urlopen(sys.argv[1], timeout=1) as response:
+    payload = json.load(response)
+data = payload.get("data") if payload.get("success") is True else None
+if response.status != 200 or not isinstance(data, dict):
+    raise SystemExit(1)
+if data.get("status") != "ok" or data.get("quick_worker_ready") is not True:
+    raise SystemExit(1)
+PY
+        then
+            if payload="$(
+                cd "$PROJECT_ROOT"
+                "$PYTHON_BIN" -m app.quick_worker health 2>/dev/null
+            )" && "$PYTHON_BIN" -c '
+import json
+import sys
+
+from app.quick_worker import PROTOCOL_VERSION
+
+payload = json.loads(sys.stdin.read())
+data = payload.get("data") if payload.get("success") is True else None
+if not isinstance(data, dict) or data.get("status") != "ready":
+    raise SystemExit(1)
+if data.get("protocol_version") != PROTOCOL_VERSION:
+    raise SystemExit(1)
+if any(data.get(name) != 0 for name in (
+    "active_tasks", "queued_tasks", "uncertain_tasks", "corrupt_tasks"
+)):
+    raise SystemExit(1)
+' <<<"$payload"; then
+                return 0
+            fi
+        fi
+        sleep 0.5
+    done
+    echo "chub-system-recovery-reset: Web and Quick Worker did not become healthy" >&2
+    return 1
+}
+
+echo "chub-system-recovery-reset: scope=chub_ai_runtime,chub_web,quick_worker excludes=openclaw,debug_chrome,native_sessions,configuration,logs,documents"
+run_platform_action recovery-core-stop
+(
+    cd "$PROJECT_ROOT"
+    "$PYTHON_BIN" -m app.system_recovery_cli force-reset
+)
+run_platform_action core-service-definitions
+run_platform_action system-upgrade-load
+run_platform_action worker-restart
+"$PROJECT_ROOT/scripts/maintenance/chub-web-restart"
+wait_for_recovery_health
+echo "chub-system-recovery-reset: completed"

@@ -24,6 +24,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CHUB = PROJECT_ROOT / "scripts" / "chub"
 WEB_RESTART = PROJECT_ROOT / "scripts" / "maintenance" / "chub-web-restart"
 WORKER_RELOAD = PROJECT_ROOT / "scripts" / "maintenance" / "chub-worker-reload"
+SYSTEM_RECOVERY = (
+    PROJECT_ROOT / "scripts" / "maintenance" / "chub-system-recovery-reset"
+)
 
 
 @pytest.fixture
@@ -1132,6 +1135,7 @@ def test_maintenance_service_adapters_delegate_platform_manager() -> None:
         WORKER_RELOAD,
         PROJECT_ROOT / "scripts" / "maintenance" / "chub-system-upgrade-start",
         PROJECT_ROOT / "scripts" / "maintenance" / "chub-system-upgrade-restart",
+        SYSTEM_RECOVERY,
     )
 
     for script in maintenance_scripts:
@@ -1139,6 +1143,87 @@ def test_maintenance_service_adapters_delegate_platform_manager() -> None:
         assert "scripts/platform/service-management.sh" in content
         assert "launchctl" not in content
         assert "systemctl" not in content
+
+
+def test_recovery_reset_requires_explicit_force_without_touching_services(
+    service_env: tuple[dict[str, str], Path],
+) -> None:
+    env, calls = service_env
+
+    result = run_chub("recovery", env, "reset")
+
+    assert result.returncode == 1
+    assert "usage: chub recovery reset --force" in result.stderr
+    assert not calls.exists()
+
+
+def test_recovery_reset_stops_the_upgrade_executor_before_core_services(
+    service_env: tuple[dict[str, str], Path],
+) -> None:
+    env, calls = service_env
+    env["CHUB_TEST_PLATFORM"] = "Linux"
+    platform_script = (
+        Path(env["CHUB_TEST_ROOT"]) / "scripts" / "platform" / "service-management.sh"
+    )
+
+    result = subprocess.run(
+        [str(platform_script), "recovery-core-stop"],
+        cwd=Path(env["CHUB_TEST_ROOT"]),
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert calls.read_text(encoding="utf-8").splitlines() == [
+        "systemctl --user stop chub-system-upgrade.service",
+        "systemctl --user stop chub.service",
+        "systemctl --user stop chub-quick-worker.service",
+    ]
+
+
+def test_macos_recovery_reset_stops_fixed_jobs_without_definitions(
+    service_env: tuple[dict[str, str], Path],
+) -> None:
+    env, calls = service_env
+    env["CHUB_TEST_PLATFORM"] = "Darwin"
+    platform_script = (
+        Path(env["CHUB_TEST_ROOT"]) / "scripts" / "platform" / "service-management.sh"
+    )
+
+    result = subprocess.run(
+        [str(platform_script), "recovery-core-stop"],
+        cwd=Path(env["CHUB_TEST_ROOT"]),
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    manager_calls = calls.read_text(encoding="utf-8")
+    assert "launchctl bootout gui/" in manager_calls
+    assert "com.chub.system-upgrade" in manager_calls
+    assert "com.chub.node" in manager_calls
+    assert "com.chub.quick-worker" in manager_calls
+
+
+def test_recovery_reset_bypasses_upgrade_state_but_keeps_fixed_boundaries() -> None:
+    cli = CHUB.read_text(encoding="utf-8")
+    start = cli.index("force_runtime_recovery() {")
+    end = cli.index("install_command()", start)
+    recovery_body = cli[start:end]
+    script = SYSTEM_RECOVERY.read_text(encoding="utf-8")
+
+    assert "require_system_upgrade_idle" not in recovery_body
+    assert "require_worker_idle_for_maintenance" not in recovery_body
+    assert "recovery reset must be run from a local terminal" in recovery_body
+    assert "recovery-core-stop" in script
+    assert "app.system_recovery_cli force-reset" in script
+    assert "chub-web-restart" in script
+    assert "launchctl" not in script
+    assert "systemctl" not in script
 
 
 def test_system_upgrade_start_reconciles_the_current_oneshot_definition() -> None:

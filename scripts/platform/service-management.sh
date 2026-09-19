@@ -359,6 +359,23 @@ stop_core_services_if_installed() {
     esac
 }
 
+stop_recovery_services() {
+    case "$PLATFORM" in
+        Darwin)
+            launchctl bootout "$(macos_domain)/$SYSTEM_UPGRADE_MACOS_LABEL" >/dev/null 2>&1 || true
+            wait_for_macos_unload "$SYSTEM_UPGRADE_MACOS_LABEL"
+            stop_web_service
+            stop_worker_service
+            ;;
+        Linux)
+            systemctl --user stop "$SYSTEM_UPGRADE_SERVICE_NAME.service" >/dev/null 2>&1 || true
+            systemctl --user stop "$CORE_SERVICE_NAME.service" >/dev/null 2>&1 || true
+            systemctl --user stop "$WORKER_SERVICE_NAME.service" >/dev/null 2>&1 || true
+            ;;
+        *) fail "unsupported platform: $PLATFORM" ;;
+    esac
+}
+
 load_system_upgrade_service() {
     local restart_script="$PROJECT_ROOT/scripts/maintenance/chub-system-upgrade-restart"
     [[ -x "$restart_script" ]] || fail "system upgrade service runner is unavailable"
@@ -822,7 +839,7 @@ uninstall_all_services() {
     esac
 }
 
-[[ "$#" -ge 1 ]] || fail "usage: service-management.sh <core-service-definitions|core-stop|system-upgrade-load|system-upgrade-start|system-upgrade-status|system-upgrade-running|web-start|web-restart|web-restart-async|web-stop|web-status|worker-start|worker-restart|worker-stop|worker-status|worker-definition-exists|chrome-supervisor-reconcile|chrome-supervisor-write-unit|chrome-supervisor-definitions|chrome-supervisor-stop|chrome-supervisor-status|service-details|all-services-uninstall>"
+[[ "$#" -ge 1 ]] || fail "usage: service-management.sh <core-service-definitions|core-stop|recovery-core-stop|system-upgrade-load|system-upgrade-start|system-upgrade-status|system-upgrade-running|web-start|web-restart|web-restart-async|web-stop|web-status|worker-start|worker-restart|worker-stop|worker-status|worker-definition-exists|chrome-supervisor-reconcile|chrome-supervisor-write-unit|chrome-supervisor-definitions|chrome-supervisor-stop|chrome-supervisor-status|service-details|all-services-uninstall>"
 case "$1" in
     core-service-definitions)
         shift
@@ -833,6 +850,11 @@ case "$1" in
         shift
         [[ "$#" -eq 0 ]] || fail "usage: service-management.sh core-stop"
         stop_core_services_if_installed
+        ;;
+    recovery-core-stop)
+        shift
+        [[ "$#" -eq 0 ]] || fail "usage: service-management.sh recovery-core-stop"
+        stop_recovery_services
         ;;
     system-upgrade-load)
         shift

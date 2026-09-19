@@ -87,6 +87,8 @@ Commands:
              Repair Python dependencies from the repository requirements file
   upgrade <service|logs>
              Recover the system upgrade service or follow its log
+  recovery reset --force
+             Discard Chub AI runtime state and rebuild core services
   chrome supervisor reconcile [--restart]
              Rebuild and verify the Ubuntu Debug Chrome Supervisor
   version, --version
@@ -244,6 +246,15 @@ install_runtime_dependencies() {
     "$PYTHON_BIN" -m pip install \
         --disable-pip-version-check \
         --requirement "$requirements_file"
+}
+
+force_runtime_recovery() {
+    [[ "$#" -eq 2 && "$1" == "reset" && "$2" == "--force" ]] \
+        || fail "usage: chub recovery reset --force"
+    [[ -z "${CHUB_QUICK_TASK_ID:-}" ]] \
+        || fail "recovery reset must be run from a local terminal, not from a Quick Worker task"
+    check_project
+    "$PROJECT_ROOT/scripts/maintenance/chub-system-recovery-reset"
 }
 
 install_command() {
@@ -926,6 +937,10 @@ case "$command" in
             logs) shift; [[ $# -eq 0 ]] || fail "usage: chub upgrade logs"; show_logs upgrade ;;
             *) usage >&2; fail "usage: chub upgrade <service|logs>" ;;
         esac
+        ;;
+    recovery)
+        shift
+        force_runtime_recovery "$@"
         ;;
     uninstall)
         shift
