@@ -140,7 +140,9 @@ def test_release_build_contains_formal_modules_and_excludes_local_state(
             "core_services_verified",
             "不得使用无上下文正则替换 YAML 字段",
             '"app": {"name": sys.argv[2], "page_title": f"{sys.argv[2]} · Hub"}',
-            "Windows localhost 请求再次返回 `200`",
+            "部署流程**不执行** `wsl.exe --shutdown`",
+            "WSL2 外置 loopback-forwarder",
+            "http://localhost:8081/api/health",
             "Runtime、插件包、OpenClaw 和其他第三方能力不属于本条件",
         ):
             assert marker in deployment_guide
@@ -154,6 +156,7 @@ def test_release_build_contains_formal_modules_and_excludes_local_state(
         for script in (
             "scripts/chub",
             "scripts/maintenance/chub-data-migrate",
+            "scripts/maintenance/chub-system-recovery-reset",
             "scripts/maintenance/chub-system-upgrade-restart",
             "scripts/maintenance/chub-system-upgrade-start",
             "scripts/maintenance/chub-web-restart",
@@ -166,6 +169,10 @@ def test_release_build_contains_formal_modules_and_excludes_local_state(
             "scripts/platform/service-management.sh",
         ):
             assert (archive.getinfo(script).external_attr >> 16) & 0o777 == 0o755
+        recovery_script = archive.read(
+            "scripts/maintenance/chub-system-recovery-reset"
+        ).decode("utf-8")
+        assert 'PY\n    ))"' not in recovery_script
         assert archive.read("pyproject.toml").decode("utf-8").count(f'version = "{source_versions.chub}"') == 1
         assert f'version: "{source_versions.chub}"' in archive.read("config/settings.yaml").decode("utf-8")
         manifest = json.loads(archive.read("release-manifest.json"))
@@ -516,7 +523,121 @@ def test_release_source_versions_require_all_chub_declarations_to_match(
     service = DeploymentPackageService(settings)
 
     assert service._source_versions().chub == "1.2.3"
-    assert service._chub_source_declarations_match("1.2.3") is False
+    assert service._source_declarations_match("1.2.3") is False
+
+
+def test_release_version_commit_updates_only_fixed_version_declarations(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    (project / "config").mkdir(parents=True)
+    (project / "modules" / "runtime" / "codex-runtime").mkdir(parents=True)
+    (project / "modules" / "orchestration" / "weixin-refinement").mkdir(parents=True)
+    (project / "pyproject.toml").write_text('[project]\nversion = "1.0.0"\n')
+    (project / "config" / "settings.yaml").write_text('app:\n  version: "1.0.0"\n')
+    (project / "modules" / "runtime" / "codex-runtime" / "chub-module.json").write_text(
+        '{"version":"1.0.0","chub_version":"1.0.0"}\n'
+    )
+    (project / "modules" / "orchestration" / "weixin-refinement" / "chub-capability-orchestration.json").write_text(
+        '{"version":"1.0.0","chub_version":"1.0.0"}\n'
+    )
+    monkeypatch.setattr("app.services.deployment_package.PROJECT_ROOT", project)
+    service = DeploymentPackageService(settings)
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(
+        service,
+        "_git",
+        lambda *arguments, **_kwargs: calls.append(arguments) or "",
+    )
+
+    assert service._commit_release_version_if_needed("1.0.1") is True
+    assert service._source_declarations_match("1.0.1") is True
+    assert calls == [
+        (
+            "commit",
+            "--only",
+            "-m",
+            "chore(release): v1.0.1",
+            "--",
+            "pyproject.toml",
+            "config/settings.yaml",
+            "modules/runtime/codex-runtime/chub-module.json",
+            "modules/orchestration/weixin-refinement/chub-capability-orchestration.json",
+        )
+    ]
+    assert service._commit_release_version_if_needed("1.0.1") is False
+    assert len(calls) == 1
+
+
+def test_release_version_commit_creates_a_real_git_commit_with_only_fixed_files(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    (project / "config").mkdir(parents=True)
+    (project / "modules" / "runtime" / "codex-runtime").mkdir(parents=True)
+    (project / "modules" / "orchestration" / "weixin-refinement").mkdir(parents=True)
+    (project / "pyproject.toml").write_text('[project]\nversion = "1.0.0"\n')
+    (project / "config" / "settings.yaml").write_text('app:\n  version: "1.0.0"\n')
+    (project / "modules" / "runtime" / "codex-runtime" / "chub-module.json").write_text(
+        '{"version":"1.0.0","chub_version":"1.0.0"}\n'
+    )
+    (project / "modules" / "orchestration" / "weixin-refinement" / "chub-capability-orchestration.json").write_text(
+        '{"version":"1.0.0","chub_version":"1.0.0"}\n'
+    )
+
+    def git(*arguments: str) -> str:
+        return subprocess.run(
+            ["git", *arguments], cwd=project, check=True, text=True, capture_output=True
+        ).stdout
+
+    git("init")
+    git("config", "user.name", "Chub Test")
+    git("config", "user.email", "chub-test@example.invalid")
+    git("add", ".")
+    git("commit", "-m", "initial")
+    monkeypatch.setattr("app.services.deployment_package.PROJECT_ROOT", project)
+
+    service = DeploymentPackageService(settings)
+
+    assert service._commit_release_version_if_needed("1.0.1") is True
+    assert service._source_declarations_match("1.0.1") is True
+    assert git("log", "-1", "--format=%s").strip() == "chore(release): v1.0.1"
+    assert sorted(git("show", "--format=", "--name-only", "--no-renames", "HEAD").splitlines()) == [
+        "config/settings.yaml",
+        "modules/orchestration/weixin-refinement/chub-capability-orchestration.json",
+        "modules/runtime/codex-runtime/chub-module.json",
+        "pyproject.toml",
+    ]
+
+
+def test_release_rejects_target_version_below_current_declarations(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    (project / "config").mkdir(parents=True)
+    (project / "modules" / "runtime" / "codex-runtime").mkdir(parents=True)
+    (project / "modules" / "orchestration" / "weixin-refinement").mkdir(parents=True)
+    (project / "pyproject.toml").write_text('[project]\nversion = "1.0.1"\n')
+    (project / "config" / "settings.yaml").write_text('app:\n  version: "1.0.1"\n')
+    (project / "modules" / "runtime" / "codex-runtime" / "chub-module.json").write_text(
+        '{"version":"1.0.1","chub_version":"1.0.1"}\n'
+    )
+    (project / "modules" / "orchestration" / "weixin-refinement" / "chub-capability-orchestration.json").write_text(
+        '{"version":"1.0.1","chub_version":"1.0.1"}\n'
+    )
+    monkeypatch.setattr("app.services.deployment_package.PROJECT_ROOT", project)
+    service = DeploymentPackageService(settings)
+
+    with pytest.raises(ApiError, match="不能低于") as error:
+        service._require_release_version_not_lower("1.0.0")
+
+    assert error.value.code == "release_version_downgrade"
 
 
 def test_release_rejects_dirty_git_worktree(
@@ -557,6 +678,8 @@ def test_release_rejects_a_version_that_differs_from_committed_sources(
             return ""
         if arguments == ("rev-parse", "HEAD"):
             return "a" * 40
+        if arguments == ("var", "GIT_COMMITTER_IDENT"):
+            return "Chub <chub@example.test> 0 +0000"
         raise AssertionError(arguments)
 
     monkeypatch.setattr(service, "_git", git)
@@ -564,7 +687,7 @@ def test_release_rejects_a_version_that_differs_from_committed_sources(
         update={"chub_release_version": "9.9.9"}
     )
 
-    with pytest.raises(ApiError, match="版本声明一致") as error:
+    with pytest.raises(ApiError, match="版本声明") as error:
         service._require_git_release_baseline(configuration)
 
     assert error.value.code == "release_source_version_mismatch"
@@ -821,10 +944,13 @@ def test_release_build_snapshots_configuration_at_start(
     settings.deployment_package.state_file = tmp_path / "state.json"
     service = DeploymentPackageService(settings)
     monkeypatch.setattr(service, "_require_idle_worker", lambda: None)
+    monkeypatch.setattr(service, "_require_release_version_not_lower", lambda _version: None)
+    monkeypatch.setattr(service, "_require_git_release_preconditions", lambda: "a" * 40)
+    monkeypatch.setattr(service, "_commit_release_version_if_needed", lambda _version: False)
     monkeypatch.setattr(
         service,
         "_require_git_release_baseline",
-        lambda _configuration: SimpleNamespace(commit="a" * 40, tag_name="chub-v1.0.0", previous_tag_ref=None, previous_tag_commit=None),
+        lambda _configuration, **_kwargs: SimpleNamespace(commit="a" * 40, tag_name="chub-v1.0.0", previous_tag_ref=None, previous_tag_commit=None, version_commit_created=False),
     )
     initial = service.status().configuration.model_copy(
         update={"chub_release_version": "1.0.0", "release_note": "冻结说明。"}
@@ -837,6 +963,40 @@ def test_release_build_snapshots_configuration_at_start(
     service.save_configuration(initial.model_copy(update={"chub_release_version": "2.0.0"}))
 
     assert _DeferredThread.calls[0][1][2].chub_release_version == "1.0.0"
+
+
+def test_release_records_a_failed_preparation_after_the_version_commit(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings.deployment_package.artifacts_dir = tmp_path / "releases"
+    settings.deployment_package.state_file = tmp_path / "state.json"
+    service = DeploymentPackageService(settings)
+    configuration = service.status().configuration.model_copy(
+        update={"chub_release_version": "1.0.1", "release_note": "升级发布。"}
+    )
+    monkeypatch.setattr(service, "_require_idle_worker", lambda: None)
+    monkeypatch.setattr(service, "_require_release_version_not_lower", lambda _version: None)
+    monkeypatch.setattr(service, "_require_git_release_preconditions", lambda: "a" * 40)
+    monkeypatch.setattr(service, "_commit_release_version_if_needed", lambda _version: True)
+    monkeypatch.setattr(
+        service,
+        "_require_git_release_baseline",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ApiError(409, "release_source_version_mismatch", "版本声明尚未完成本次发布升级，请重新发起发布。")
+        ),
+    )
+
+    with pytest.raises(ApiError, match="版本声明尚未完成"):
+        service.start(source_ip="127.0.0.1", configuration=configuration)
+
+    operation = service.status().operation
+    assert operation is not None
+    assert operation.status == "failed"
+    assert operation.target_version == "1.0.1"
+    assert operation.version_commit_created is True
+    assert "版本声明已提交" in operation.message
 
 
 def test_release_rejects_a_busy_worker_before_registering_the_operation(
@@ -1061,10 +1221,13 @@ def test_interrupted_release_build_is_closed_and_can_be_retried(
     monkeypatch.setattr("app.services.deployment_package.threading.Thread", _DeferredThread)
     retried_service = DeploymentPackageService(settings)
     monkeypatch.setattr(retried_service, "_require_idle_worker", lambda: None)
+    monkeypatch.setattr(retried_service, "_require_release_version_not_lower", lambda _version: None)
+    monkeypatch.setattr(retried_service, "_require_git_release_preconditions", lambda: "a" * 40)
+    monkeypatch.setattr(retried_service, "_commit_release_version_if_needed", lambda _version: False)
     monkeypatch.setattr(
         retried_service,
         "_require_git_release_baseline",
-        lambda _configuration: SimpleNamespace(commit="a" * 40, tag_name="chub-v1.0.0", previous_tag_ref=None, previous_tag_commit=None),
+        lambda _configuration, **_kwargs: SimpleNamespace(commit="a" * 40, tag_name="chub-v1.0.0", previous_tag_ref=None, previous_tag_commit=None, version_commit_created=False),
     )
     retried = retried_service.start(source_ip="127.0.0.1", configuration=configuration)
     assert retried.operation is not None

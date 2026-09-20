@@ -387,6 +387,24 @@ def test_local_config_overrides_the_tracked_default(tmp_path: Path) -> None:
     assert settings.server.port == 9090
 
 
+def test_local_config_cannot_override_the_release_controlled_app_version(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    base_file = tmp_path / "settings.yaml"
+    local_file = tmp_path / "settings.local.yaml"
+    base_file.write_text(VALID_CONFIG, encoding="utf-8")
+    local_file.write_text(
+        "app:\n  version: 9.9.9\nnode:\n  name: Local Node\n", encoding="utf-8"
+    )
+
+    settings = load_settings(base_file, local_config_file=local_file)
+    log_local_config_fallback(settings)
+
+    assert settings.app.version == "0.1.0"
+    assert settings.node.name == "Test"
+    assert "app.version is release-controlled" in caplog.text
+
+
 def test_invalid_local_config_is_discarded_as_a_whole(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

@@ -2,9 +2,9 @@
 
 > 文档类型：随正式部署包交付的目标设备操作指引，不属于项目资料页登记的当前设计文档，也不定义 Chub 的产品能力、架构或模块契约。项目定位、当前能力与设计边界分别以项目 README、能力清单和对应专项设计为准。
 
-本文是解压后目标设备 AI 的唯一部署操作入口。它只完成 Chub 核心部署及适用的平台恢复验收；Runtime、插件包、OpenClaw 和其他第三方能力由工作站启动后维护者根据实际环境手动配置，不属于本流程。目标 AI 必须逐步确认本机环境和每项业务终态，并根据本文报告 `succeeded`、`failed` 或 `recovery_pending`；不得猜测发行版、账号、凭据、OpenClaw 路径、微信 Owner 或浏览器配置。
+本文是解压后目标设备 AI 的唯一部署操作入口。它只完成 Chub 核心部署及适用的平台恢复验收；Runtime、插件包、OpenClaw 和其他第三方能力由工作站启动后维护者根据实际环境手动配置，不属于本流程。目标 AI 必须逐步确认本机环境和每项业务终态，并根据本文报告 `succeeded` 或 `failed`；部署中断时保留 `in_progress` 检查点，待恢复后再收敛为最终结论。不得猜测发行版、账号、凭据、OpenClaw 路径、微信 Owner 或浏览器配置。
 
-当前支持 macOS LaunchAgent、原生 Ubuntu systemd user service，以及已启用 systemd 的 Ubuntu WSL2。WSL1、非 Ubuntu WSL、未启用 systemd 的 WSL，或无法使用 `systemctl --user` 的 Ubuntu 环境不得继续执行受管服务安装。Windows 不是 Chub 的原生运行平台；Windows 只通过 WSL2 的 localhost 转发访问 Chub。
+当前支持 macOS LaunchAgent、原生 Ubuntu systemd user service，以及已启用 systemd 的 Ubuntu WSL2。WSL1、非 Ubuntu WSL、未启用 systemd 的 WSL，或无法使用 `systemctl --user` 的 Ubuntu 环境不得继续执行受管服务安装。Windows 不是 Chub 的原生运行平台；Windows 只通过 WSL2 的 localhost 转发访问 Chub。第 7 节的固定外置 forwarder 是 WSL2 上可选的本机访问通道，不改变 Chub 的监听地址、受保护接口来源规则或核心部署成功条件。
 
 来源设备的本机配置、账号、Token、Cookie、浏览器数据、Session、任务和运行态不得复制到目标设备。
 
@@ -13,9 +13,9 @@
 1. AI 负责执行本文件中的环境检查、依赖安装、解压、虚拟环境创建、配置文件创建、`chub install`、健康检查、适用的平台恢复检查和部署报告写入；维护者不承担常规安装或部署步骤。
 2. 维护者只在 AI 无法取得必要权限时完成系统的 `sudo` 授权，以及 Codex 登录、账号、API Key、OpenClaw、微信绑定、Owner 或其他凭据的本人专属操作。AI 在操作完成后继续执行，不得读取、记录或输出秘密。
 3. AI 只可在维护者提供的 ZIP 路径及其本机主目录下的全新目标目录内操作，不得覆盖已有 Chub 目录。项目、虚拟环境、工作目录、配置和运行态必须位于本机文件系统，例如 `/home/<user>/workspace/chub` 或 `$HOME/workspace/chub`，不得放在 `/mnt/c/`、`/mnt/d/` 等 Windows 挂载目录。
-4. 部署目录的平级目录是部署报告、隐藏检查点和 `DEPLOYMENT_NOTES.md` 的唯一额外写入位置。它必须位于本机文件系统；AI 只能在其中创建或更新这些部署记录，不能在那里创建或运行 Chub 项目、虚拟环境、配置或运行态。源 ZIP 父目录保持只读，不因部署写入报告或检查点。
+4. 部署目录的平级目录是部署报告、隐藏检查点和 `DEPLOYMENT_NOTES.md` 的唯一额外写入位置。它必须位于本机文件系统；AI 只能在其中创建或更新这些部署记录，不能在那里创建或运行 Chub 项目、虚拟环境、配置或运行态。唯一例外是 Ubuntu WSL2 按第 7 节维护固定的 `chub-local-modules/loopback-forwarder/` 外置模块及其用户级 unit；它不属于 Chub 项目、发布包或 Chub 运行态。源 ZIP 父目录保持只读，不因部署写入报告或检查点。
 5. 首轮成功标准为 Chub 核心、Web、Quick Worker 和适用的平台验收均通过。Codex Runtime、插件包、OpenClaw、微信、Debug Chrome 图形自动化、浏览器 Profile、Windows GUI 集成和 Tailnet 访问均不属于部署流程或部署成功条件。
-6. AI 只有在本文件第 8 节所有适用条件均通过、且部署报告已成功写入时才能报告 `succeeded`。任一必需检查或报告写入失败时报告 `failed`；若 WSL2 重启后执行 Agent 尚未重新连接，则报告 `recovery_pending`，不得把重启前的检查当作最终成功。
+6. AI 只有在本文件第 8 节所有适用条件均通过、且部署报告已成功写入时才能报告 `succeeded`。任一必需检查或报告写入失败时报告 `failed`；不得把 ZIP 解压、进程创建或单个 HTTP 响应当作最终成功。
 
 ## 2. 通用环境检查与报告初始化
 
@@ -140,7 +140,7 @@ ps -p 1 -o comm=
 systemctl --user show-environment >/dev/null
 ```
 
-前三项必须同时成立：`WSL_DISTRO_NAME` 非空、当前内核标记为 Microsoft/WSL、`wsl.exe -l -v` 的输出中存在同名发行版且其 Version 列为 `2`。AI 必须把该匹配结果写入报告；仅看到 Windows 上其他发行版为 Version 2 不足以通过。随后 PID 1 必须为 `systemd` 且 `systemctl --user` 可用。任一条件不满足时，不得按 WSL2 路径继续。WSL2 使用与原生 Ubuntu 相同的发行版默认 Python 包，不安装固定的 `python3.12`、`python3.12-venv` 或 `python3.12-dev` 包。第 7 节的 Windows localhost 和 WSL 恢复检查是 WSL2 的额外必需项。
+前三项必须同时成立：`WSL_DISTRO_NAME` 非空、当前内核标记为 Microsoft/WSL、`wsl.exe -l -v` 的输出中存在同名发行版且其 Version 列为 `2`。AI 必须把该匹配结果写入报告；仅看到 Windows 上其他发行版为 Version 2 不足以通过。随后 PID 1 必须为 `systemd` 且 `systemctl --user` 可用。任一条件不满足时，不得按 WSL2 路径继续。WSL2 使用与原生 Ubuntu 相同的发行版默认 Python 包，不安装固定的 `python3.12`、`python3.12-venv` 或 `python3.12-dev` 包。第 7 节的 WSL 内部确认是 WSL2 的额外必需项；Windows localhost 仅在维护者明确要求时检查。
 
 ## 4. 固定解压、虚拟环境、依赖和本机配置
 
@@ -180,7 +180,7 @@ python3 -m venv .venv
 
 未提供可信镜像时，报告依赖安装失败，不在本文中猜测或写死公共镜像地址。
 
-`config/settings.yaml` 是随包提供的完整默认配置，可直接用于首轮核心启动。仅在本机需要覆盖默认值时，AI 才创建 `config/settings.local.yaml`；该文件只写需要覆盖的字段。读取、解析或完整校验失败时，Chub 记录脱敏错误并完整忽略该覆盖文件，继续使用默认配置；不会自动改写或修复本机文件。
+`config/settings.yaml` 是随包提供的完整默认配置，可直接用于首轮核心启动。仅在本机需要覆盖默认值时，AI 才创建 `config/settings.local.yaml`；该文件只写需要覆盖的字段，**不得写入 `app.version`**。该版本由随包的已发布默认配置唯一控制，防止节点显示版本与正式包不一致。读取、解析、完整校验失败或包含该受控字段时，Chub 记录脱敏错误并完整忽略该覆盖文件，继续使用默认配置；不会自动改写或修复本机文件。
 
 首轮核心验收只需创建下列可选覆盖；不得使用无上下文正则替换 YAML 字段：
 
@@ -241,7 +241,7 @@ CHUB_PORT="$(.venv/bin/python -c 'from app.core.config import load_settings; pri
 curl --fail --silent --show-error "http://127.0.0.1:${CHUB_PORT}/api/health"
 ```
 
-首次执行 `./scripts/chub install` 时，Chub 会在 `TARGET_DIR` 的父目录创建 `chub-local-modules/` 与空索引 `chub-modules.json`。该目录用于维护者在工作站启动后登记设备定制模块；部署流程不写入模块内容、不扫描或执行其中脚本，也不将其配置写入部署报告。若目录已存在，安装、升级和恢复均不得覆盖、删除或修改它。
+首次执行 `./scripts/chub install` 时，Chub 会在 `TARGET_DIR` 的父目录创建 `chub-local-modules/` 与空索引 `chub-modules.json`。该目录用于维护者在工作站启动后登记设备定制模块；除 WSL2 第 7 节定义的固定 loopback-forwarder 外，部署流程不写入模块内容、不扫描或执行其中脚本，也不将其配置写入部署报告。若目录已存在，安装、升级和恢复均不得覆盖、删除或修改它。
 
 只有下列结果同时成立，才报告 Chub 核心安装成功：
 
@@ -260,65 +260,83 @@ macOS 和原生 Ubuntu 在核心安装后重新执行一次 `./scripts/chub chec
 
 部署报告必须持续记录：平台和 Python 版本、安装目录的非敏感标识、各阶段状态、遇到的问题、AI 实际采取的解决动作、解决结果、未解决问题、恢复条件和 Web/Worker/健康检查终态。报告使用简短摘要，不记录 Runtime、插件包或第三方能力的配置状态，也不粘贴原始日志、配置内容或秘密。
 
-## 7. WSL2 的 Windows localhost 与恢复验收
+## 7. WSL2 的部署确认与可选 Windows localhost 检查
 
-本节只适用于 Ubuntu WSL2。先在 WSL 内完成第 5 节的 loopback 健康检查，再从 WSL 调用 Windows PowerShell，检查 Windows 主机能访问 WSL 转发的 localhost：
-
-```bash
-powershell.exe -NoProfile -Command "Invoke-WebRequest -UseBasicParsing http://localhost:${CHUB_PORT} | Select-Object -ExpandProperty StatusCode"
-```
-
-结果必须为 `200`。若 `powershell.exe` 不可用、请求被拒绝或结果不是 `200`，该项失败；AI 不得改为 `0.0.0.0`、普通局域网监听、端口代理或信任转发 Header 绕过。
-
-确认 Windows localhost 后，AI 先调用 `record_stage recovery_pending wsl_shutdown_requested`，记录“重启前检查通过”的检查点和重连后必须执行的四条命令：
+本节只适用于 Ubuntu WSL2。完成第 5 节后，在 WSL 内再次执行：
 
 ```bash
-systemctl --user is-active chub.service
-systemctl --user is-active chub-quick-worker.service
 cd "$TARGET_DIR" && ./scripts/chub check
-powershell.exe -NoProfile -Command "Invoke-WebRequest -UseBasicParsing http://localhost:${CHUB_PORT} | Select-Object -ExpandProperty StatusCode"
 ```
 
-`wsl.exe --shutdown` 会终止当前 Windows 用户下的全部 WSL 发行版及其进程。AI 必须在报告中写明这一直接影响，并取得维护者对本次 WSL 恢复验收的明确确认后，才可从 WSL 执行：
+该命令成功即表示 WSL2 的部署确认通过，并将 Web、Quick Worker 与内部 loopback 健康终态写入报告。部署流程**不执行** `wsl.exe --shutdown`，也不把 Windows localhost 转发恢复作为部署成功条件。
+
+这是 WSL2 平台限制：`wsl.exe --shutdown` 后 Windows 侧 `wslrelay` 的 localhost 转发可能不稳定，即使 WSL 内的 Chub 服务和 `127.0.0.1` 健康检查完全正常。为避免将平台层转发故障误判为 Chub 部署失败，日常部署和升级不得执行该命令；也不得通过公网监听、普通局域网监听、Windows `portproxy` 或信任转发 Header 绕过。下述固定外置 forwarder 是唯一记录在案的例外：它只转发一个固定端口到 Chub 的固定 loopback 健康入口，不是通用代理，也不改变 Chub 本身的监听配置。
+
+### WSL2 外置 loopback-forwarder（可选 Windows localhost 通道）
+
+需要 Windows localhost 访问时，在完成 WSL 内部部署确认后，使用部署目录平级的固定外置模块：`chub-local-modules/loopback-forwarder/loopback-forwarder.py`。该脚本必须只提供 `0.0.0.0:8081 -> 127.0.0.1:8080` 的 TCP 转发；不得接受调用方指定的监听地址、目标地址、端口、命令或路径。该模块只支持 Chub 默认的 `8080` 端口，因此先确认 `CHUB_PORT=8080`；若本机因端口冲突改用了其他 Chub 端口，记录该模块不适用，不修改 forwarder 的固定目标。它不属于正式 ZIP、`chub install`、升级或恢复的写入范围，因此后续 Chub 部署不会覆盖该脚本。
+
+在注册服务前，AI 必须确认维护者已在这个固定位置提供脚本；不得从网络下载、替换、生成其他转发脚本，或把此通道改为 Chub 的公网/局域网监听。`8081` 已被其他进程占用、脚本缺失或其文件位置不安全时，记录“外置 forwarder 未配置”及恢复条件，不影响已经通过的 WSL 内部核心部署结论。
 
 ```bash
-wsl.exe --shutdown
+FORWARDER_DIR="$(cd "$TARGET_DIR/.." && pwd)/chub-local-modules/loopback-forwarder"
+FORWARDER_SCRIPT="$FORWARDER_DIR/loopback-forwarder.py"
+FORWARDER_UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+FORWARDER_UNIT="$FORWARDER_UNIT_DIR/chub-loopback-forwarder.service"
+FORWARDER_PYTHON="$(command -v python3)"
+test "$CHUB_PORT" = 8080
+test -n "$FORWARDER_PYTHON"
+test -d "$FORWARDER_DIR"
+test ! -L "$FORWARDER_DIR"
+test -f "$FORWARDER_SCRIPT"
+test ! -L "$FORWARDER_SCRIPT"
+mkdir -p "$FORWARDER_UNIT_DIR"
+test -d "$FORWARDER_UNIT_DIR"
+test ! -L "$FORWARDER_UNIT_DIR"
+if [ -e "$FORWARDER_UNIT" ]; then
+  test -f "$FORWARDER_UNIT"
+  test ! -L "$FORWARDER_UNIT"
+fi
+install -m 600 /dev/stdin "$FORWARDER_UNIT" <<EOF
+[Unit]
+Description=Chub WSL localhost loopback forwarder
+After=network.target chub.service
+Wants=chub.service
+
+[Service]
+Type=simple
+ExecStart=$FORWARDER_PYTHON $FORWARDER_SCRIPT
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+PrivateTmp=yes
+UMask=0077
+
+[Install]
+WantedBy=default.target
+EOF
+systemctl --user daemon-reload
+systemctl --user enable --now chub-loopback-forwarder.service
+systemctl --user is-active chub-loopback-forwarder.service
 ```
 
-该命令会终止当前 WSL Agent 进程。Agent 编排环境重新连接同一 Ubuntu WSL2 发行版和同一 Linux 用户后，必须执行上述四项检查并调用 `record_stage in_progress wsl_recovery_verified` 更新同一份报告。两个服务恢复为 `active`、`chub check` 成功且 Windows localhost 请求再次返回 `200`，才表示本轮 WSL2 服务恢复验收通过。Windows localhost 转发未就绪时，报告 `failed` 并说明恢复条件；不得无界或自动重复执行 `wsl.exe --shutdown`，也不得依赖或检查特定转发进程名称。重连不可用时保留 `recovery_pending` 报告；AI 不得要求维护者代替执行常规恢复检查。
+该 unit 由外置模块维护，不是 Chub 的核心服务，也不纳入 `chub check` 或部署成功条件。`chub install`、系统升级和 `chub recovery reset --force` 不应修改它；当前 `chub uninstall --force` 会按历史 Chub unit 清理同名服务，卸载后如仍需要该通道，必须在重新安装核心服务后重新注册本节 unit。由于监听地址是 `0.0.0.0`，部署者还必须确认 Windows/WSL 网络模式和本机防火墙没有将 `8081` 暴露给其他设备；无法确认时不启用此服务。它只用于 Windows 主机的 localhost 访问，不是远程访问入口。
 
-### WSL2 异常关机循环的条件化排查
-
-以下流程只在 WSL2 重连后 Chub、Quick Worker 或 Windows localhost 反复中断时使用，不是正常部署步骤，也不因其他设备曾出现该问题而预先修改系统更新策略。
-
-2026-09 的一台 Ubuntu WSL2 设备曾在 `wsl.exe --shutdown` 后进入约 2 至 4 分钟一次的 poweroff/reboot 循环：用户服务被停止，`8080` 监听和 Windows localhost 转发随之中断。该设备的 journal 已确认 Ubuntu 自动更新的关机路径触发 poweroff，导致站点无法稳定启动。此结论只适用于该设备；其他 WSL2 设备必须先完成以下取证，不能仅凭服务为 `active` 就归因为相同问题：
+只有维护者明确要求验证 Windows localhost 访问时，才可从 WSL 执行以下可选检查：
 
 ```bash
-cat /proc/sys/kernel/random/boot_id
-uptime
-systemctl status unattended-upgrades.service --no-pager
-journalctl -b -u unattended-upgrades.service --no-pager
-systemctl --user is-active chub.service
-systemctl --user is-active chub-quick-worker.service
-powershell.exe -NoProfile -Command "Invoke-WebRequest -UseBasicParsing http://localhost:${CHUB_PORT} | Select-Object -ExpandProperty StatusCode"
+powershell.exe -NoProfile -Command "Invoke-WebRequest -UseBasicParsing http://localhost:8081/api/health | Select-Object -ExpandProperty StatusCode"
 ```
 
-报告和 `DEPLOYMENT_NOTES.md` 必须记录脱敏后的设备/WSL/Ubuntu 版本、boot ID 是否变化、相关 unit 状态、失败现象、已确认原因、采取的恢复动作及安全更新影响；不得粘贴完整 journal 或本机路径。若已确认同一原因，维护者可明确批准在该设备上执行以下恢复动作：
-
-```bash
-sudo systemctl disable --now unattended-upgrades.service
-sudo systemctl mask unattended-upgrades.service
-```
-
-不得用宽泛的 `sed` 替换修改 `/etc/apt/apt.conf.d/`，也不得在未经确认的设备上自动执行上述命令。该恢复动作会关闭该设备的自动安全更新；部署报告必须把人工更新责任列为未消除的运维风险。恢复后应观察至少 5 分钟，确认 boot ID 未变化、两个 Chub 用户服务持续为 `active` 且 Windows localhost 持续返回 `200`。仍发生 poweroff/reboot 时，保留 `failed` 或 `recovery_pending`，并将取证结果作为 WSL/Ubuntu 环境问题继续排查，不归咎于 Chub 服务安装。
+结果为 `200` 时记录为“Windows localhost 通过 loopback-forwarder 可用”。若外置服务未配置、命令不可用、请求被拒绝或结果不是 `200`，记录为该外置通道或 WSL2 平台问题及其恢复条件，但不改变已通过 WSL 内部 `chub check` 的核心部署结论。不得回退检查 `localhost:${CHUB_PORT}`、为重试该检查执行 `wsl.exe --shutdown`，也不依赖或检查特定 `wslrelay` 进程名称。
 
 ## 8. 核心部署结论与后续手动配置
 
 Chub 核心安装和适用的平台恢复验收通过后，本部署流程结束。随包的 Runtime 和任务编排插件 ZIP 仅作为可供后续导入的制品，不在部署过程中导入、启用、选择版本或验证；Codex 登录、OpenClaw、微信、Tailnet、Debug Chrome 图形自动化和其他第三方能力同样不在本流程中执行、提示或判定。维护者在工作站启动后，根据实际环境和对应专项文档手动决定是否配置这些能力；它们的成功或失败不回滚已完成的 Chub 核心部署。
 
-AI 在报告 `succeeded`、`failed` 或 `recovery_pending` 前，必须先调用 `record_stage` 把相同的最终状态、最后完成或失败的阶段、服务与健康终态以及恢复条件写入 `REPORT_PATH` 和检查点，并执行 `test -s "$REPORT_PATH"`。报告文件不存在、为空、无法更新或最终状态与任务结论不一致时，部署结论只能是 `failed`；不得将 Web、Worker 或 HTTP 健康检查通过单独报告为部署成功。只有写入最终报告成功后，才可删除 `DEPLOYMENT_CHECKPOINT_PATH`；删除失败不改变报告已写入的事实，但必须在报告中记录该残留文件和清理方式。
+AI 在报告 `succeeded` 或 `failed` 前，必须先调用 `record_stage` 把相同的最终状态、最后完成或失败的阶段、服务与健康终态以及恢复条件写入 `REPORT_PATH` 和检查点，并执行 `test -s "$REPORT_PATH"`。报告文件不存在、为空、无法更新或最终状态与任务结论不一致时，部署结论只能是 `failed`；不得将 Web、Worker 或 HTTP 健康检查通过单独报告为部署成功。只有写入最终报告成功后，才可删除 `DEPLOYMENT_CHECKPOINT_PATH`；删除失败不改变报告已写入的事实，但必须在报告中记录该残留文件和清理方式。
 
-核心部署成功时使用以下固定收尾步骤；失败和 `recovery_pending` 保留检查点，供后续恢复同一报告：
+核心部署成功时使用以下固定收尾步骤；失败或部署中断保留检查点，供后续恢复同一报告：
 
 ```bash
 record_stage succeeded core_deployment_completed
@@ -333,8 +351,7 @@ AI 只能按下列规则报告最终结论：
 
 | 结果 | 必须满足的条件 |
 | --- | --- |
-| `succeeded` | 第 2 至第 6 节通用条件均通过，适用的平台关注事项已通过，部署报告已写入部署目录平级目录；WSL2 还必须通过第 7 节的 Windows localhost 和重连后服务恢复。Runtime、插件包、OpenClaw 和其他第三方能力不属于本条件。 |
+| `succeeded` | 第 2 至第 6 节通用条件均通过，适用的平台关注事项已通过，部署报告已写入部署目录平级目录；WSL2 以第 7 节的 WSL 内部 `chub check` 通过为部署确认。Runtime、插件包、OpenClaw 和其他第三方能力不属于本条件。 |
 | `failed` | 任一必需环境、依赖、配置、服务、健康、平台恢复检查或报告写入失败。已可写入的报告必须说明失败步骤、已确认结果、可操作的恢复条件和未执行步骤；若 Chub 核心已成功但报告无法写入，AI 的最终结论必须明确记录核心状态与报告交付失败。 |
-| `recovery_pending` | 仅适用于 WSL2 已执行 `wsl.exe --shutdown`、重启前检查通过、报告检查点已写入，但 Agent 尚未重新连接而无法完成恢复检查的情况。恢复连接后必须继续收敛为 `succeeded` 或 `failed`。 |
 
 最终报告只记录版本、平台、是否启用 systemd/linger、Chub 版本、服务状态、健康结果、适用的平台专项状态、恢复结果、可选模块状态和失败恢复条件；不得记录密码、Token、Cookie、账号、完整路径、完整配置或原始日志。

@@ -914,13 +914,19 @@ def test_restart_checks_configured_listen_address(
 
 
 @pytest.mark.parametrize("platform", ["Darwin", "Linux"])
-def test_uninstall_removes_only_service_and_owned_command(
+def test_uninstall_removes_owned_and_retired_services_and_command(
     service_env: tuple[dict[str, str], Path],
     platform: str,
 ) -> None:
-    env, _ = service_env
+    env, calls = service_env
     env["CHUB_TEST_PLATFORM"] = platform
     assert run_chub("install", env).returncode == 0
+    if platform == "Linux":
+        retired_unit = (
+            Path(env["CHUB_SYSTEMD_USER_DIR"])
+            / "chub-loopback-forwarder.service"
+        )
+        retired_unit.write_text("[Service]\nExecStart=/retired/script.py\n", encoding="utf-8")
 
     result = run_chub("uninstall", env, "--force")
 
@@ -936,6 +942,11 @@ def test_uninstall_removes_only_service_and_owned_command(
             Path(env["CHUB_SYSTEMD_USER_DIR"])
             / "chub-quick-worker.service"
         ).exists()
+        assert not retired_unit.exists()
+        assert (
+            "systemctl --user disable --now chub-loopback-forwarder.service"
+            in calls.read_text(encoding="utf-8")
+        )
     workspace = Path(env["CHUB_TEST_ROOT"])
     assert workspace.exists()
     assert not (workspace / ".env").exists()
@@ -1234,6 +1245,13 @@ def test_recovery_reset_bypasses_upgrade_state_but_keeps_fixed_boundaries() -> N
     assert "chub-web-restart" in script
     assert "launchctl" not in script
     assert "systemctl" not in script
+
+
+def test_recovery_reset_builds_a_valid_health_url() -> None:
+    script = SYSTEM_RECOVERY.read_text(encoding="utf-8")
+
+    assert 'PY\n    )"' in script
+    assert 'PY\n    ))"' not in script
 
 
 def test_system_upgrade_start_reconciles_the_current_oneshot_definition() -> None:

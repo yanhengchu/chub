@@ -467,6 +467,13 @@ def _merge_settings(base: dict[str, Any], override: dict[str, Any]) -> dict[str,
     return merged
 
 
+def _reject_release_controlled_local_override(override: dict[str, Any]) -> None:
+    """Keep the installed node's displayed version tied to tracked source."""
+    app = override.get("app")
+    if isinstance(app, dict) and "version" in app:
+        raise RuntimeError("Local configuration cannot override app.version")
+
+
 def _local_config_error_summary(error: RuntimeError) -> str:
     message = str(error)
     if message.startswith("Configuration file cannot be read"):
@@ -478,6 +485,8 @@ def _local_config_error_summary(error: RuntimeError) -> str:
         return "invalid YAML"
     if message.startswith("Configuration root must be a mapping"):
         return "root is not a mapping"
+    if message.startswith("Local configuration cannot override app.version"):
+        return "app.version is release-controlled"
     if isinstance(error.__cause__, ValidationError):
         locations = []
         for item in error.__cause__.errors(include_url=False):
@@ -539,6 +548,7 @@ def load_settings(
         )
 
     try:
+        _reject_release_controlled_local_override(local_data)
         return _validate_settings(_merge_settings(base_data, local_data))
     except RuntimeError as exc:
         return _record_local_config_fallback(

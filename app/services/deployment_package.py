@@ -32,10 +32,19 @@ FORMAL_CODEX_IMPLEMENTATION_ID = "codex-010000"
 FORMAL_CODEX_DESCRIPTION = "Chub Codex Runtime：提供 AI Session、Quick Worker 任务执行和模型配置能力。"
 RELEASE_VERSION_PATTERN = r"^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$"
 RELEASE_NOTE_DRAFT_TTL_SECONDS = 30 * 60
+RELEASE_VERSION_SOURCE_PATHS = (
+    Path("pyproject.toml"),
+    Path("config/settings.yaml"),
+    Path("modules/runtime/codex-runtime/chub-module.json"),
+    Path(
+        "modules/orchestration/weixin-refinement/chub-capability-orchestration.json"
+    ),
+)
 RELEASE_EXECUTABLE_SCRIPTS = frozenset(
     {
         "scripts/chub",
         "scripts/maintenance/chub-data-migrate",
+        "scripts/maintenance/chub-system-recovery-reset",
         "scripts/maintenance/chub-system-upgrade-restart",
         "scripts/maintenance/chub-system-upgrade-start",
         "scripts/maintenance/chub-web-restart",
@@ -88,6 +97,8 @@ class DeploymentPackageOperation(_StrictModel):
     operation_id: str
     status: str
     message: str
+    target_version: str | None = Field(default=None, pattern=RELEASE_VERSION_PATTERN)
+    version_commit_created: bool = False
     started_at: datetime | None = None
     finished_at: datetime | None = None
     artifact_name: str | None = None
@@ -165,6 +176,7 @@ class _GitReleaseBaseline:
     tag_name: str
     previous_tag_ref: str | None
     previous_tag_commit: str | None
+    version_commit_created: bool = False
 
 
 @dataclass(frozen=True)
@@ -283,12 +295,17 @@ class DeploymentPackageService:
             or operation.operation_id == self._active_operation_id
         ):
             return state
-        state.operation = DeploymentPackageOperation(
-            operation_id=operation.operation_id,
-            status="failed",
-            message="版本发布因服务重启而中断，可重新发布。",
-            started_at=operation.started_at,
-            finished_at=_now(),
+        after_version_commit = operation.version_commit_created
+        state.operation = operation.model_copy(
+            update={
+                "status": "failed",
+                "message": (
+                    "版本声明已提交，正式发布因服务重启而中断；修复问题后请以同一版本重新发布。"
+                    if after_version_commit
+                    else "版本发布因服务重启而中断，可重新发布。"
+                ),
+                "finished_at": _now(),
+            }
         )
         self._write(state)
         write_operation(
@@ -297,7 +314,11 @@ class DeploymentPackageService:
             status="failed",
             target="chub-release",
             source_ip="unknown",
-            reason="interrupted_by_service_restart",
+            reason=(
+                "interrupted_after_version_commit"
+                if after_version_commit
+                else "interrupted_by_service_restart"
+            ),
         )
         return state
 
@@ -348,6 +369,49 @@ class DeploymentPackageService:
             ):
                 raise ValueError("project version declarations are invalid")
             return DeploymentPackageSourceVersions(chub=chub, runtime=runtime, weixin=weixin)
+        except (KeyError, OSError, TypeError, ValueError, yaml.YAMLError) as exc:
+            raise ApiError(503, "deployment_package_versions_unavailable", "项目版本暂时无法读取。") from exc
+
+    @staticmethod
+    def _all_source_version_declarations() -> tuple[str, ...]:
+        try:
+            source = DeploymentPackageService._source_versions()
+            settings_file = yaml.safe_load(
+                (PROJECT_ROOT / "config" / "settings.yaml").read_text("utf-8")
+            )
+            runtime_manifest = json.loads(
+                (
+                    PROJECT_ROOT
+                    / "modules"
+                    / "runtime"
+                    / "codex-runtime"
+                    / "chub-module.json"
+                ).read_text("utf-8")
+            )
+            weixin_manifest = json.loads(
+                (
+                    PROJECT_ROOT
+                    / "modules"
+                    / "orchestration"
+                    / "weixin-refinement"
+                    / "chub-capability-orchestration.json"
+                ).read_text("utf-8")
+            )
+            values = (
+                source.chub,
+                source.runtime,
+                source.weixin,
+                settings_file["app"]["version"],
+                runtime_manifest["chub_version"],
+                weixin_manifest["chub_version"],
+            )
+            if not all(
+                isinstance(value, str)
+                and re.fullmatch(RELEASE_VERSION_PATTERN, value)
+                for value in values
+            ):
+                raise ValueError("project version declarations are invalid")
+            return values
         except (KeyError, OSError, TypeError, ValueError, yaml.YAMLError) as exc:
             raise ApiError(503, "deployment_package_versions_unavailable", "项目版本暂时无法读取。") from exc
 
@@ -762,12 +826,14 @@ class DeploymentPackageService:
         configuration = (configuration or state.configuration).model_copy(deep=True)
         if not configuration.release_note.strip():
             raise ApiError(422, "release_note_required", "请填写本次发布说明。")
-        baseline = self._require_git_release_baseline(configuration)
+        self._require_release_version_not_lower(configuration.chub_release_version)
+        self._require_git_release_preconditions()
         self._clear_release_note_draft()
         operation = DeploymentPackageOperation(
             operation_id=uuid4().hex,
             status="requested",
-            message="版本发布已登记，正在后台处理。",
+            message="版本发布已登记，正在核对版本声明。",
+            target_version=configuration.chub_release_version,
             started_at=_now(),
         )
         state.operation = operation
@@ -780,7 +846,82 @@ class DeploymentPackageService:
             source_ip=source_ip,
         )
         self._active_operation_id = operation.operation_id
+        try:
+            version_commit_created = self._commit_release_version_if_needed(
+                configuration.chub_release_version
+            )
+            if version_commit_created:
+                operation = operation.model_copy(
+                    update={
+                        "version_commit_created": True,
+                        "message": "版本声明已提交，正在准备正式发布。",
+                    }
+                )
+                state.operation = operation
+                self._write(state)
+            baseline = self._require_git_release_baseline(
+                configuration,
+                version_commit_created=version_commit_created,
+            )
+        except ApiError as exc:
+            self._fail_registered_release_operation(
+                state,
+                operation,
+                source_ip=source_ip,
+                message=(
+                    "版本声明已提交，但正式发布未开始；修复问题后请以同一版本重新发布。"
+                    if operation.version_commit_created
+                    else exc.message
+                ),
+                reason=(
+                    "release_preparation_failed_after_version_commit"
+                    if operation.version_commit_created
+                    else exc.code
+                ),
+            )
+            raise
+        except OSError as exc:
+            self._fail_registered_release_operation(
+                state,
+                operation,
+                source_ip=source_ip,
+                message=(
+                    "版本声明已提交，但正式发布未开始；修复问题后请以同一版本重新发布。"
+                    if operation.version_commit_created
+                    else "版本发布准备失败，请检查操作日志后重新发布。"
+                ),
+                reason=(
+                    "release_preparation_failed_after_version_commit"
+                    if operation.version_commit_created
+                    else "release_preparation_failed"
+                ),
+            )
+            raise ApiError(503, "release_preparation_failed", "版本发布准备失败，请检查操作日志后重新发布。") from exc
         return operation, configuration, baseline
+
+    def _fail_registered_release_operation(
+        self,
+        state: _State,
+        operation: DeploymentPackageOperation,
+        *,
+        source_ip: str,
+        message: str,
+        reason: str,
+    ) -> None:
+        state.operation = operation.model_copy(
+            update={"status": "failed", "message": message, "finished_at": _now()}
+        )
+        self._write(state)
+        write_operation(
+            operation_id=operation.operation_id,
+            action="build_deployment_package",
+            status="failed",
+            target="chub-release",
+            source_ip=source_ip,
+            reason=reason,
+        )
+        if self._active_operation_id == operation.operation_id:
+            self._active_operation_id = None
 
     def _require_idle_worker(self) -> None:
         try:
@@ -853,10 +994,7 @@ class DeploymentPackageService:
             digest.update(b"\0")
         return digest.hexdigest()
 
-    def _require_git_release_baseline(
-        self,
-        configuration: DeploymentPackageConfiguration,
-    ) -> _GitReleaseBaseline:
+    def _require_git_release_preconditions(self) -> str:
         try:
             if self._git("rev-parse", "--is-inside-work-tree") != "true":
                 raise ApiError(409, "release_git_unavailable", "当前目录不是可发布的本地 Git 工作区。")
@@ -869,28 +1007,37 @@ class DeploymentPackageService:
             commit = self._git("rev-parse", "HEAD")
         except OSError as exc:
             raise ApiError(503, "release_git_unavailable", "本地 Git 状态暂时无法确认。") from exc
+        try:
+            if not self._git("var", "GIT_COMMITTER_IDENT"):
+                raise ApiError(409, "release_git_identity_unavailable", "请先配置本地 Git 提交者名称和邮箱。")
+        except OSError as exc:
+            raise ApiError(503, "release_git_identity_unavailable", "本地 Git 提交者身份暂时无法确认。") from exc
+        return commit
+
+    def _require_git_release_baseline(
+        self,
+        configuration: DeploymentPackageConfiguration,
+        *,
+        version_commit_created: bool = False,
+    ) -> _GitReleaseBaseline:
+        commit = self._require_git_release_preconditions()
         source = self._source_versions()
         if (
             source.chub != configuration.chub_release_version
             or source.runtime != configuration.runtime_release_version
             or source.weixin != configuration.weixin_release_version
-            or not self._chub_source_declarations_match(source.chub)
+            or not self._source_declarations_match(configuration.chub_release_version)
         ):
             raise ApiError(
                 409,
                 "release_source_version_mismatch",
-                "发布版本必须与当前已提交的 Chub 和插件版本声明一致。",
+                "版本声明尚未完成本次发布升级，请重新发起发布。",
             )
         tag_name = f"chub-v{configuration.chub_release_version}"
         try:
             self._git("check-ref-format", f"refs/tags/{tag_name}")
         except OSError as exc:
             raise ApiError(422, "release_tag_invalid", "发布版本不能生成有效的本地 Git tag。") from exc
-        try:
-            if not self._git("var", "GIT_COMMITTER_IDENT"):
-                raise ApiError(409, "release_git_identity_unavailable", "请先配置本地 Git 提交者名称和邮箱。")
-        except OSError as exc:
-            raise ApiError(503, "release_git_identity_unavailable", "本地 Git 提交者身份暂时无法确认。") from exc
         try:
             previous_tag_ref = self._git(
                 "rev-parse", "--verify", "-q", f"refs/tags/{tag_name}", allow_failure=True
@@ -905,35 +1052,123 @@ class DeploymentPackageService:
             tag_name=tag_name,
             previous_tag_ref=previous_tag_ref,
             previous_tag_commit=previous_tag_commit,
+            version_commit_created=version_commit_created,
         )
 
     @staticmethod
-    def _chub_source_declarations_match(chub_version: str) -> bool:
+    def _source_declarations_match(version: str) -> bool:
         try:
-            settings_file = yaml.safe_load(
-                (PROJECT_ROOT / "config" / "settings.yaml").read_text("utf-8")
+            return all(
+                value == version
+                for value in DeploymentPackageService._all_source_version_declarations()
             )
-            runtime_manifest = json.loads(
-                (PROJECT_ROOT / "modules" / "runtime" / "codex-runtime" / "chub-module.json").read_text("utf-8")
-            )
-            weixin_manifest = json.loads(
-                (
-                    PROJECT_ROOT
-                    / "modules"
-                    / "orchestration"
-                    / "weixin-refinement"
-                    / "chub-capability-orchestration.json"
-                ).read_text("utf-8")
-            )
-            return (
-                isinstance(settings_file, dict)
-                and isinstance(settings_file.get("app"), dict)
-                and settings_file["app"].get("version") == chub_version
-                and runtime_manifest.get("chub_version") == chub_version
-                and weixin_manifest.get("chub_version") == chub_version
-            )
-        except (OSError, TypeError, ValueError, yaml.YAMLError):
+        except ApiError:
             return False
+
+    @staticmethod
+    def _numeric_version(value: str) -> tuple[int, int, int]:
+        match = re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", value)
+        if match is None:
+            raise ApiError(422, "release_version_invalid", "发布版本必须是 MAJOR.MINOR.PATCH 格式。")
+        return tuple(int(part) for part in match.groups())
+
+    def _require_release_version_not_lower(
+        self,
+        version: str,
+    ) -> None:
+        requested = self._numeric_version(version)
+        declared = [self._numeric_version(value) for value in self._all_source_version_declarations()]
+        previous = self._latest_successful_release_record()
+        if previous.version is not None:
+            declared.append(self._numeric_version(previous.version))
+        if requested < max(declared):
+            raise ApiError(
+                409,
+                "release_version_downgrade",
+                "发布版本不能低于当前源码或最近成功发布的版本。",
+            )
+
+    def _commit_release_version_if_needed(
+        self,
+        version: str,
+    ) -> bool:
+        if self._source_declarations_match(version):
+            return False
+        current = max(
+            self._numeric_version(value)
+            for value in self._all_source_version_declarations()
+        )
+        if self._numeric_version(version) <= current:
+            raise ApiError(
+                409,
+                "release_source_version_inconsistent",
+                "当前源码版本声明不一致，不能按同版本发布。",
+            )
+        originals: dict[Path, bytes] = {}
+        try:
+            for relative_path in RELEASE_VERSION_SOURCE_PATHS:
+                path = PROJECT_ROOT / relative_path
+                originals[path] = path.read_bytes()
+            self._write_release_version_sources(version, originals)
+            self._git(
+                "commit",
+                "--only",
+                "-m",
+                f"chore(release): v{version}",
+                "--",
+                *(str(path) for path in RELEASE_VERSION_SOURCE_PATHS),
+            )
+        except (OSError, ValueError, json.JSONDecodeError, yaml.YAMLError) as exc:
+            for path, content in originals.items():
+                try:
+                    self._atomic_write(path, content)
+                except OSError:
+                    pass
+            raise ApiError(
+                503,
+                "release_version_commit_failed",
+                "版本声明未能提交，本次发布未开始。",
+            ) from exc
+        return True
+
+    def _write_release_version_sources(
+        self,
+        version: str,
+        originals: dict[Path, bytes],
+    ) -> None:
+        project_path = PROJECT_ROOT / RELEASE_VERSION_SOURCE_PATHS[0]
+        project = originals[project_path].decode("utf-8")
+        project, count = re.subn(
+            r'(?m)^version = "[^"]+"$',
+            f'version = "{version}"',
+            project,
+            count=1,
+        )
+        if count != 1:
+            raise ValueError("project version declaration is unavailable")
+        settings_path = PROJECT_ROOT / RELEASE_VERSION_SOURCE_PATHS[1]
+        settings = originals[settings_path].decode("utf-8")
+        settings, count = re.subn(
+            r'(?m)^  version: "[^"]+"$',
+            f'  version: "{version}"',
+            settings,
+            count=1,
+        )
+        if count != 1:
+            raise ValueError("settings version declaration is unavailable")
+        self._atomic_write(project_path, project.encode("utf-8"))
+        self._atomic_write(settings_path, settings.encode("utf-8"))
+        for relative_path in RELEASE_VERSION_SOURCE_PATHS[2:]:
+            path = PROJECT_ROOT / relative_path
+            manifest = json.loads(originals[path])
+            if not isinstance(manifest, dict):
+                raise ValueError("module version declaration is unavailable")
+            manifest["version"] = version
+            manifest["chub_version"] = version
+            self._atomic_write(
+                path,
+                (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
+            )
 
     def _require_unchanged_git_baseline(self, baseline: _GitReleaseBaseline) -> None:
         if self._git("rev-parse", "HEAD") != baseline.commit:
@@ -1063,8 +1298,9 @@ class DeploymentPackageService:
             state = self._read()
             if state.operation is None or state.operation.operation_id != operation_id:
                 return
-            state.operation.status = "started"
-            state.operation.message = "正在发布主包和正式插件 ZIP。"
+            state.operation = state.operation.model_copy(
+                update={"status": "started", "message": "正在发布主包和正式插件 ZIP。"}
+            )
             self._write(state)
         write_operation(operation_id=operation_id, action="build_deployment_package", status="started", target="chub-release", source_ip=source_ip)
         built: _BuiltDeploymentPackage | None = None
@@ -1096,6 +1332,8 @@ class DeploymentPackageService:
                 state = self._read()
                 state.operation = DeploymentPackageOperation(
                     operation_id=operation_id, status="succeeded", message=success_message,
+                    target_version=configuration.chub_release_version,
+                    version_commit_created=baseline.version_commit_created,
                     started_at=state.operation.started_at if state.operation else _now(), finished_at=_now(),
                     artifact_name=built.artifact.name,
                     artifact_size=built.artifact.stat().st_size,
@@ -1111,6 +1349,11 @@ class DeploymentPackageService:
             self._write(state)
             write_operation(operation_id=operation_id, action="build_deployment_package", status="succeeded", target=built.artifact.name, source_ip=source_ip)
         except Exception:
+            if baseline.version_commit_created:
+                failure_message = (
+                    "版本声明已提交，但正式发布未完成；修复问题后请以同一版本重新发布。"
+                )
+                failure_reason = "release_failed_after_version_commit"
             if release_record is not None:
                 try:
                     self._restore_release_record(release_record)
@@ -1134,6 +1377,8 @@ class DeploymentPackageService:
                 state = self._read()
                 state.operation = DeploymentPackageOperation(
                     operation_id=operation_id, status="failed", message=failure_message,
+                    target_version=configuration.chub_release_version,
+                    version_commit_created=baseline.version_commit_created,
                     started_at=state.operation.started_at if state.operation else _now(), finished_at=_now(),
                 )
                 self._write(state)

@@ -56,6 +56,11 @@ const deploymentPackageChubVersion = document.querySelector("#deployment-package
 const deploymentPackageIncludeDevelopment = document.querySelector("#deployment-package-include-development");
 const deploymentPackageReleaseNote = document.querySelector("#deployment-package-release-note");
 const deploymentPackageOpenOutput = document.querySelector("#deployment-package-open-output");
+const deploymentPackageReleaseDialog = document.querySelector("#deployment-package-release-dialog");
+const deploymentPackageReleaseDialogClose = document.querySelector("#deployment-package-release-dialog-close");
+const deploymentPackageReleaseDialogCancel = document.querySelector("#deployment-package-release-dialog-cancel");
+const deploymentPackageReleaseDialogConfirm = document.querySelector("#deployment-package-release-dialog-confirm");
+const deploymentPackageReleaseDialogDetails = document.querySelector("#deployment-package-release-dialog-details");
 let deploymentPackagePolling = null;
 
 const settingsChoicePickers = new Map();
@@ -670,6 +675,8 @@ function initializeDeploymentPackageSettings() {
   ].filter((item) => item instanceof HTMLInputElement || item instanceof HTMLTextAreaElement);
   let latestGeneration = null;
   let latestOperation = null;
+  let latestSourceVersions = null;
+  let latestAppVersion = null;
   let generationRequested = false;
   let generatedForVersion = null;
   const releaseNoteDraftToken = crypto.randomUUID();
@@ -713,10 +720,16 @@ function initializeDeploymentPackageSettings() {
     const configuration = data.configuration || {};
     latestOperation = data.operation || null;
     latestGeneration = data.release_note_generation || null;
+    latestSourceVersions = data.source_versions || null;
+    latestAppVersion = typeof data.app_version === "string" ? data.app_version : null;
     const busy = publishActive() || generationActive();
     inputs.forEach((input) => { input.disabled = busy; });
     const sourceVersions = data.source_versions || {};
-    deploymentPackageCurrentAppVersion.textContent = `已提交版本：Chub v${sourceVersions.chub || "未知"}；Runtime v${sourceVersions.runtime || "未知"}；微信编排 v${sourceVersions.weixin || "未知"}。发布版本必须一致。`;
+    const runtimeVersion = latestAppVersion ? `当前运行 Web：v${latestAppVersion}。` : "";
+    const reloadHint = latestAppVersion && sourceVersions.chub && latestAppVersion !== sourceVersions.chub
+      ? "运行中的 Web 尚未加载当前源码；如需切换运行版本，待 Worker 空闲后先 reload Worker，再重启 Web。"
+      : "";
+    deploymentPackageCurrentAppVersion.textContent = `当前源码：Chub v${sourceVersions.chub || "未知"}；Runtime v${sourceVersions.runtime || "未知"}；微信编排 v${sourceVersions.weixin || "未知"}。${runtimeVersion}${reloadHint} 可同版本重发，或输入更高的 MAJOR.MINOR.PATCH 版本。`;
     deploymentPackageChubVersion.value = configuration.chub_release_version || "";
     deploymentPackageIncludeDevelopment.checked = configuration.include_development_sources === true;
     if (generationRequested
@@ -757,7 +770,14 @@ function initializeDeploymentPackageSettings() {
         latestOperation.release_note ? `发版说明：\n${latestOperation.release_note}` : "",
         moduleSummary ? `随包模块：\n${moduleSummary}` : "",
       ].filter(Boolean).join("\n");
-      setSettingsMessage(deploymentPackageMessage, ["最近一次成功发布的产物如下。", details].filter(Boolean).join("\n"), "");
+      setSettingsMessage(
+        deploymentPackageMessage,
+        [
+          "最近一次成功发布的产物如下。正式包不会自动更新当前运行中的 Web 或 Quick Worker；如需加载本次源码，待 Worker 空闲后先 reload Worker，再重启 Web。",
+          details,
+        ].filter(Boolean).join("\n"),
+        "",
+      );
     } else if (latestOperation?.status === "failed") {
       setSettingsMessage(deploymentPackageMessage, latestOperation.message || "版本发布失败。", "error");
     }
@@ -771,8 +791,36 @@ function initializeDeploymentPackageSettings() {
     }
     catch (_error) { setSettingsMessage(deploymentPackageMessage, "暂时无法读取版本发布配置。", "error"); }
   };
-  const runAction = async () => {
+  const runAction = async (confirmed = false) => {
     const generating = generationRequired();
+    if (!generating && !confirmed && deploymentPackageReleaseDialog instanceof HTMLDialogElement) {
+      if (deploymentPackageReleaseDialogDetails instanceof HTMLElement) {
+        const target = deploymentPackageChubVersion.value.trim() || "未填写";
+        const sourceVersions = latestSourceVersions || {};
+        const current = sourceVersions.chub;
+        const declarationsMatch = current === target
+          && sourceVersions.runtime === target
+          && sourceVersions.weixin === target;
+        const numeric = (value) => /^\d+\.\d+\.\d+$/.test(value || "")
+          ? value.split(".").map(Number)
+          : null;
+        const targetParts = numeric(target);
+        const currentParts = numeric(current);
+        const higher = targetParts && currentParts
+          && targetParts.some((part, index) => part !== currentParts[index]
+            && part > currentParts[index]
+            && targetParts.slice(0, index).every((prefix, prefixIndex) => prefix === currentParts[prefixIndex]));
+        if (declarationsMatch) {
+          deploymentPackageReleaseDialogDetails.textContent = `目标版本：v${target}。这是同版本重发：不会创建版本提交，将从当前已提交 HEAD 重新构建并更新本地 tag 与发版记录。`;
+        } else if (higher) {
+          deploymentPackageReleaseDialogDetails.textContent = `目标版本：v${target}。这是升级发布：将统一更新固定版本声明并创建一条本地版本提交，然后构建正式包、更新本地 tag 与发版记录。`;
+        } else {
+          deploymentPackageReleaseDialogDetails.textContent = `目标版本：v${target}。版本声明当前不一致或目标不满足升级条件；服务端会在提交前执行最终校验，不会生成不合规发布。`;
+        }
+      }
+      deploymentPackageReleaseDialog.showModal();
+      return;
+    }
     inputs.forEach((input) => { input.disabled = true; });
     deploymentPackageBuild.disabled = true;
     try {
@@ -811,6 +859,12 @@ function initializeDeploymentPackageSettings() {
     void runAction();
   });
   deploymentPackageBuild.addEventListener("click", () => void runAction());
+  deploymentPackageReleaseDialogClose?.addEventListener("click", () => deploymentPackageReleaseDialog?.close());
+  deploymentPackageReleaseDialogCancel?.addEventListener("click", () => deploymentPackageReleaseDialog?.close());
+  deploymentPackageReleaseDialogConfirm?.addEventListener("click", () => {
+    deploymentPackageReleaseDialog?.close();
+    void runAction(true);
+  });
   deploymentPackageChubVersion.addEventListener("input", () => {
     if (generatedForVersion && deploymentPackageChubVersion.value.trim() !== generatedForVersion) {
       generatedForVersion = null;

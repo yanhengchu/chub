@@ -32,7 +32,7 @@ from app.core.config import load_settings
 
 print(f"http://127.0.0.1:{load_settings().server.port}/api/health")
 PY
-    ))"
+    )"
     for _attempt in $(seq 1 60); do
         if "$PYTHON_BIN" - "$health_url" <<'PY' >/dev/null 2>&1
 import json
