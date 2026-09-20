@@ -5,11 +5,11 @@
 > 本文负责：定义 Chub 的核心能力体系、两套面向人的指令体系，以及程序化集成契约；微信 ClawBot 固定指令的完整产品契约以本文第 2.2 节为准。
 > 本文不负责：实现细节、身份安全、并发/持久化/调度协议字段、调用方的运行时授权或尚未实现的目标架构；这些内容由总体架构、对应专项设计和插件 README 维护。
 
-Chub 的能力体系回答“能做什么”；指令体系回答“人如何输入文本调用”；程序化集成契约回答“系统如何调用”。当前只有两套面向人的指令体系：本机维护 CLI 与微信 ClawBot 固定指令。OpenClaw Tool、固定 HTTP API、工作台按钮和固定脚本均不构成第三套指令体系。微信固定指令的完整语法、用户可见行为和回复格式以第 2.2 节为准；身份、安全、并发、持久化和通知路由见对应设计文档；项目整体功能与使用方式见 [README](../README.md)。本文件描述的能力不等于所有入口均获授权：运行时能力由 Chub 根据入口、任务范围、权限和状态过滤，具体调用仍以实际校验结果为准。
+Chub 的能力体系回答“能做什么”；指令体系回答“人如何输入文本调用”；程序化集成契约回答“系统如何调用”。当前只有两套面向人的指令体系：本机维护 CLI 与微信 ClawBot 固定指令。固定 HTTP API、工作台按钮和固定脚本均不构成第三套指令体系。微信固定指令的完整语法、用户可见行为和回复格式以第 2.2 节为准；身份、安全、并发、持久化和通知路由见对应设计文档；项目整体功能与使用方式见 [README](../README.md)。本文件描述的能力不等于所有入口均获授权：运行时能力由 Chub 根据入口、任务范围、权限和状态过滤，具体调用仍以实际校验结果为准。
 
 ## AI Agent 阅读路径
 
-处理请求时，先在第 1 节确认能力是否已实现、当前入口是否属于允许调用面；不能从相邻能力、页面文案或未登记命令推断可用性。处理微信文字时，固定指令的语法、用户可见回复和普通任务回退只以第 2.2 节为准；不要把工作台、CLI、OpenClaw Tool 或 HTTP API 的行为套用到微信。处理程序化调用时只使用第 3 节已登记的契约。只有需要判断身份、路由、状态所有权、恢复或插件协议时，才沿本文件的“权威规则”链接进入专项设计；专项设计不改写本文件已定义的微信固定指令和回复格式。
+处理请求时，先在第 1 节确认能力是否已实现、当前入口是否属于允许调用面；不能从相邻能力、页面文案或未登记命令推断可用性。处理微信文字时，固定指令的语法、用户可见回复和普通任务回退只以第 2.2 节为准；不要把工作台、CLI 或 HTTP API 的行为套用到微信。处理程序化调用时只使用第 3 节已登记的契约。只有需要判断身份、路由、状态所有权、恢复或插件协议时，才沿本文件的“权威规则”链接进入专项设计；专项设计不改写本文件已定义的微信固定指令和回复格式。
 
 Chub 的产品定位、个人工作站信任模型和插件模块通用生命周期以 [README](../README.md) 与[总体架构设计](CHUB_ARCHITECTURE_DESIGN.md)为准。本文件仅在能力表中登记它们当前对调用面和用户可见结果的影响。Deliveryline 当前实际范围以“工作台业务模块”表项和 [Deliveryline 需求交付管理平台设计](DELIVERYLINE_PLATFORM_DESIGN.md)为准：启用后可创建、编辑、归档共享需求档案，并在资料完整时提交需求评审；后续阶段、Chub 执行关联和自动化测试流程尚未实现。
 
@@ -25,8 +25,8 @@ Chub 的产品定位、个人工作站信任模型和插件模块通用生命周
 | --- | --- | --- | --- |
 | Session 与任务 | 创建、读取、配置、提交、查询、等待、停止、归档和删除 Chub Session 与受控任务 | 工作台、快速交互、微信、受管服务 |
 | Runtime 与模型 | 查询 Runtime 健康、模型、实现与用量；配置后续任务的模型、推理等级和默认实现 | 工作台、设置、微信、状态接口 |
-| 文本处理、确认与通知 | 对微信普通正文直接执行、润色后执行或确认后执行；投递微信回送和预配置通知 | 微信、Quick Worker、CLI、OpenClaw Tool |
-| 状态、资料与需求 | 查询节点状态、项目资料、受限日志、活动需求和需求归档 | 工作台、CLI、微信、OpenClaw Tool |
+| 文本处理、确认与通知 | 对微信普通正文直接执行、润色后执行或确认后执行；投递微信回送和预配置飞书通知 | 微信、Quick Worker、`chub` CLI、受信通知 API |
+| 状态、资料与需求 | 查询节点状态、项目资料、受限日志、活动需求和需求归档 | 工作台、CLI、微信 |
 | 今日关注 | 展示今日计划与待办；AI Runtime 可提交任务时，使用固定内部 AI Session 整理固定公开来源的 AI 动态 | 工作台今日关注页 |
 | Debug Chrome、自动化与周报 | 复用受管浏览器执行受控页面操作，运行固定自动化，准备资料、生成和复核周报 | 自动化页、周报页、固定脚本与技能 |
 | 服务维护与集成 | 检查、重启或恢复受管服务；查看和维护已接入的 OpenClaw、Runtime 与模块状态；在维护者明确进入时提供维护终端 | 本机 CLI、工作台、少量微信固定指令 |
@@ -64,9 +64,9 @@ Chub 的产品定位、个人工作站信任模型和插件模块通用生命周
 | **文本、确认与通知** |  |  |  |
 | `chub.text.process` | 按直接、自动润色或确认模式处理微信普通正文 | 已实现：微信任务润色流程 | 后续可发现；只提交 Chub 已登记的文本处理意图。 |
 | `chub.text.confirm` | 对已送达的润色结果确认、取消或后移 | 已实现：微信确认流程 | 后续可发现；只能操作本流程已签发的确认项。 |
-| `chub.notification.send` | 向保存路由或预配置目标投递受控通知并记录终态 | 已实现：Worker、微信、CLI、OpenClaw Tool | 后续按任务范围发现；不得指定任意收件人、URL 或凭据。 |
+| `chub.notification.send` | 向预配置飞书群目标投递受控文本通知，并记录飞书 Webhook 接收或状态未知 | 已实现：`chub notification …`、受信 `/api/notifications/*` | 当前不授予微信或 OpenClaw；不得指定任意收件人、URL 或凭据。 |
 | **状态、资料与需求** |  |  |  |
-| `chub.status.read` | 查询节点、Web、Worker 与受限运行状态 | 已实现：工作台、CLI、微信、OpenClaw Tool | 后续按只读范围发现。 |
+| `chub.status.read` | 查询节点、Web、Worker 与受限运行状态 | 已实现：工作台、CLI、微信 | 后续按只读范围发现。 |
 | `chub.documents.read` | 浏览已登记的项目资料与受限内容 | 已实现：工作台可信网络页面 | 当前不授予任务编排插件。 |
 | `chub.requests.read` / `chub.requests.manage` | 查询、保存、更新、归档或删除活动需求 | 已实现：CLI 与微信固定指令各自开放的子集 | 当前不授予任务编排插件；写入仍须遵循需求储备规则。 |
 | `chub.logs.read` | 查看或下载受限日志 | 已实现：日志页、本机 CLI | 当前不授予任务编排插件。 |
@@ -115,7 +115,7 @@ Debug Chrome 是 Chub 核心层唯一受管的浏览器执行环境。其生命�
 | --- | --- | --- |
 | 工作台与快速交互 | 维护者在可信浏览器中管理 Session、任务、设置、状态、资料和自动化 | Session/任务、Runtime 与模型、状态资料、自动化、受控维护 |
 | 电脑端 `chub` CLI | 在 Chub 所在电脑安装、维护和排查服务 | 状态、通知、需求、日志、服务维护与恢复 |
-| OpenClaw Agent Tool | OpenClaw TUI 或未进入微信 Chub 模式的 Agent 调用 | 节点状态、预配置飞书通知 |
+| OpenClaw 微信转发插件 | 已授权微信私聊进入 Chub 固定调度链路 | 只转发微信任务，不提供 Agent Tool、状态查询或飞书通知 |
 | 微信 ClawBot | 已授权 Owner 通过私聊远程使用 Chub | Session/任务、文本处理与确认、状态、需求、Codex 认证切换和限定维护 |
 | 自动化与周报入口 | 维护者运行受管自动化或生成周报 | 自动化、周报、受限 AI Session/任务 |
 
@@ -167,13 +167,15 @@ Debug Chrome 是 Chub 核心层唯一受管的浏览器执行环境。其生命�
 
 - `chub notification validate`
 - `chub notification list`
+- `chub notification users search --query <姓名或用户ID>`
 - `chub notification test --target <target>`
 - `chub notification send --target <target> --message <message>`
 - `chub notification send --target <target> --message <message> --mention-all`
 - `chub notification send --target <target> --message <message> --mention-recipient <recipient> [--mention-recipient <recipient> ...]`
 
 通知目标登记在 `~/.config/chub/notifications/registry.yaml`，Webhook 保存在
-`~/.config/chub/notifications/secrets/` 下权限为 `600` 的独立文件。调用方只能选择预配置目标并发送有界纯文本，不能指定任意 URL、Open ID、Secret 路径或凭据。
+`~/.config/chub/notifications/secrets/` 下权限为 `600` 的独立文件；需要提醒的飞书用户登记在
+`~/.config/chub/notifications/users.yaml`，registry 和 users 文件都必须使用 `600` 权限，两个目录必须使用 `700` 权限。目标配置只保存目标 ID、展示名称、Webhook 和 `@all` 策略，不维护群成员清单。调用方只能选择预配置目标和用户 ID 并发送有界纯文本，不能指定任意 URL、Open ID、Secret 路径或凭据。
 
 首次配置可从不含真实凭据的示例开始：
 
@@ -181,15 +183,17 @@ Debug Chrome 是 Chub 核心层唯一受管的浏览器执行环境。其生命�
 mkdir -p ~/.config/chub/notifications/secrets
 chmod 700 ~/.config/chub/notifications ~/.config/chub/notifications/secrets
 cp -n config/notifications.example.yaml ~/.config/chub/notifications/registry.yaml
+cp -n config/notification_users.example.yaml ~/.config/chub/notifications/users.yaml
 touch ~/.config/chub/notifications/secrets/test.webhook
 chmod 600 \
   ~/.config/chub/notifications/registry.yaml \
+  ~/.config/chub/notifications/users.yaml \
   ~/.config/chub/notifications/secrets/test.webhook
 ```
 
-将完整飞书机器人 Webhook URL 作为唯一一行写入 `test.webhook`；需要指定人员时，在 registry 的 `recipients` 中使用本机别名登记对应 Open ID。真实 Webhook、Open ID 和 registry 不得提交到仓库。
+将完整飞书机器人 Webhook URL 作为唯一一行写入 `test.webhook`。在 `users.yaml` 中以 ASCII 用户 ID 登记中文展示名和对应 Open ID；不需要在每个群目标下重复列出群成员。`users search` 按中文展示名或 ASCII 用户 ID 返回最多 20 个候选 ID 和展示名，不返回 Open ID；同名用户必须由调用方明确选择 ID。配置文件、目录或秘密文件权限异常、内容异常或路径异常时，Chub 拒绝查询和发送，不使用旧缓存继续投递。真实 Webhook、Open ID、registry 和 users 文件不得提交到仓库。
 
-配置后执行 `chub notification validate`、`chub notification list` 和 `chub notification test --target test`。`test` 会真实发送固定测试消息。Chub 的 Codex Quick Worker 任务直接使用 `chub notification send`；OpenClaw TUI 和微信入口使用 `chub_send_notification`。
+配置后执行 `chub notification validate`、`chub notification list` 和 `chub notification test --target test`。`test` 会真实发送固定测试消息。Chub 在 `data/local/state/notifications/` 以 `600` 状态文件保存短期请求指纹和投递状态，不保存消息正文；Web 与 CLI 通过同目录的私有文件锁串行更新此状态。Webhook 超时、断链或服务中断后，同一 `request_id` 在 TTL 内返回状态未知且不会重发。飞书通知当前由 `chub notification …` 或受信通知 API 直接调用；OpenClaw 只负责微信任务转发，不调用飞书通知接口。
 
 #### 2.1.3 需求储备子命令
 
@@ -372,30 +376,28 @@ Session 标题与任务摘要的显示规则：
 
 程序化集成契约供已批准的系统按固定协议调用 Chub，不接受自由文本指令；它们不构成第三套面向人的指令体系。工作台内部 API、固定执行脚本与未来能力编排 Host 不在本节完整列举。
 
-### 3.1 OpenClaw 插件与 Tool
+### 3.1 OpenClaw 插件
 
 | 插件 | 状态 | 功能 |
 | --- | --- | --- |
-| Chub OpenClaw 插件 | 已实现 | 提供受限 Chub Tool、微信消息转发和飞书通知原文保护 |
+| Chub OpenClaw 插件 | 已实现 | 只将可信微信私聊转发到 Chub 统一调度接口 |
 | 腾讯微信插件 | 已接入 | 提供 ClawBot 账号绑定、微信消息收发和可信语音转写 |
 
 | 能力 | 类型 | 状态 | 场景与功能 |
 | --- | --- | --- | --- |
-| `chub_get_status` | Agent Tool | 已实现 | OpenClaw Agent 查询 Gateway 所在节点的 Chub 基础状态 |
-| `chub_send_notification` | Agent Tool | 已实现 | OpenClaw Agent 向 Chub 预配置的飞书目标发送消息 |
 | 微信 `before_dispatch` | Hook | 已实现 | 将可信微信私聊转发到 Chub 统一调度接口 |
-| 飞书原文保护 | Hook | 已实现 | 按 `runId` 关联可信原文，约束通知内容来源 |
 
 ### 3.2 对外固定 API
 
-本表只登记供 OpenClaw、微信或其他已批准集成方使用的固定 API；它不是工作台内部 API 或未来能力编排 Host 的完整列表。
+本表只登记供 OpenClaw、微信或其他已批准集成方使用的固定 API；它不是工作台内部 API 或未来能力编排 Host 的完整列表。通知 API 仅接受真实 loopback 或允许的 Tailnet 来源，不是 OpenClaw 插件调用面。
 
 | 请求 | 调用场景 | 功能 |
 | --- | --- | --- |
-| `GET /api/status` | `chub_get_status` | 查询节点健康和基础状态 |
 | `GET /api/ai/usage` | 微信状态、Session 回执、任务通知、受控调用方 | 查询默认 Runtime 的受限用量快照；只返回目标 Runtime 的实际结果，未提供或读取失败时返回不可用；字段与展示口径以该 Runtime 专属设计为准 |
-| `POST /api/notifications/send` | `chub_send_notification` | 向预配置目标发送通知 |
 | `POST /api/openclaw/wechat-chub-mode/dispatch` | 微信 `before_dispatch` | 调度可信微信私聊 |
+| `GET /api/notifications/targets` | 受信通知调用方 | 列出预配置飞书目标的非敏感摘要 |
+| `GET /api/notifications/users?query=<姓名或用户ID>` | 受信通知调用方 | 查询候选稳定用户 ID 与展示名，不返回 Open ID |
+| `POST /api/notifications/send` | 受信通知调用方 | 向预配置群目标发送纯文本、`@all` 或已登记用户；相同未知请求不会自动重发 |
 
 ## 4. 相关文档
 

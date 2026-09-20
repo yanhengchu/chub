@@ -19,7 +19,6 @@ The adapter mapping is JSON:
     "checklist_required_sections": ["本周需要同步的事项", "需要维护者确认的重点事项"]
   },
   "required_roles": [
-    "previous-report",
     "music-product",
     "product",
     "operations",
@@ -27,15 +26,6 @@ The adapter mapping is JSON:
     "server"
   ],
   "documents": [
-    {
-      "role": "previous-report",
-      "path": "linked/上周业务周报.md",
-      "title": "上周业务周报",
-      "source_url": "https://tenant.feishu.cn/wiki/document-id",
-      "download_status": "succeeded",
-      "content_status": "ready",
-      "usage": {"mode": "reference-only"}
-    },
     {
       "role": "product",
       "path": "linked/产品周报.md",
@@ -57,7 +47,7 @@ The adapter mapping is JSON:
 
 Supported roles:
 
-- Required by the V profile: `previous-report`, `music-product`, `product`, `operations`, `client`, `server`.
+- Required by the V profile: `music-product`, `product`, `operations`, `client`, `server`.
 - Optional: `weekly-meeting`, `manual-confirmation`, `supplemental-material`.
 
 The mapping declares the actual required roles so future profiles can change without changing scripts.
@@ -66,7 +56,7 @@ Supported `content_status`: `ready`, `needs-review`, `incomplete`, `still-editin
 
 Always set `download_status` and `content_status` explicitly. The adapter never infers download success or content readiness from file existence.
 
-`report_period` always covers one complete Monday-through-Sunday week. Each non-reference source must declare `usage_period.start` and `usage_period.end` as ISO dates. A source belongs to the current period when its declared reporting date or range end falls within the report period; its start may precede Monday. The adapter and input validator enforce this rule. `reference-only` material, such as the previous formal report, is exempt because it is background rather than current-period fact input. A cross-period source still needs an explicit `heading-range` or maintainer-confirmed range; never include it solely because its download date or a portion of its content overlaps.
+`report_period` always covers one complete Monday-through-Sunday week. Each V source must declare `usage_period.start` and `usage_period.end` as ISO dates. A source belongs to the current period when its declared reporting date or range end falls within the report period; its start may precede Monday. The adapter and input validator enforce this rule. A cross-period source still needs an explicit `heading-range` or maintainer-confirmed range; never include it solely because its download date or a portion of its content overlaps.
 
 `report_validation` is optional and keeps profile-specific formal-report checks out of the generic skill. `business_metrics_source_role`, when present, names the only current-document role permitted to supply `业务关键指标`; it must match a Manifest role. `required_sections` lists headings that must occur in the formal report. `required_section_text` maps a section heading to exact labels or text that must occur within that section. `checklist_required_sections` lists the two business-content headings required in the confirmed focus checklist; `维护者确认结果` is always required by the validator. Other profiles can omit or replace this block.
 

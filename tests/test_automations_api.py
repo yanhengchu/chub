@@ -65,6 +65,7 @@ async def test_automations_require_trusted_network(settings: Settings) -> None:
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         listing = await client.get("/api/automations")
         run = await client.post("/api/automations/task/run")
+        revalidate = await client.post("/api/automations/task/revalidate")
         check_feishu = await client.post("/api/automations/environment/feishu/check")
         check_codex = await client.post("/api/automations/environment/codex/check")
         switch_codex = await client.post(
@@ -88,6 +89,7 @@ async def test_automations_require_trusted_network(settings: Settings) -> None:
 
     assert listing.status_code == 403
     assert run.status_code == 403
+    assert revalidate.status_code == 403
     assert check_feishu.status_code == 403
     assert check_codex.status_code == 403
     assert switch_codex.status_code == 403
@@ -117,6 +119,10 @@ async def test_automation_list_and_background_acceptance(
     manager.start.return_value = AutomationRunAccepted(
         task_id="monthly-report",
         run_id="run-1",
+    )
+    manager.revalidate_weekly_inputs.return_value = AutomationRunAccepted(
+        task_id="weekly-report",
+        run_id="revalidate-1",
     )
     manager.control_browser.return_value = BrowserControlResult(
         state="running",
@@ -165,6 +171,7 @@ async def test_automation_list_and_background_acceptance(
     ) as client:
         listing = await client.get("/api/automations?all_tasks=true")
         run = await client.post("/api/automations/monthly-report/run")
+        revalidate = await client.post("/api/automations/weekly-report/revalidate")
         start_browser = await client.post(
             "/api/automations/browser/start",
             json={"mode": "headless"},
@@ -194,6 +201,8 @@ async def test_automation_list_and_background_acceptance(
     assert listing.json()["data"]["browser_state"] == "running"
     assert run.status_code == 202
     assert run.json()["data"]["status"] == "queued"
+    assert revalidate.status_code == 202
+    assert revalidate.json()["data"]["run_id"] == "revalidate-1"
     assert start_browser.status_code == 200
     assert start_browser.json()["data"]["state"] == "running"
     assert restart_browser.status_code == 200
@@ -215,6 +224,11 @@ async def test_automation_list_and_background_acceptance(
     assert manager.start.call_args.args == ("monthly-report",)
     assert len(manager.start.call_args.kwargs["operation_id"]) == 32
     assert manager.start.call_args.kwargs["source_ip"] == "127.0.0.1"
+    assert manager.start.call_args.kwargs["replace_pending"] is False
+    revalidate_call = manager.revalidate_weekly_inputs.call_args
+    assert revalidate_call.args == ("weekly-report",)
+    assert len(revalidate_call.kwargs["operation_id"]) == 32
+    assert revalidate_call.kwargs["source_ip"] == "127.0.0.1"
     assert [call.args for call in manager.control_browser.call_args_list] == [
         ("start", "headless"),
         ("restart", "headless"),

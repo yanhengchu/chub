@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -9,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 IDENTIFIER_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 OPEN_ID_PATTERN = re.compile(r"^ou_[A-Za-z0-9]{8,128}$")
+REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 
 
 class StrictModel(BaseModel):
@@ -16,62 +16,6 @@ class StrictModel(BaseModel):
 
 
 MentionMode = Literal["none", "recipients", "all"]
-
-
-class FeishuRecipient(StrictModel):
-    open_id: str
-
-    @field_validator("open_id")
-    @classmethod
-    def validate_open_id(cls, value: str) -> str:
-        if not OPEN_ID_PATTERN.fullmatch(value):
-            raise ValueError("invalid Feishu open_id")
-        return value
-
-
-class FeishuTarget(StrictModel):
-    provider: Literal["feishu"] = "feishu"
-    webhook_file: str = Field(min_length=1, max_length=128)
-    enabled: bool = True
-    allow_mention_all: bool = False
-    recipients: dict[str, FeishuRecipient] = Field(default_factory=dict)
-
-    @field_validator("webhook_file")
-    @classmethod
-    def validate_webhook_file(cls, value: str) -> str:
-        path = Path(value)
-        if path.is_absolute() or path.name != value or value in {".", ".."}:
-            raise ValueError("webhook_file must be a plain file name")
-        return value
-
-    @field_validator("recipients")
-    @classmethod
-    def validate_recipient_ids(
-        cls,
-        value: dict[str, FeishuRecipient],
-    ) -> dict[str, FeishuRecipient]:
-        if len(value) > 100:
-            raise ValueError("too many recipients")
-        if any(not IDENTIFIER_PATTERN.fullmatch(item) for item in value):
-            raise ValueError("invalid recipient identifier")
-        return value
-
-
-class NotificationRegistry(StrictModel):
-    version: Literal[1]
-    targets: dict[str, FeishuTarget]
-
-    @field_validator("targets")
-    @classmethod
-    def validate_target_ids(
-        cls,
-        value: dict[str, FeishuTarget],
-    ) -> dict[str, FeishuTarget]:
-        if len(value) > 100:
-            raise ValueError("too many notification targets")
-        if any(not IDENTIFIER_PATTERN.fullmatch(item) for item in value):
-            raise ValueError("invalid target identifier")
-        return value
 
 
 class NotificationRequest(StrictModel):
@@ -116,7 +60,40 @@ class NotificationResult(StrictModel):
 
 class NotificationTargetSummary(StrictModel):
     id: str
+    display_name: str
     provider: Literal["feishu"]
     enabled: bool
     allow_mention_all: bool
-    recipients: list[str]
+
+
+class NotificationUserSummary(StrictModel):
+    id: str
+    display_name: str
+
+
+class NotificationUserSearchResult(StrictModel):
+    users: list[NotificationUserSummary]
+    truncated: bool = False
+
+
+class NotificationDeliveryRecord(StrictModel):
+    fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+    status: Literal["sending", "unknown", "accepted"]
+    expires_at: int = Field(ge=0)
+
+
+class NotificationDeliveryState(StrictModel):
+    version: Literal[1]
+    entries: dict[str, NotificationDeliveryRecord]
+
+    @field_validator("entries")
+    @classmethod
+    def validate_entries(
+        cls,
+        value: dict[str, NotificationDeliveryRecord],
+    ) -> dict[str, NotificationDeliveryRecord]:
+        if len(value) > 1000:
+            raise ValueError("too many notification delivery records")
+        if any(REQUEST_ID_PATTERN.fullmatch(item) is None for item in value):
+            raise ValueError("invalid notification delivery request ID")
+        return value

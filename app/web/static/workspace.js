@@ -385,6 +385,9 @@
   const automationStopCancel = document.getElementById("workspace-automation-browser-stop-cancel");
   const automationStopConfirm = document.getElementById("workspace-automation-browser-stop-confirm");
   const automationRunButtons = document.querySelectorAll(".workspace-automation-run");
+  const automationRevalidateButtons = document.querySelectorAll(
+    ".workspace-automation-revalidate",
+  );
   const weeklyReportRunButtons = document.querySelectorAll(".workspace-weekly-report-run");
   const weeklyReportConfirmAndRunButtons = document.querySelectorAll(
     ".workspace-weekly-report-confirm-and-run",
@@ -1038,16 +1041,20 @@
       const taskId = button.dataset.automationTaskId;
       const taskTitle = button.dataset.automationTaskTitle;
       if (!taskId || !taskTitle || button.disabled) return;
+      const replacePending = button.dataset.automationPendingInputs === "true";
+      const runEndpoint = `/api/automations/${encodeURIComponent(taskId)}/run`;
       const confirmed = await showConfirmationDialog({
-        title: "运行自动化任务",
-        body: `即将运行“${taskTitle}”。任务将使用当前 Debug Chrome 与登录状态，执行已配置的固定步骤。`,
-        details: [{ label: "提交后", value: "任务会在此页面显示执行状态和最终结果。" }],
-        confirmLabel: "确认运行",
+        title: replacePending ? "重新下载自动化资料" : "运行自动化任务",
+        body: replacePending
+          ? `即将重新下载“${taskTitle}”。现有待校验资料将被替换，人工修正不会保留。`
+          : `即将运行“${taskTitle}”。任务将使用当前 Debug Chrome 与登录状态，执行已配置的固定步骤。`,
+        details: [{ label: "提交后", value: replacePending ? "将重新下载并校验本期资料。" : "任务会在此页面显示执行状态和最终结果。" }],
+        confirmLabel: replacePending ? "确认重新下载" : "确认运行",
         pendingLabel: "提交中…",
         tone: "secondary",
         errorMessage: "无法运行自动化任务。",
         onConfirm: () => automationRequest(
-          `/api/automations/${encodeURIComponent(taskId)}/run`,
+          replacePending ? `${runEndpoint}?replace_pending=true` : runEndpoint,
         ),
       });
       if (!confirmed) return;
@@ -1055,6 +1062,35 @@
         ?.querySelector(".workstation-status-detail");
       if (taskDetail instanceof HTMLElement) {
         setWorkstationStatus(taskDetail, "任务已受理，正在刷新状态。", "warning");
+      }
+      button.disabled = true;
+      window.setTimeout(refreshWorkspaceAutomations, 500);
+    });
+  });
+
+  automationRevalidateButtons.forEach((button) => {
+    if (!(button instanceof HTMLButtonElement)) return;
+    button.addEventListener("click", async () => {
+      const taskId = button.dataset.automationTaskId;
+      const taskTitle = button.dataset.automationTaskTitle;
+      if (!taskId || !taskTitle || button.disabled) return;
+      const confirmed = await showConfirmationDialog({
+        title: "再次校验本地资料",
+        body: `将重新校验“${taskTitle}”保留在本机的待修正资料，不会访问飞书或重新下载。`,
+        details: [{ label: "通过后", value: "将生成新的 Manifest 和哈希，并发布本期正式输入。" }],
+        confirmLabel: "确认校验",
+        pendingLabel: "校验中…",
+        tone: "secondary",
+        errorMessage: "无法再次校验本地资料。",
+        onConfirm: () => automationRequest(
+          `/api/automations/${encodeURIComponent(taskId)}/revalidate`,
+        ),
+      });
+      if (!confirmed) return;
+      const taskDetail = button.closest(".workstation-status-row")
+        ?.querySelector(".workstation-status-detail");
+      if (taskDetail instanceof HTMLElement) {
+        setWorkstationStatus(taskDetail, "再次校验已受理，正在刷新状态。", "warning");
       }
       button.disabled = true;
       window.setTimeout(refreshWorkspaceAutomations, 500);

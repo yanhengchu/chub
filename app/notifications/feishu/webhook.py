@@ -7,7 +7,11 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from app.notifications.models import FeishuTarget, NotificationRequest
+from app.notifications.feishu.models import (
+    FeishuTarget,
+    NotificationUsers,
+)
+from app.notifications.models import NotificationRequest
 
 
 MAX_WEBHOOK_BYTES = 2048
@@ -24,7 +28,23 @@ class FeishuProviderError(Exception):
 
 def load_webhook(secrets_dir: Path, file_name: str) -> str:
     try:
+        if secrets_dir.is_symlink():
+            raise FeishuProviderError(
+                "notification_secret_invalid",
+                "Notification secret directory is invalid",
+            )
         root = secrets_dir.resolve(strict=True)
+        root_stat = root.stat()
+        if not root.is_dir():
+            raise FeishuProviderError(
+                "notification_secret_invalid",
+                "Notification secret directory is invalid",
+            )
+        if root_stat.st_mode & 0o077:
+            raise FeishuProviderError(
+                "notification_secret_permissions",
+                "Notification secret directory permissions are too broad",
+            )
         candidate = root / file_name
         if candidate.is_symlink():
             raise FeishuProviderError(
@@ -80,7 +100,11 @@ def load_webhook(secrets_dir: Path, file_name: str) -> str:
     return webhook
 
 
-def build_text(target: FeishuTarget, request: NotificationRequest) -> str:
+def build_text(
+    target: FeishuTarget,
+    users: NotificationUsers,
+    request: NotificationRequest,
+) -> str:
     mentions: list[str] = []
     if request.mention_mode == "all":
         if not target.allow_mention_all:
@@ -91,19 +115,41 @@ def build_text(target: FeishuTarget, request: NotificationRequest) -> str:
         mentions.append('<at user_id="all">所有人</at>')
     elif request.mention_mode == "recipients":
         for recipient_id in request.recipients:
-            recipient = target.recipients.get(recipient_id)
+            recipient = users.users.get(recipient_id)
             if recipient is None:
                 raise FeishuProviderError(
                     "notification_recipient_not_found",
-                    "Notification recipient is not configured for this target",
+                    "Notification recipient is not configured",
                 )
-            safe_label = html.escape(recipient_id, quote=False)
+            safe_label = html.escape(recipient.display_name, quote=False)
             mentions.append(
                 f'<at user_id="{recipient.open_id}">{safe_label}</at>'
             )
 
     safe_message = html.escape(request.message, quote=False)
     return " ".join([*mentions, safe_message])
+
+
+def build_payload(
+    target: FeishuTarget,
+    users: NotificationUsers,
+    request: NotificationRequest,
+) -> bytes:
+    body = {
+        "msg_type": "text",
+        "content": {"text": build_text(target, users, request)},
+    }
+    encoded = json.dumps(
+        body,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if len(encoded) > MAX_FEISHU_REQUEST_BYTES:
+        raise FeishuProviderError(
+            "notification_message_too_large",
+            "Notification message exceeds the provider limit",
+        )
+    return encoded
 
 
 class FeishuProvider:
@@ -125,30 +171,14 @@ class FeishuProvider:
     async def send(
         self,
         webhook: str,
-        target: FeishuTarget,
-        request: NotificationRequest,
+        payload: bytes,
     ) -> None:
-        body = {
-            "msg_type": "text",
-            "content": {"text": build_text(target, request)},
-        }
-        encoded = json.dumps(
-            body,
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        if len(encoded) > MAX_FEISHU_REQUEST_BYTES:
-            raise FeishuProviderError(
-                "notification_message_too_large",
-                "Notification message exceeds the provider limit",
-            )
-
         try:
             async with self._client.stream(
                 "POST",
                 webhook,
                 headers={"Content-Type": "application/json"},
-                content=encoded,
+                content=payload,
             ) as response:
                 try:
                     declared = int(

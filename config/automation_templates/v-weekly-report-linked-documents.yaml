@@ -9,8 +9,8 @@ source:
     - /docx/
   max_documents: 20
   required_current_documents: 5
+  # 日期型旧周报链接仅用于从本期输入中排除，不再作为参考资料下载或校验。
   background_reference_title_kind: period_week
-  required_background_references: 1
 
 download:
   template: feishu-document-download

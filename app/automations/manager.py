@@ -52,6 +52,7 @@ from app.automations.store import AutomationStateStore
 from app.core.config import PROJECT_ROOT, Settings
 from app.core.response import ApiError
 from app.services.operation_log import write_operation
+import app.services.weekly_reports as weekly_reports
 from app.services.weekly_reports import reporting_period
 
 
@@ -527,6 +528,12 @@ class AutomationManager:
                 self._store.write(state)
             return state
 
+    @staticmethod
+    def _weekly_pending_inputs_available(period: str) -> bool:
+        return (
+            weekly_reports.WEEKLY_REPORTS_ROOT / period / "pending-inputs"
+        ).is_dir()
+
     def _browser_profile_data(
         self,
     ) -> tuple[list[BrowserProfilePublic], str | None, str | None, str | None]:
@@ -593,6 +600,13 @@ class AutomationManager:
                         )
                 else:
                     main_document_name = state.main_document_name or task.name
+                pending_inputs_available = self._weekly_pending_inputs_available(
+                    current_period
+                )
+                if state.pending_inputs_available != pending_inputs_available:
+                    state = state.model_copy(
+                        update={"pending_inputs_available": pending_inputs_available}
+                    )
             tasks.append(
                 AutomationTaskPublic(
                     id=task_id,
@@ -836,6 +850,7 @@ class AutomationManager:
         *,
         operation_id: str,
         source_ip: str,
+        replace_pending: bool = False,
     ) -> AutomationRunAccepted:
         with self._launch_lock:
             if self._feishu_checking:
@@ -854,6 +869,16 @@ class AutomationManager:
             current = self._current_state(task_id)
             if current.status in {"queued", "running"}:
                 raise ApiError(409, "automation_running", "自动化任务正在执行")
+            if (
+                task.extension == "v-weekly-report-linked-documents"
+                and self._weekly_pending_inputs_available(reporting_period())
+                and not replace_pending
+            ):
+                raise ApiError(
+                    409,
+                    "automation_pending_inputs_available",
+                    "本期待校验资料仍保留，请先再次校验或确认重新下载",
+                )
 
             run_id = uuid4().hex
             self._store.write(
@@ -892,6 +917,7 @@ class AutomationManager:
                         "web",
                         "--run-id",
                         run_id,
+                        *(["--replace-pending"] if replace_pending else []),
                     ],
                     cwd=PROJECT_ROOT,
                     env=runner_environment,
@@ -920,6 +946,95 @@ class AutomationManager:
                     )
                 )
                 raise ApiError(500, "automation_start_failed", "无法启动自动化任务") from exc
+            finally:
+                if "output" in locals():
+                    output.close()
+            return AutomationRunAccepted(task_id=task_id, run_id=run_id)
+
+    def revalidate_weekly_inputs(
+        self,
+        task_id: str,
+        *,
+        operation_id: str,
+        source_ip: str,
+    ) -> AutomationRunAccepted:
+        with self._launch_lock:
+            config = self._load_config()
+            task = config.tasks.get(task_id)
+            if task is None:
+                raise ApiError(404, "automation_not_found", "自动化任务不存在")
+            if task.extension != "v-weekly-report-linked-documents":
+                raise ApiError(409, "automation_revalidation_unsupported", "该任务不支持再次校验")
+            current = self._current_state(task_id)
+            if current.status in {"queued", "running"}:
+                raise ApiError(409, "automation_running", "自动化任务正在执行")
+            if not (
+                current.pending_inputs_available
+                or self._weekly_pending_inputs_available(reporting_period())
+            ):
+                raise ApiError(409, "automation_pending_inputs_missing", "本期没有待校验资料")
+            run_id = uuid4().hex
+            self._store.write(
+                AutomationState(
+                    task_id=task_id,
+                    status="queued",
+                    run_id=run_id,
+                    trigger="web",
+                    operation_id=operation_id,
+                    operation_action="revalidate_weekly_inputs",
+                    source_ip=source_ip,
+                    message="再次校验已受理",
+                    started_at=datetime.now().astimezone(),
+                    period=reporting_period(),
+                    validation_status="pending",
+                    pending_inputs_available=True,
+                )
+            )
+            log_dir = self._settings.automations.runtime_dir / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_path = log_dir / f"{task_id}.log"
+            try:
+                self._rotate_log(log_path)
+                output = log_path.open("ab")
+                log_path.chmod(0o600)
+                subprocess.Popen(
+                    [
+                        sys.executable,
+                        "-m",
+                        "app.automations.command",
+                        "revalidate",
+                        task_id,
+                        "--trigger",
+                        "web",
+                        "--run-id",
+                        run_id,
+                    ],
+                    cwd=PROJECT_ROOT,
+                    env=os.environ.copy(),
+                    stdin=subprocess.DEVNULL,
+                    stdout=output,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+            except OSError as exc:
+                self._store.write(
+                    AutomationState(
+                        task_id=task_id,
+                        status="failed",
+                        run_id=run_id,
+                        trigger="web",
+                        operation_id=operation_id,
+                        operation_action="revalidate_weekly_inputs",
+                        source_ip=source_ip,
+                        message="无法启动再次校验",
+                        started_at=datetime.now().astimezone(),
+                        finished_at=datetime.now().astimezone(),
+                        period=reporting_period(),
+                        validation_status="failed",
+                        pending_inputs_available=True,
+                    )
+                )
+                raise ApiError(500, "automation_revalidation_start_failed", "无法启动再次校验") from exc
             finally:
                 if "output" in locals():
                     output.close()

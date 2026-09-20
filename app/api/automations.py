@@ -433,6 +433,7 @@ def list_automations(
 def run_automation(
     task_id: str,
     request: Request,
+    replace_pending: bool = False,
 ) -> ApiResponse[AutomationRunAccepted]:
     operation_id = log_operation(
         request,
@@ -445,6 +446,7 @@ def run_automation(
             task_id,
             operation_id=operation_id,
             source_ip=request.client.host if request.client else "unknown",
+            replace_pending=replace_pending,
         )
     except Exception:
         log_operation(
@@ -458,6 +460,46 @@ def run_automation(
     log_operation(
         request,
         action="run_automation",
+        status="started",
+        target=task_id,
+        operation_id=operation_id,
+    )
+    return ApiResponse(data=accepted)
+
+
+@router.post(
+    "/{task_id}/revalidate",
+    response_model=ApiResponse[AutomationRunAccepted],
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def revalidate_weekly_automation(
+    task_id: str,
+    request: Request,
+) -> ApiResponse[AutomationRunAccepted]:
+    operation_id = log_operation(
+        request,
+        action="revalidate_weekly_inputs",
+        status="requested",
+        target=task_id,
+    )
+    try:
+        accepted = request.app.state.automation_manager.revalidate_weekly_inputs(
+            task_id,
+            operation_id=operation_id,
+            source_ip=request.client.host if request.client else "unknown",
+        )
+    except Exception:
+        log_operation(
+            request,
+            action="revalidate_weekly_inputs",
+            status="failed",
+            target=task_id,
+            operation_id=operation_id,
+        )
+        raise
+    log_operation(
+        request,
+        action="revalidate_weekly_inputs",
         status="started",
         target=task_id,
         operation_id=operation_id,

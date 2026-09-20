@@ -1329,6 +1329,7 @@ class DeploymentPackageService:
             "config/settings.yaml",
             "config/automations.example.yaml",
             "config/notifications.example.yaml",
+            "config/notification_users.example.yaml",
             "config/automation_templates",
             "config/system-upgrade.json",
         ]

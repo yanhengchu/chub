@@ -1,7 +1,7 @@
 {
   "id": "chub",
   "name": "Chub",
-  "description": "Use explicitly allowlisted Chub capabilities through a fixed local connection.",
+  "description": "Forward approved Weixin direct messages to Chub through a fixed local connection.",
   "version": "0.1.1",
   "configSchema": {
     "type": "object",
@@ -25,19 +25,5 @@
   },
   "activation": {
     "onStartup": true
-  },
-  "contracts": {
-    "tools": [
-      "chub_get_status",
-      "chub_send_notification"
-    ]
-  },
-  "toolMetadata": {
-    "chub_get_status": {
-      "optional": true
-    },
-    "chub_send_notification": {
-      "optional": true
-    }
   }
 }

@@ -22,7 +22,6 @@ def run_script(script: Path, *args: object) -> subprocess.CompletedProcess[str]:
 
 
 def build_mapping(source: Path, mapping_path: Path) -> None:
-    (source / "previous.md").write_text("# 上周周报\n", encoding="utf-8")
     (source / "product.md").write_text(
         "# 产品周报\n\n## **日期：2026\\-7\\-23**\n\n本周内容\n\n"
         "## 日期：2026.7.16\n\n历史内容\n",
@@ -37,15 +36,8 @@ def build_mapping(source: Path, mapping_path: Path) -> None:
                     "end": "2026-07-26",
                     "timezone": "Asia/Shanghai",
                 },
-                "required_roles": ["previous-report", "product"],
+                "required_roles": ["product"],
                 "documents": [
-                    {
-                        "role": "previous-report",
-                        "path": "previous.md",
-                        "download_status": "succeeded",
-                        "content_status": "ready",
-                        "usage": {"mode": "reference-only"},
-                    },
                     {
                         "role": "product",
                         "path": "product.md",
@@ -131,7 +123,7 @@ def test_adapter_and_input_validator(tmp_path: Path) -> None:
     assert adapted.returncode == 0, adapted.stderr
     manifest = workspace / "manifest.json"
     manifest_data = json.loads(manifest.read_text(encoding="utf-8"))
-    assert manifest_data["documents"][1]["resolved_usage"]["start"]["line"] == 3
+    assert manifest_data["documents"][0]["resolved_usage"]["start"]["line"] == 3
     validated = run_script(VALIDATOR, "inputs", "--manifest", manifest)
     assert validated.returncode == 0, validated.stdout
 
@@ -143,7 +135,7 @@ def test_adapter_rejects_source_period_outside_current_week(tmp_path: Path) -> N
     mapping = tmp_path / "mapping.json"
     build_mapping(source, mapping)
     data = json.loads(mapping.read_text(encoding="utf-8"))
-    data["documents"][1]["usage_period"]["end"] = "2026-07-27"
+    data["documents"][0]["usage_period"]["end"] = "2026-07-27"
     mapping.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
     adapted = run_script(

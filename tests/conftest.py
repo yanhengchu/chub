@@ -67,6 +67,7 @@ def settings(tmp_path: Path) -> Settings:
             },
             "openclaw": {
                 "weixin_chub_mode": {
+                    "enabled": False,
                     "state_file": tmp_path / "weixin-chub-mode.json",
                 },
             },

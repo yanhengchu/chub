@@ -86,7 +86,7 @@ AI Agent 处理任何需求前先用下面的规则建立判断基线，详细�
 ## 实现约束
 
 - API 保持统一的 `ApiResponse`/`ApiError` 响应结构。
-- Chub 的 Codex Session 或 Quick Worker 任务发送飞书通知时，直接使用 `chub notification send` 或 Chub 通知 API，不要通过 `openclaw agent` 间接调用；OpenClaw TUI 和微信入口才使用 `chub_send_notification`。
+- 飞书通知是 Chub 内置独立能力。固定公开入口为 `chub notification …` 和受信 `/api/notifications/*`；Codex Session 或 Quick Worker 如需触发通知，只能复用同一通知服务，不通过 `openclaw agent` 或 OpenClaw Tool 间接发送。OpenClaw 插件只负责微信任务转发，不调用飞书通知接口。
 - 受保护接口只接受真实 loopback socket，或在默认启用的 `security.allow_tailscale` 未被关闭时接受真实 Tailscale socket 来源；其他来源拒绝。不得信任客户端转发 Header，健康检查除外。
 - 除“维护终端”外，不允许客户端提供任意文件路径或任意系统命令，只能使用后端固定映射或白名单。维护终端是维护者明确批准的高权限例外：仅由 Chub 的受保护入口创建，固定从当前项目目录启动 `zsh`，仅本机或受信 Tailnet 浏览器可访问，允许任意命令；短期 HttpOnly 票据、同源 WebSocket 校验和单一活动连接仍必须保留。该入口等同当前设备用户 Shell 权限，不能被微信、OpenClaw、自动化或其他外部 Agent 调用。
 - 不在日志、响应、测试输出或文档中暴露 Token、Authorization、访问票据等敏感数据。

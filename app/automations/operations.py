@@ -12,8 +12,9 @@ def log_final_operation(state: AutomationState) -> AutomationState:
     if not state.operation_id or state.operation_logged:
         return state
     LOGGER.info(
-        "operation_id=%s action=run_automation status=%s target=%s source_ip=%s",
+        "operation_id=%s action=%s status=%s target=%s source_ip=%s",
         state.operation_id,
+        state.operation_action,
         "succeeded" if state.status in {"success", "waiting"} else "failed",
         state.task_id,
         state.source_ip or "unknown",

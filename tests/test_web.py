@@ -1446,6 +1446,7 @@ async def test_automation_section_uses_workstation_status_rows(
                         task_id="weekly-report",
                         status="running",
                         message="正在下载主周报及关联文档",
+                        pending_inputs_available=True,
                     ),
                 ),
                 AutomationTaskPublic(
@@ -1552,6 +1553,7 @@ async def test_automation_section_uses_workstation_status_rows(
     assert "飞书登录状态已失效" in response.text
     assert "从飞书 Wiki 下载 Markdown 归档。" not in response.text
     assert response.text.count('class="button-secondary workspace-automation-run"') == 2
+    assert 'class="button-secondary workspace-automation-revalidate"' in response.text
     assert 'data-automation-task-id="weekly-report"' in response.text
     assert 'data-automation-task-id="monthly-report"' in response.text
     assert 'title="该自动化任务正在执行"' in response.text
@@ -1566,7 +1568,10 @@ async def test_automation_section_uses_workstation_status_rows(
     assert "border: 0;" in stylesheet.text
     assert 'showConfirmationDialog({' in workspace_script.text
     assert '`/api/automations/${encodeURIComponent(taskId)}/run`' in workspace_script.text
-    assert 'body: `即将运行“${taskTitle}”。任务将使用当前 Debug Chrome 与登录状态，执行已配置的固定步骤。`' in workspace_script.text
+    assert '}/revalidate`' in workspace_script.text
+    assert "不会访问飞书或重新下载" in workspace_script.text
+    assert '`即将运行“${taskTitle}”。任务将使用当前 Debug Chrome 与登录状态，执行已配置的固定步骤。`' in workspace_script.text
+    assert "现有待校验资料将被替换，人工修正不会保留。" in workspace_script.text
     assert 'body: `将创建独立的周报生成会话并执行“${label}”。生成过程不会重新下载资料。`' in workspace_script.text
     assert 'setWorkstationStatus(taskDetail, "任务已受理，正在刷新状态。", "warning");' in workspace_script.text
     assert '".workspace-weekly-report-view-session"' in workspace_script.text

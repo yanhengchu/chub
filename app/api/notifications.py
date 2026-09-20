@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 
 from app.core.response import ApiResponse
 from app.core.security import require_trusted_network
-from app.notifications import (
-    NotificationError,
+from app.notifications.errors import NotificationError
+from app.notifications.models import (
     NotificationRequest,
     NotificationResult,
     NotificationTargetSummary,
+    NotificationUserSearchResult,
 )
 from app.services.operation_log import log_operation
 
@@ -35,6 +36,18 @@ def list_notification_targets(
     except NotificationError as exc:
         _raise_api_error(exc)
     return ApiResponse(data=targets)
+
+
+@router.get("/users", response_model=ApiResponse[NotificationUserSearchResult])
+def search_notification_users(
+    request: Request,
+    query: str = Query(min_length=1, max_length=128),
+) -> ApiResponse[NotificationUserSearchResult]:
+    try:
+        result = request.app.state.notification_service.search_users(query)
+    except NotificationError as exc:
+        _raise_api_error(exc)
+    return ApiResponse(data=result)
 
 
 @router.post("/send", response_model=ApiResponse[NotificationResult])

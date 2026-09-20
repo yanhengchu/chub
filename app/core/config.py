@@ -169,7 +169,9 @@ class RequestsConfig(StrictModel):
 class NotificationsConfig(StrictModel):
     enabled: bool = True
     registry_file: Path = Path("~/.config/chub/notifications/registry.yaml")
+    users_file: Path = Path("~/.config/chub/notifications/users.yaml")
     secrets_dir: Path = Path("~/.config/chub/notifications/secrets")
+    state_file: Path = Path("data/local/state/notifications/delivery-state.json")
     timeout_seconds: float = Field(default=5, ge=1, le=30)
     max_message_bytes: int = Field(default=4000, ge=256, le=16 * 1024)
     dedup_ttl_seconds: int = Field(default=600, ge=60, le=3600)
@@ -413,12 +415,15 @@ class Settings(StrictModel):
             self.openclaw.integration_state_dir = (
                 self.openclaw.integration_state_dir.expanduser().resolve()
             )
-        self.notifications.registry_file = (
-            self.notifications.registry_file.expanduser().resolve()
-        )
-        self.notifications.secrets_dir = (
-            self.notifications.secrets_dir.expanduser().resolve()
-        )
+        for field_name in ("registry_file", "users_file", "secrets_dir"):
+            value = getattr(self.notifications, field_name).expanduser()
+            if not value.is_absolute():
+                value = PROJECT_ROOT / value
+            setattr(self.notifications, field_name, value)
+        if not self.notifications.state_file.is_absolute():
+            self.notifications.state_file = (
+                PROJECT_ROOT / self.notifications.state_file
+            )
         return self
 
 

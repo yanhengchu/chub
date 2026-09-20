@@ -6,7 +6,9 @@ import json
 from uuid import uuid4
 
 from app.core.config import load_settings
-from app.notifications import NotificationError, NotificationRequest, NotificationService
+from app.notifications.errors import NotificationError
+from app.notifications.feishu.service import NotificationService
+from app.notifications.models import NotificationRequest
 
 
 def parser() -> argparse.ArgumentParser:
@@ -14,6 +16,11 @@ def parser() -> argparse.ArgumentParser:
     commands = root.add_subparsers(dest="command", required=True)
     commands.add_parser("validate")
     commands.add_parser("list")
+
+    users = commands.add_parser("users")
+    users_commands = users.add_subparsers(dest="users_command", required=True)
+    search = users_commands.add_parser("search")
+    search.add_argument("--query", required=True)
 
     test = commands.add_parser("test")
     test.add_argument("--target", required=True)
@@ -34,6 +41,8 @@ async def run(arguments: argparse.Namespace) -> dict[str, object]:
         if arguments.command in {"validate", "list"}:
             targets = [item.model_dump() for item in service.targets()]
             return {"valid": True, "targets": targets}
+        if arguments.command == "users":
+            return service.search_users(arguments.query).model_dump()
 
         mention_mode = "none"
         recipients: list[str] = []

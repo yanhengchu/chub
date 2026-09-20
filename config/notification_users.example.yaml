@@ -1,0 +1,7 @@
+version: 1
+
+# Add local user mappings here. Never commit real Open IDs.
+users: {}
+# maintainer:
+#   display_name: "Maintainer"
+#   open_id: "ou_example00000000"

@@ -74,7 +74,9 @@ requests:
 notifications:
   enabled: true
   registry_file: "~/.config/chub/notifications/registry.yaml"
+  users_file: "~/.config/chub/notifications/users.yaml"
   secrets_dir: "~/.config/chub/notifications/secrets"
+  state_file: "data/local/state/notifications/delivery-state.json"
   timeout_seconds: 5
   max_message_bytes: 4000
   dedup_ttl_seconds: 600

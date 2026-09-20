@@ -372,6 +372,9 @@ class AutomationState(StrictAutomationModel):
     trigger: Literal["web", "cli", "schedule"] | None = None
     process_id: int | None = None
     operation_id: str | None = None
+    operation_action: Literal["run_automation", "revalidate_weekly_inputs"] = (
+        "run_automation"
+    )
     source_ip: str | None = None
     operation_logged: bool = False
     message: str = "尚未执行"
@@ -388,6 +391,7 @@ class AutomationState(StrictAutomationModel):
         "not_applicable"
     )
     validation_message: str | None = None
+    pending_inputs_available: bool = False
 
 
 class AutomationTaskPublic(StrictAutomationModel):

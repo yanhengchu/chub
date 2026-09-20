@@ -52,7 +52,6 @@ _WEEKLY_CURRENT_DOCUMENT_ROLES = {
 }
 _WEEKLY_REQUIRED_ROLES = (
     "main-report",
-    "previous-report",
     "music-product",
     "product",
     "operations",
@@ -60,7 +59,7 @@ _WEEKLY_REQUIRED_ROLES = (
     "server",
 )
 _WEEKLY_HEADING_RANGE_STARTS = {
-    "client": "五、VIVO国内",
+    "client": "VIVO国内",
     "server": "一、南京服务端 @薛峰",
 }
 _WEEKLY_REPORT_VALIDATION = {
@@ -421,6 +420,8 @@ def _run_linked_documents(
             task.browser.start_url,
             extension,
         )
+        if task.extension == "v-weekly-report-linked-documents":
+            documents = [document for document in documents if not document.is_background]
     except (RuntimeError, ExtensionFailed) as exc:
         raise AutomationFailed(str(exc)) from exc
 
@@ -577,6 +578,46 @@ def _weekly_report_staging_root(input_root: Path, run_id: str) -> Path:
     return staging
 
 
+def _weekly_pending_inputs_root(input_root: Path) -> Path:
+    return input_root.parent / "pending-inputs"
+
+
+def _preserve_weekly_pending_inputs(staging_root: Path, input_root: Path) -> Path | None:
+    if not any(staging_root.rglob("*.md")):
+        return None
+    pending_root = _weekly_pending_inputs_root(input_root)
+    if pending_root.exists():
+        raise AutomationFailed("本期待校验资料已存在，不能覆盖")
+    try:
+        os.replace(staging_root, pending_root)
+    except OSError as exc:
+        raise AutomationFailed("本期待校验资料无法保留") from exc
+    return pending_root
+
+
+def _relocate_weekly_output_files(
+    documents: list[LinkedDocumentResult],
+    source_root: Path,
+    destination_root: Path,
+) -> list[LinkedDocumentResult]:
+    relocated = []
+    for document in documents:
+        if not document.output_file:
+            relocated.append(document)
+            continue
+        try:
+            relative_path = Path(document.output_file).relative_to(source_root)
+        except ValueError:
+            relocated.append(document)
+            continue
+        relocated.append(
+            document.model_copy(
+                update={"output_file": str(destination_root / relative_path)}
+            )
+        )
+    return relocated
+
+
 def _validate_weekly_downloads(
     main_document: Path,
     linked_documents: list[LinkedDocumentResult],
@@ -595,11 +636,6 @@ def _validate_weekly_downloads(
         if document.status != "success" or not document.output_file:
             validated_linked.append(document)
             continue
-        if document.is_background:
-            validated_linked.append(
-                document.model_copy(update={"message": "下载完成（上周参考）"})
-            )
-            continue
         try:
             validate_weekly_linked_document(Path(document.output_file), period)
         except WeeklyValidationError as exc:
@@ -615,7 +651,6 @@ def _validate_weekly_downloads(
                     update={
                         "status": "waiting" if waiting_for_update else "failed",
                         "message": message,
-                        "output_file": None,
                     }
                 )
             )
@@ -630,7 +665,6 @@ def _weekly_inputs_are_waiting_for_updates(errors: list[str]) -> bool:
     waiting_prefixes = (
         "关联文档处理失败：本期各端周报不足：",
         "关联文档处理失败：本期各端周报缺少必需业务端：",
-        "关联文档处理失败：上周参考不足：",
     )
     return bool(errors) and all(
         error.startswith(waiting_prefixes)
@@ -666,6 +700,7 @@ def _publish_weekly_inputs(
         or any(path is not None and not path.is_file() for path in metadata_paths)
     ):
         raise AutomationFailed("本期周报备份目录已存在")
+    staged_inputs_published = False
     marker_backed_up = False
     marker_replaced = False
     try:
@@ -680,6 +715,7 @@ def _publish_weekly_inputs(
         if manifest_staging is not None and manifest.exists():
             os.replace(manifest, manifest_backup)
         os.replace(staging_root, input_root)
+        staged_inputs_published = True
         if mapping_staging is not None:
             os.replace(mapping_staging, mapping)
         if manifest_staging is not None:
@@ -691,7 +727,14 @@ def _publish_weekly_inputs(
         marker_replaced = True
     except OSError as exc:
         marker_temporary.unlink(missing_ok=True)
-        if input_root.exists() and inputs_backup.exists():
+        if staged_inputs_published and input_root.exists():
+            try:
+                os.replace(input_root, staging_root)
+            except OSError as restore_exc:
+                raise AutomationFailed(
+                    "本期周报输入发布失败，待修正资料仍在正式输入目录，请手动恢复"
+                ) from restore_exc
+        elif input_root.exists() and inputs_backup.exists():
             shutil.rmtree(input_root, ignore_errors=True)
         if inputs_backup.exists() and not input_root.exists():
             os.replace(inputs_backup, input_root)
@@ -723,8 +766,6 @@ def _sha256(path: Path) -> str:
 
 
 def _weekly_role(document: LinkedDocumentResult) -> str:
-    if document.is_background:
-        return "previous-report"
     normalized = document.name.replace("\\-", "-").strip().casefold()
     for prefix, role in _WEEKLY_CURRENT_DOCUMENT_ROLES.items():
         if normalized.startswith(prefix.casefold()):
@@ -745,14 +786,26 @@ def _markdown_h1_headings(path: Path) -> list[tuple[int, str]]:
     return headings
 
 
+def _normalize_weekly_heading(value: str) -> str:
+    return re.sub(r"[*_`\\\s]", "", value).casefold()
+
+
+def _matches_weekly_heading_range_start(role: str, heading: str) -> bool:
+    normalized = _normalize_weekly_heading(heading)
+    if role == "client":
+        return bool(
+            re.fullmatch(r"(?:[一二三四五六七八九十百零〇0-9]+、)?vivo国内", normalized)
+        )
+    return normalized == _normalize_weekly_heading(_WEEKLY_HEADING_RANGE_STARTS[role])
+
+
 def _heading_range_usage(path: Path, role: str) -> tuple[dict[str, str], dict[str, object]]:
     configured_start = _WEEKLY_HEADING_RANGE_STARTS[role]
-    normalized_start = re.sub(r"[*_`\\\s]", "", configured_start).casefold()
     headings = _markdown_h1_headings(path)
     matches = [
         (index, line, text)
         for index, (line, text) in enumerate(headings)
-        if re.sub(r"[*_`\\\s]", "", text).casefold() == normalized_start
+        if _matches_weekly_heading_range_start(role, text)
     ]
     if len(matches) != 1 or matches[0][0] + 1 >= len(headings):
         raise AutomationFailed(f"{role} 来源章节边界无法唯一确定")
@@ -766,8 +819,8 @@ def _heading_range_usage(path: Path, role: str) -> tuple[dict[str, str], dict[st
     resolved = {
         "mode": "heading-range",
         "start": {
-            "configured": start_text,
-            "normalized": re.sub(r"[*_`\\\s]", "", start_text).casefold(),
+            "configured": configured_start,
+            "normalized": _normalize_weekly_heading(configured_start),
             "matched_original": start_text,
             "line": start_line,
         },
@@ -803,7 +856,6 @@ def _write_weekly_input_metadata(
         title: str,
         *,
         source_url: str | None = None,
-        reference_only: bool = False,
     ) -> None:
         try:
             relative_path = path.relative_to(staging_root).as_posix()
@@ -822,16 +874,13 @@ def _write_weekly_input_metadata(
         }
         if source_url:
             entry["source_url"] = source_url
-        if reference_only:
-            entry["usage"] = {"mode": "reference-only"}
+        entry["usage_period"] = {"start": start, "end": end}
+        if role in _WEEKLY_HEADING_RANGE_STARTS:
+            usage, resolved = _heading_range_usage(path, role)
+            entry["usage"] = usage
+            entry["resolved_usage"] = resolved
         else:
-            entry["usage_period"] = {"start": start, "end": end}
-            if role in _WEEKLY_HEADING_RANGE_STARTS:
-                usage, resolved = _heading_range_usage(path, role)
-                entry["usage"] = usage
-                entry["resolved_usage"] = resolved
-            else:
-                entry["usage"] = {"mode": "whole-document"}
+            entry["usage"] = {"mode": "whole-document"}
         documents.append(entry)
 
     add_document(
@@ -853,7 +902,6 @@ def _write_weekly_input_metadata(
             Path(document.output_file),
             document.name,
             source_url=document.source_url,
-            reference_only=document.is_background,
         )
     missing = [role for role in _WEEKLY_REQUIRED_ROLES if role not in roles]
     if missing:
@@ -903,12 +951,233 @@ def _write_weekly_input_metadata(
     return mapping_staging, manifest_staging
 
 
+def _pending_weekly_documents(
+    task: AutomationTaskConfig,
+    pending_root: Path,
+    settings: Settings,
+) -> tuple[Path, list[LinkedDocumentResult]]:
+    main_documents = [path for path in pending_root.glob("*.md") if path.is_file()]
+    if len(main_documents) != 1:
+        raise AutomationFailed("待校验资料缺少唯一主周报")
+    try:
+        extension = load_linked_documents_extension(task.extension or "")
+        documents = extract_linked_documents(
+            main_documents[0], task.browser.start_url, extension
+        )
+    except (RuntimeError, ExtensionFailed) as exc:
+        raise AutomationFailed(str(exc)) from exc
+    documents = [document for document in documents if not document.is_background]
+    filenames = _read_linked_sources_index(
+        Path("linked"),
+        settings.automations.artifacts_dir,
+        output_root=pending_root,
+    )
+    results = []
+    for document in documents:
+        filename = filenames.get(document.url)
+        output_file = pending_root / "linked" / filename if filename else None
+        if output_file is None or not output_file.is_file():
+            results.append(
+                LinkedDocumentResult(
+                    name=document.name,
+                    status="failed",
+                    message="待校验资料缺少下载文件",
+                    source_url=document.url,
+                )
+            )
+            continue
+        results.append(
+            LinkedDocumentResult(
+                name=document.name,
+                status="success",
+                message="等待再次校验",
+                source_url=document.url,
+                output_file=str(output_file),
+            )
+        )
+    return main_documents[0], results
+
+
+def revalidate_weekly_inputs(
+    settings: Settings,
+    task_id: str,
+    *,
+    trigger: str = "cli",
+    run_id: str | None = None,
+) -> AutomationState:
+    config = load_automations(*settings.automations.config_files)
+    task = config.tasks.get(task_id)
+    if task is None or task.extension != "v-weekly-report-linked-documents":
+        raise AutomationFailed("该自动化任务不支持再次校验")
+    if not task.enabled:
+        raise AutomationFailed("自动化任务未启用")
+    resolved_run_id = run_id or uuid4().hex
+    if _RUN_ID_PATTERN.fullmatch(resolved_run_id) is None:
+        raise AutomationFailed("运行标识包含非法字符")
+    store = AutomationStateStore(settings.automations.state_dir)
+    queued = store.read(task_id)
+    operation_id = queued.operation_id if queued.run_id == resolved_run_id else None
+    source_ip = queued.source_ip if queued.run_id == resolved_run_id else None
+    task_lock = settings.automations.runtime_dir / "locks" / f"task-{task_id}.lock"
+
+    try:
+        with file_lock(task_lock, 0):
+            started = datetime.now().astimezone()
+            period = reporting_period(started.date())
+            input_root = _weekly_report_input_root(started)
+            pending_root = _weekly_pending_inputs_root(input_root)
+            if not pending_root.is_dir():
+                raise AutomationFailed("本期没有可再次校验的资料")
+            running = AutomationState(
+                task_id=task_id,
+                status="running",
+                run_id=resolved_run_id,
+                trigger=trigger,
+                process_id=os.getpid(),
+                operation_id=operation_id,
+                operation_action="revalidate_weekly_inputs",
+                source_ip=source_ip,
+                message="正在再次校验本地待修正资料",
+                started_at=started,
+                period=period,
+                validation_status="pending",
+                pending_inputs_available=True,
+            )
+            store.write(running)
+            mapping_staging = None
+            manifest_staging = None
+            try:
+                main_document, linked_documents = _pending_weekly_documents(
+                    task, pending_root, settings
+                )
+                linked_documents, errors = _validate_weekly_downloads(
+                    main_document,
+                    linked_documents,
+                    period=period,
+                    linked_section=load_linked_documents_extension(task.extension).source.section,
+                )
+                errors.extend(
+                    f"关联文档“{item.name}”下载失败：{item.message}"
+                    for item in linked_documents
+                    if item.status == "failed"
+                    and not item.message.startswith("本期校验失败：")
+                )
+                if not errors:
+                    running = running.model_copy(
+                        update={"message": "本期资料校验通过，正在生成输入清单"}
+                    )
+                    store.write(running)
+                    mapping_staging, manifest_staging = _write_weekly_input_metadata(
+                        pending_root,
+                        input_root,
+                        main_document,
+                        task.browser.start_url,
+                        linked_documents,
+                        period,
+                        resolved_run_id,
+                    )
+                    _publish_weekly_inputs(
+                        pending_root,
+                        input_root,
+                        resolved_run_id,
+                        mapping_staging=mapping_staging,
+                        manifest_staging=manifest_staging,
+                    )
+                    linked_documents = [
+                        item.model_copy(
+                            update={
+                                "output_file": str(
+                                    input_root
+                                    / Path(item.output_file).relative_to(pending_root)
+                                )
+                            }
+                        )
+                        if item.output_file
+                        else item
+                        for item in linked_documents
+                    ]
+                    result = AutomationState(
+                        task_id=task_id,
+                        status="success",
+                        run_id=resolved_run_id,
+                        trigger=trigger,
+                        process_id=os.getpid(),
+                        operation_id=operation_id,
+                        operation_action="revalidate_weekly_inputs",
+                        source_ip=source_ip,
+                        message=(
+                            f"再次校验并发布完成 · 各端周报 "
+                            f"{len(linked_documents)}/{len(linked_documents)} 通过"
+                        ),
+                        started_at=started,
+                        finished_at=datetime.now().astimezone(),
+                        output_file=str(input_root / main_document.name),
+                        period=period,
+                        main_document_name=main_document.stem,
+                        linked_documents=linked_documents,
+                        validation_status="passed",
+                    )
+                else:
+                    waiting = _weekly_inputs_are_waiting_for_updates(errors)
+                    result = AutomationState(
+                        task_id=task_id,
+                        status="waiting" if waiting else "failed",
+                        run_id=resolved_run_id,
+                        trigger=trigger,
+                        process_id=os.getpid(),
+                        operation_id=operation_id,
+                        operation_action="revalidate_weekly_inputs",
+                        source_ip=source_ip,
+                        message=(
+                            ("等待各端更新：" if waiting else "本期校验失败：")
+                            + errors[0]
+                            + " · 已保留待修正资料"
+                        ),
+                        started_at=started,
+                        finished_at=datetime.now().astimezone(),
+                        period=period,
+                        main_document_name=main_document.stem,
+                        linked_documents=linked_documents,
+                        validation_status="waiting" if waiting else "failed",
+                        validation_message=errors[0],
+                        pending_inputs_available=True,
+                    )
+            except Exception as exc:
+                if mapping_staging is not None:
+                    mapping_staging.unlink(missing_ok=True)
+                if manifest_staging is not None:
+                    manifest_staging.unlink(missing_ok=True)
+                message = str(exc) if isinstance(exc, AutomationFailed) else "再次校验失败"
+                result = AutomationState(
+                    task_id=task_id,
+                    status="failed",
+                    run_id=resolved_run_id,
+                    trigger=trigger,
+                    process_id=os.getpid(),
+                    operation_id=operation_id,
+                    operation_action="revalidate_weekly_inputs",
+                    source_ip=source_ip,
+                    message=message,
+                    started_at=started,
+                    finished_at=datetime.now().astimezone(),
+                    period=period,
+                    validation_status="failed",
+                    pending_inputs_available=True,
+                )
+            result = log_final_operation(result)
+            store.write(result)
+            return result
+    except LockBusy as exc:
+        raise AutomationFailed("该自动化任务正在执行") from exc
+
+
 def run_automation(
     settings: Settings,
     task_id: str,
     *,
     trigger: str = "cli",
     run_id: str | None = None,
+    replace_pending: bool = False,
 ) -> AutomationState:
     config = load_automations(*settings.automations.config_files)
     task = config.tasks.get(task_id)
@@ -957,11 +1226,20 @@ def run_automation(
             staging_root = None
             mapping_staging = None
             manifest_staging = None
+            pending_inputs_available = False
             try:
                 input_root = None
                 execution_task = task
                 if task.extension == "v-weekly-report-linked-documents":
                     input_root = _weekly_report_input_root(started)
+                    pending_root = _weekly_pending_inputs_root(input_root)
+                    if pending_root.exists():
+                        if not replace_pending:
+                            pending_inputs_available = True
+                            raise AutomationFailed(
+                                "本期待校验资料仍保留，请先再次校验或确认重新下载"
+                            )
+                        shutil.rmtree(pending_root)
                     staging_root = _weekly_report_staging_root(
                         input_root, resolved_run_id
                     )
@@ -1071,12 +1349,17 @@ def run_automation(
                             for item in linked_documents
                         ]
                         validation_status = "passed"
-                current_documents = [
-                    item for item in linked_documents if not item.is_background
-                ]
-                background_documents = [
-                    item for item in linked_documents if item.is_background
-                ]
+                    elif staging_root is not None:
+                        preserved_root = _preserve_weekly_pending_inputs(
+                            staging_root, input_root
+                        )
+                        if preserved_root is not None:
+                            linked_documents = _relocate_weekly_output_files(
+                                linked_documents, staging_root, preserved_root
+                            )
+                            staging_root = None
+                            pending_inputs_available = True
+                current_documents = linked_documents
                 linked_successes = sum(
                     item.status == "success" for item in current_documents
                 )
@@ -1105,12 +1388,6 @@ def run_automation(
                         f"下载并通过本期校验 · 各端周报 "
                         f"{linked_successes}/{len(current_documents)} 通过"
                     )
-                    if background_documents:
-                        message += (
-                            " · 上周参考 "
-                            f"{sum(item.status == 'success' for item in background_documents)}/"
-                            f"{len(background_documents)} 已下载"
-                        )
                 else:
                     message = "下载并通过本期校验"
                 result = AutomationState(
@@ -1149,6 +1426,7 @@ def run_automation(
                     validation_message=(
                         validation_errors[0] if validation_errors else None
                     ),
+                    pending_inputs_available=pending_inputs_available,
                 )
                 if staging_root is not None:
                     shutil.rmtree(staging_root, ignore_errors=True)
@@ -1157,6 +1435,21 @@ def run_automation(
                 if manifest_staging is not None:
                     manifest_staging.unlink(missing_ok=True)
             except TimeoutError:
+                if weekly_period is not None and staging_root is not None and input_root:
+                    try:
+                        preserved_root = _preserve_weekly_pending_inputs(
+                            staging_root, input_root
+                        )
+                    except AutomationFailed:
+                        LOGGER.exception(
+                            "automation=%s run_id=%s pending inputs could not be preserved",
+                            task_id,
+                            resolved_run_id,
+                        )
+                    else:
+                        if preserved_root is not None:
+                            staging_root = None
+                            pending_inputs_available = True
                 if staging_root is not None:
                     shutil.rmtree(staging_root, ignore_errors=True)
                 if mapping_staging is not None:
@@ -1180,8 +1473,24 @@ def run_automation(
                         if weekly_period is not None
                         else "not_applicable"
                     ),
+                    pending_inputs_available=pending_inputs_available,
                 )
             except Exception as exc:
+                if weekly_period is not None and staging_root is not None and input_root:
+                    try:
+                        preserved_root = _preserve_weekly_pending_inputs(
+                            staging_root, input_root
+                        )
+                    except AutomationFailed:
+                        LOGGER.exception(
+                            "automation=%s run_id=%s pending inputs could not be preserved",
+                            task_id,
+                            resolved_run_id,
+                        )
+                    else:
+                        if preserved_root is not None:
+                            staging_root = None
+                            pending_inputs_available = True
                 if staging_root is not None:
                     shutil.rmtree(staging_root, ignore_errors=True)
                 if mapping_staging is not None:
@@ -1207,6 +1516,7 @@ def run_automation(
                         if weekly_period is not None
                         else "not_applicable"
                     ),
+                    pending_inputs_available=pending_inputs_available,
                 )
             result = log_final_operation(result)
             store.write(result)

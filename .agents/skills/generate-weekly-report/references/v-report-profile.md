@@ -5,7 +5,7 @@ Check these areas when extracting focus and reviewing coverage:
 - Product commercialization: metric changes, memberships, ads, recommendations, version planning, decisions.
 - Product/OS: important items, OS versions, cross-team requirements, operations.
 - Operations: user, content, paid, and catalog operations.
-- Client: read only the `五、VIVO国内` heading range; extract release plans, horizontal issues, core business and technical metrics, and risks. Do not use the common section or other client groups.
+- Client: read only the unique numbered `VIVO国内` heading range, such as `五、VIVO国内` or `六、VIVO国内`; extract release plans, horizontal issues, core business and technical metrics, and risks. Do not use the common section or other client groups.
 - Server: read only the `一、南京服务端 @薛峰` heading range; extract releases, catalog and graph, commercialization, recommendations, campaigns, incidents, and stability. Do not use other server groups.
 - Weekly meeting: new problems, explicit conclusions, verification actions, follow-ups.
 
@@ -17,6 +17,6 @@ For V reports, `music-product` is the current `产品商业化` source when the 
 
 When the current V weekly DAU has not been confirmed by Stage A, retain the source placeholder `？W`; do not infer a value. Record the maintainer's fixed confirmation date, normally the Monday after the report period, in the focus checklist and carry the placeholder into the formal report until that value is confirmed.
 
-Place this known DAU placeholder in the focus checklist's `本周需要同步的事项`, not its maintainer-confirmation list, unless a separate business decision is unresolved. In `产品体验提升`'s `当前进展`, keep two bullets: carry forward the previous formal report's available stage and monthly DAU averages, updating them for the latest period available this week, then state the latest complete-week DAU as its actual value when confirmed, otherwise as `？W` with the concrete Monday-after-period supplement date. Do not hard-code H1 or particular months.
+Place this known DAU placeholder in the focus checklist's `本周需要同步的事项`, not its maintainer-confirmation list, unless a separate business decision is unresolved. In `产品体验提升`'s `当前进展`, keep two bullets from the usable current sources: state the current confirmed stage and available DAU averages, then state the latest complete-week DAU as its actual value when confirmed, otherwise as `？W` with the concrete Monday-after-period supplement date. Omit unavailable facts rather than carrying them from an earlier report. Do not hard-code H1 or particular months.
 
 When the period includes white-label migration work and the `product` material names controlled migration documents, retain each directly associated document in `【白牌迁移推进】` as `标题：URL`. Do not substitute a general source URL for a named migration document, and do not retain URLs that are not directly paired with a report item.

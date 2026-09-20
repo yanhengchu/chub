@@ -110,7 +110,7 @@ from app.quick_worker import (
     request_drain,
     resume_after_drain,
 )
-from app.notifications import NotificationService
+from app.notifications.feishu.service import NotificationService
 from app.web.routes import STATIC_DIR, router as web_router
 from app.api.deliveryline import router as deliveryline_router
 from app.deliveryline import DeliverylineCollaboration, DeliverylineStore

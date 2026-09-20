@@ -1,10 +1,9 @@
 # Fact and review rules
 
-- Apply priority: maintainer or owner's latest confirmation, the current V main report's `重点关注内容`, explicit current-week meeting conclusion, current source report, previous report.
+- Apply priority: maintainer or owner's latest confirmation, the current V main report's `重点关注内容`, explicit current-week meeting conclusion, current source report.
 - Treat every `重点关注内容` item as a priority signal, not automatic proof. Reconcile it with current sources and retain its final disposition in the focus checklist.
 - When the main report declares OKRs, preserve their original title and target text. Assign each current focus item to one primary OKR or to `其他重点工作`; do not duplicate an item across sections merely because it has multiple effects.
 - Mark focus and formal-report items with their actual state. Completed work uses `已处理` or equivalent completed tense; unresolved work retains its next verification or decision state.
-- Mark every previous-week item as continued, updated, closed, or excluded.
 - Separate root cause, preliminary judgment, verification action, and next step.
 - Do not turn “可能修复” into “将修复”, or “待排查” into a conclusion.
 - Interpret terse meeting notes in context; a numbered item may be a follow-up rather than a cause.

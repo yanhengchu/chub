@@ -14,7 +14,7 @@ Chub 插件属于第三方服务层，通过固定 loopback 地址连接同机 C
 
 微信消息的业务含义统一由 Chub 判断。插件不识别业务指令，不选择业务接口，不调用 OpenClaw Agent 或 LLM，也不允许消息正文指定 URL、动作、Session、任务编号、命令或文件路径。
 
-插件同时为 OpenClaw Agent 提供独立的 `chub_get_status`、`chub_send_notification` 和飞书通知原文保护白名单能力；这些能力不并入微信消息调度，微信 Chub 私聊不会调用它们完成任务路由。
+插件不提供 Agent Tool、飞书通知或其他独立业务能力；它只转发符合条件的微信私聊到唯一调度接口。
 
 ## 2. 当前链路
 
@@ -130,13 +130,15 @@ npm test
 实现完成后同步更新源码、静态清单、测试、本文和 Chub 设计文档，再从本目录执行：
 
 ```bash
-openclaw plugins install "$PWD" --force
+openclaw plugins install "$PWD" --force --accept-capabilities
 openclaw gateway restart
 openclaw plugins inspect chub --runtime --json
 openclaw channels status --probe --json
 ```
 
-以上是底层手动命令。Chub 首页的“重启与恢复”使用 `restart` API action；微信端使用 `restart clawbot`。两者只会按完整 `validated` 基线同步 Chub 插件、微信适配器补丁和 OpenClaw 运行产物补丁，再执行 Gateway 重启和最终状态检查。固定同步会明确接受这两个已登记插件声明的能力，不接受调用方提供的任意插件路径、版本或能力范围。
+`--accept-capabilities` 仅用于已在本仓库完成验证的受信本地插件源码；安装前仍应检查清单声明与本次变更范围一致。
+
+以上是底层手动命令。Chub 首页的“重启与恢复”使用 `restart` API action；微信端使用 `restart clawbot`。两者只会按完整 `validated` 基线同步 Chub 插件、微信适配器补丁和 OpenClaw 运行产物补丁，再执行 Gateway 重启和最终状态检查。固定同步只接受插件清单中明确声明的受控表面，不接受调用方提供的任意插件路径、版本或能力范围。
 
 验收时确认插件状态为 `loaded`、运行时来源位于 OpenClaw 扩展目录、部署产物与仓库构建版本一致，并确认微信账号恢复 `running`；存在仓库来源记录时还需确认其指向本目录。不兼容协议变更必须与 Chub 配套切换；版本不一致期间只允许统一失败关闭，不能回退 Agent。
 
@@ -155,7 +157,7 @@ openclaw config set \
   --strict-json
 ```
 
-`baseUrl` 同时供两个 Agent Tool 和微信调度使用。`weixinChubMode` 只是插件侧转发开关；
+`baseUrl` 只供微信调度使用。`weixinChubMode` 是插件侧转发开关；
 微信 Chub 模式还要求 `config/settings.local.yaml` 中的
 `openclaw.weixin_chub_mode.enabled` 为 `true`。修改 Chub 配置后使用 `chub web restart`
 使 Web 配置生效；修改插件配置后使用 `openclaw gateway restart`。
@@ -175,8 +177,7 @@ openclaw channels status --probe --json
 ```
 
 确认插件为 `loaded`、Chub 本机固定地址可达、目标微信账号为 `running`，并在 Chub 首页确认
-Owner 和微信 Chub 模式就绪。Chub 的发布默认配置会开启业务侧开关；只启用 Agent Tool 时，
-需显式关闭 `weixinChubMode` 和 Chub 业务开关。
+Owner 和微信 Chub 模式就绪。
 
 ### 8.2 协议升级同步清单
 
@@ -191,14 +192,6 @@ Owner 和微信 Chub 模式就绪。Chub 的发布默认配置会开启业务侧
 
 macOS、Ubuntu 分别记录实际部署与验收结果。某平台尚未部署新版本时，应明确写“待同步部署”，不能把仓库实现、自动化验证或另一平台验收等同于该平台已生效。
 
-飞书通知原文保护仍需显式启用会话 Hook 访问：
-
-```bash
-openclaw config set \
-  plugins.entries.chub.hooks.allowConversationAccess true \
-  --strict-json
-```
-
 插件配置不得包含访问凭证。
 
 ## 9. 最小验收
@@ -211,7 +204,7 @@ openclaw config set \
 - `pass`、`reply`、`handled` 原样执行，插件不解释业务指令或改写 Chub 文案。
 - Chub 不可达、协议不匹配、响应非法或可信路由缺失时失败关闭，不回退 Agent。
 - 重复投递不产生第二次业务副作用。
-- `chub_get_status`、`chub_send_notification` 与飞书原文保护没有退化。
+- 不注册 Agent Tool，不访问飞书通知接口。
 
 普通文字、可信语音和 v3 插件已在 macOS、Ubuntu 完成真实验收。Session 指令、状态格式、Quick Worker、翻译和任务级重启是 Chub 内部业务；它们不改变插件协议时无需重建插件，具体回归状态由能力清单和接入设计维护。
 

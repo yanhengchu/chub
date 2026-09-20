@@ -50,9 +50,11 @@ from app.automations.runner import (
     _output_path,
     _run_linked_documents,
     _run_browser_task,
+    _heading_range_usage,
     _validate_download,
     _weekly_report_download_task,
     _weekly_report_input_root,
+    revalidate_weekly_inputs,
     run_automation,
 )
 from app.automations.weekly_validation import (
@@ -522,7 +524,9 @@ def test_extract_linked_documents_accepts_changing_current_document_addresses(
     assert len([document for document in documents if not document.is_background]) == 5
 
 
-def test_extract_linked_documents_requires_background_reference(tmp_path: Path) -> None:
+def test_extract_linked_documents_accepts_five_current_documents_without_reference(
+    tmp_path: Path,
+) -> None:
     source = tmp_path / "weekly.md"
     source.write_text(
         """\
@@ -537,12 +541,14 @@ def test_extract_linked_documents_requires_background_reference(tmp_path: Path) 
     )
     template = load_linked_documents_extension("v-weekly-report-linked-documents")
 
-    with pytest.raises(ExtensionFailed, match="上周参考不足：需要 1 份，实际 0 份"):
-        extract_linked_documents(
-            source,
-            "https://tenant.feishu.cn/wiki/source",
-            template,
-        )
+    documents = extract_linked_documents(
+        source,
+        "https://tenant.feishu.cn/wiki/source",
+        template,
+    )
+
+    assert len(documents) == 5
+    assert all(not document.is_background for document in documents)
 
 
 def test_weekly_linked_document_rejects_current_date_outside_period_declaration(
@@ -767,6 +773,7 @@ tasks:
 def test_run_automation_reports_partial_linked_download_failure(
     settings: Settings,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config_file = tmp_path / "automations.yaml"
     config_file.write_text(
@@ -784,6 +791,7 @@ tasks:
     settings.automations.state_dir = tmp_path / "state"
     settings.automations.runtime_dir = tmp_path / "runtime"
     settings.automations.artifacts_dir = tmp_path / "artifacts"
+    monkeypatch.setattr(runner, "WEEKLY_REPORTS_ROOT", tmp_path / "weekly-reports")
     source = tmp_path / "weekly.md"
     source.write_text("# 各端周报\n", encoding="utf-8")
     linked_results = [
@@ -852,6 +860,7 @@ def test_weekly_report_downloads_use_the_active_period_input_directory(
 def test_weekly_report_state_records_period_and_main_document(
     settings: Settings,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config_file = tmp_path / "automations.yaml"
     config_file.write_text(
@@ -870,6 +879,7 @@ tasks:
     settings.automations.state_dir = tmp_path / "state"
     settings.automations.runtime_dir = tmp_path / "runtime"
     settings.automations.artifacts_dir = tmp_path / "artifacts"
+    monkeypatch.setattr(runner, "WEEKLY_REPORTS_ROOT", tmp_path / "weekly-reports")
     output = tmp_path / "国内业务周报.md"
     output.write_text("# 周报", encoding="utf-8")
 
@@ -943,6 +953,8 @@ tasks:
     assert (input_root.parent / "manifest.json").is_file()
     assert weekly_reports.weekly_report_inputs_available(period) is True
     assert not list(input_root.parent.glob(".inputs-run-1.*"))
+    assert len(result.linked_documents) == 5
+    assert all(not document.is_background for document in result.linked_documents)
 
     mapping = json.loads((input_root.parent / "mapping.json").read_text(encoding="utf-8"))
     manifest = json.loads((input_root.parent / "manifest.json").read_text(encoding="utf-8"))
@@ -953,7 +965,6 @@ tasks:
     source_urls = {item["role"]: item.get("source_url") for item in manifest["documents"]}
     assert source_urls == {
         "main-report": "https://tenant.feishu.cn/wiki/source",
-        "previous-report": "https://tenant.feishu.cn/wiki/previous",
         "music-product": "https://tenant.feishu.cn/docx/current-1",
         "product": "https://tenant.feishu.cn/wiki/current-2",
         "operations": "https://tenant.feishu.cn/wiki/current-3",
@@ -988,6 +999,87 @@ def test_weekly_input_publish_restores_inputs_and_marker_after_replace_failure(
     assert (input_root / "previous.md").read_text(encoding="utf-8") == "previous"
     assert marker.read_text(encoding="utf-8") == "previous-marker"
     assert staging_root.is_dir()
+
+
+def test_weekly_input_publish_restores_pending_inputs_after_metadata_failure(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "weekly"
+    input_root = workspace / "inputs"
+    pending_root = workspace / "pending-inputs"
+    input_root.mkdir(parents=True)
+    (input_root / "previous.md").write_text("previous", encoding="utf-8")
+    (pending_root / "linked").mkdir(parents=True)
+    (pending_root / "manual-fix.md").write_text("manual fix", encoding="utf-8")
+    (pending_root / "linked" / "current.md").write_text("current", encoding="utf-8")
+    marker = workspace / ".inputs-updated"
+    marker.write_text("previous-marker", encoding="utf-8")
+    mapping = workspace / "mapping.json"
+    manifest = workspace / "manifest.json"
+    mapping.write_text('{"version": "previous"}', encoding="utf-8")
+    manifest.write_text('{"version": "previous"}', encoding="utf-8")
+    mapping_staging = workspace / ".mapping-run-1.staging"
+    manifest_staging = workspace / ".manifest-run-1.staging"
+    mapping_staging.write_text('{"version": "current"}', encoding="utf-8")
+    manifest_staging.write_text('{"version": "current"}', encoding="utf-8")
+    original_replace = runner.os.replace
+
+    def fail_mapping_publish(source, destination):
+        if Path(source) == mapping_staging and Path(destination) == mapping:
+            raise OSError("mapping publish failed")
+        return original_replace(source, destination)
+
+    with patch("app.automations.runner.os.replace", side_effect=fail_mapping_publish):
+        with pytest.raises(AutomationFailed, match="输入发布失败"):
+            _publish_weekly_inputs(
+                pending_root,
+                input_root,
+                "run-1",
+                mapping_staging=mapping_staging,
+                manifest_staging=manifest_staging,
+            )
+
+    assert (input_root / "previous.md").read_text(encoding="utf-8") == "previous"
+    assert (pending_root / "manual-fix.md").read_text(encoding="utf-8") == "manual fix"
+    assert (pending_root / "linked" / "current.md").read_text(encoding="utf-8") == "current"
+    assert marker.read_text(encoding="utf-8") == "previous-marker"
+    assert mapping.read_text(encoding="utf-8") == '{"version": "previous"}'
+    assert manifest.read_text(encoding="utf-8") == '{"version": "previous"}'
+
+
+@pytest.mark.parametrize("heading", ["五、VIVO国内", "六、VIVO国内"])
+def test_client_heading_range_accepts_a_shifted_section_number(
+    tmp_path: Path,
+    heading: str,
+) -> None:
+    source = tmp_path / "client.md"
+    source.write_text(
+        f"# {heading}\n\n内容\n\n# 七、小米国内\n",
+        encoding="utf-8",
+    )
+
+    usage, resolved = _heading_range_usage(source, "client")
+
+    assert usage == {
+        "mode": "heading-range",
+        "start_heading": heading,
+        "end_heading": "七、小米国内",
+    }
+    assert resolved["start"]["configured"] == "VIVO国内"
+    assert resolved["start"]["matched_original"] == heading
+
+
+def test_client_heading_range_rejects_multiple_vivo_domestic_sections(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "client.md"
+    source.write_text(
+        "# 五、VIVO国内\n\n内容\n\n# 六、VIVO国内\n\n内容\n\n# 七、小米国内\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AutomationFailed, match="client 来源章节边界无法唯一确定"):
+        _heading_range_usage(source, "client")
 
 
 def test_weekly_report_rejects_old_period_without_replacing_inputs(
@@ -1040,11 +1132,105 @@ tasks:
     assert (input_root / "保留材料.md").is_file()
     assert not (input_root.parent / ".inputs-updated").exists()
     assert not list(input_root.parent.glob(".inputs-run-1.*"))
+    pending_root = input_root.parent / "pending-inputs"
+    assert result.pending_inputs_available is True
+    assert (pending_root / "国内业务周报.md").is_file()
+    assert (pending_root / "linked" / "vivo音乐产品周报.md").is_file()
+
+
+def test_weekly_report_revalidation_publishes_manually_corrected_pending_inputs(
+    settings: Settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_file = tmp_path / "automations.yaml"
+    config_file.write_text(
+        """\
+version: 2
+tasks:
+  weekly-report:
+    name: 国内业务周报
+    url: https://tenant.feishu.cn/wiki/source
+    extension: v-weekly-report-linked-documents
+""",
+        encoding="utf-8",
+    )
+    settings.automations.config_file = config_file
+    settings.automations.state_dir = tmp_path / "state"
+    settings.automations.runtime_dir = tmp_path / "runtime"
+    settings.automations.artifacts_dir = tmp_path / "artifacts"
+    root = tmp_path / "weekly-reports"
+    monkeypatch.setattr(runner, "WEEKLY_REPORTS_ROOT", root)
+    monkeypatch.setattr(weekly_reports, "WEEKLY_REPORTS_ROOT", root)
+    period = reporting_period()
+
+    def fake_run(task, _settings, _run_id, *, output_root=None):
+        target = output_root / task.output.directory / task.output.filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if task.name == "国内业务周报":
+            target.write_text(
+                "# V 国内业务周报\n\n# 各端周报\n"
+                "[vivo音乐产品周报](https://tenant.feishu.cn/docx/current-1)\n"
+                "[vivo产品周报](https://tenant.feishu.cn/wiki/current-2)\n"
+                "[vivo运营周报](https://tenant.feishu.cn/wiki/current-3)\n"
+                "[移动端周会](https://tenant.feishu.cn/wiki/current-4)\n"
+                "[服务端开发部周报](https://tenant.feishu.cn/docx/current-5)\n",
+                encoding="utf-8",
+            )
+        elif task.name == "vivo音乐产品周报":
+            target.write_text(
+                "# vivo音乐产品周报\n\n## 日期：2026-01-01至2026-01-07\n",
+                encoding="utf-8",
+            )
+        elif task.name == "移动端周会":
+            target.write_text(
+                f"# 移动端周会\n\n## 日期：{period}\n\n"
+                "# 六、VIVO国内\n\n内容\n\n# 七、小米国内\n",
+                encoding="utf-8",
+            )
+        elif task.name == "服务端开发部周报":
+            target.write_text(
+                f"# 服务端开发部周报\n\n## 日期：{period}\n\n"
+                "# 一、南京服务端 @薛峰\n\n内容\n\n# 二、其他服务端\n",
+                encoding="utf-8",
+            )
+        else:
+            target.write_text(f"# {task.name}\n\n## 日期：{period}\n", encoding="utf-8")
+        return target, target.stat().st_size, False
+
+    with patch("app.automations.runner._run_task_once", side_effect=fake_run):
+        initial = run_automation(settings, "weekly-report", run_id="download-1")
+
+    input_root = root / period / "inputs"
+    pending_root = input_root.parent / "pending-inputs"
+    assert initial.status == "waiting"
+    assert initial.pending_inputs_available is True
+    pending_music = pending_root / "linked" / "vivo音乐产品周报.md"
+    assert pending_music.is_file()
+    pending_music.write_text(
+        f"# vivo音乐产品周报\n\n## 日期：{period}\n", encoding="utf-8"
+    )
+
+    result = revalidate_weekly_inputs(
+        settings, "weekly-report", run_id="revalidate-1"
+    )
+
+    assert result.status == "success"
+    assert result.validation_status == "passed"
+    assert result.pending_inputs_available is False
+    assert not pending_root.exists()
+    assert (input_root / "国内业务周报.md").is_file()
+    assert (input_root / "linked" / "vivo音乐产品周报.md").is_file()
+    assert (input_root.parent / "mapping.json").is_file()
+    assert (input_root.parent / "manifest.json").is_file()
+    assert (input_root.parent / ".inputs-updated").is_file()
+    assert weekly_reports.weekly_report_inputs_available(period) is True
 
 
 def test_manager_resets_weekly_report_display_on_a_new_period(
     settings: Settings,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     task = automation_data()["tasks"]["monthly-report"]
     task.update(
@@ -1066,6 +1252,11 @@ def test_manager_resets_weekly_report_display_on_a_new_period(
     settings.automations.state_dir = tmp_path / "state"
     settings.automations.runtime_dir = tmp_path / "runtime"
     settings.automations.artifacts_dir = tmp_path / "artifacts"
+    root = tmp_path / "weekly-reports"
+    monkeypatch.setattr(weekly_reports, "WEEKLY_REPORTS_ROOT", root)
+    (root / "2026-08-10至2026-08-16" / "pending-inputs").mkdir(
+        parents=True
+    )
     AutomationStateStore(settings.automations.state_dir).write(
         AutomationState(
             task_id="weekly-report",
@@ -1101,6 +1292,7 @@ def test_manager_resets_weekly_report_display_on_a_new_period(
     assert weekly.main_document_name == "V 国内业务周报"
     assert weekly.state.status == "idle"
     assert weekly.state.linked_documents == []
+    assert weekly.state.pending_inputs_available is True
 
 
 def test_manager_keeps_an_active_weekly_report_visible_across_the_boundary(
