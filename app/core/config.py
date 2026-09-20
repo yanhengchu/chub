@@ -320,6 +320,7 @@ class Settings(StrictModel):
     network_recovery: NetworkRecoveryConfig = NetworkRecoveryConfig()
     openclaw: OpenClawConfig = OpenClawConfig()
     _local_config_fallback: tuple[str, str] | None = PrivateAttr(default=None)
+    _local_config_warning: tuple[str, str] | None = PrivateAttr(default=None)
 
     def resolve_runtime_paths(self) -> "Settings":
         if not self.logs.file.is_absolute():
@@ -467,11 +468,18 @@ def _merge_settings(base: dict[str, Any], override: dict[str, Any]) -> dict[str,
     return merged
 
 
-def _reject_release_controlled_local_override(override: dict[str, Any]) -> None:
+def _without_release_controlled_local_override(
+    override: dict[str, Any],
+) -> tuple[dict[str, Any], bool]:
     """Keep the installed node's displayed version tied to tracked source."""
-    app = override.get("app")
-    if isinstance(app, dict) and "version" in app:
-        raise RuntimeError("Local configuration cannot override app.version")
+    sanitized = copy.deepcopy(override)
+    app = sanitized.get("app")
+    if not isinstance(app, dict) or "version" not in app:
+        return sanitized, False
+    app.pop("version")
+    if not app:
+        sanitized.pop("app")
+    return sanitized, True
 
 
 def _local_config_error_summary(error: RuntimeError) -> str:
@@ -485,8 +493,6 @@ def _local_config_error_summary(error: RuntimeError) -> str:
         return "invalid YAML"
     if message.startswith("Configuration root must be a mapping"):
         return "root is not a mapping"
-    if message.startswith("Local configuration cannot override app.version"):
-        return "app.version is release-controlled"
     if isinstance(error.__cause__, ValidationError):
         locations = []
         for item in error.__cause__.errors(include_url=False):
@@ -508,16 +514,32 @@ def _record_local_config_fallback(
     return settings
 
 
+def _record_local_config_warning(
+    settings: Settings, path: Path, reason: str
+) -> Settings:
+    settings._local_config_warning = (path.name, reason)
+    return settings
+
+
 def log_local_config_fallback(settings: Settings) -> None:
     fallback = settings._local_config_fallback
-    if fallback is None:
+    if fallback is not None:
+        settings._local_config_fallback = None
+        file_name, reason = fallback
+        logging.getLogger("hub.config").error(
+            "Ignoring local configuration override %s: %s; using config/settings.yaml",
+            file_name,
+            reason,
+        )
+    warning = settings._local_config_warning
+    if warning is None:
         return
-    settings._local_config_fallback = None
-    file_name, reason = fallback
-    logging.getLogger("hub.config").error(
-        "Ignoring local configuration override %s: %s; using config/settings.yaml",
-        file_name,
+    settings._local_config_warning = None
+    file_name, reason = warning
+    logging.getLogger("hub.config").warning(
+        "Ignoring %s in local configuration override %s; applying its other fields",
         reason,
+        file_name,
     )
 
 
@@ -548,12 +570,19 @@ def load_settings(
         )
 
     try:
-        _reject_release_controlled_local_override(local_data)
-        return _validate_settings(_merge_settings(base_data, local_data))
+        sanitized_local_data, ignored_version = _without_release_controlled_local_override(
+            local_data
+        )
+        settings = _validate_settings(_merge_settings(base_data, sanitized_local_data))
     except RuntimeError as exc:
         return _record_local_config_fallback(
             base_settings, local_path, _local_config_error_summary(exc)
         )
+    if ignored_version:
+        return _record_local_config_warning(
+            settings, local_path, "release-controlled app.version"
+        )
+    return settings
 
 
 @lru_cache(maxsize=1)

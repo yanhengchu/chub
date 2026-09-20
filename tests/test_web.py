@@ -761,6 +761,7 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert "构建标识：${latestOperation.build_id}" in script.text
     assert "release_note: deploymentPackageReleaseNote.value.trim()" in script.text
     assert '"/api/settings/deployment-package/release-note"' in script.text
+    assert '"/api/settings/deployment-package/release-preview"' in script.text
     assert "let generationRequested = false;" in script.text
     assert 'const generationRequired = () => deploymentPackageReleaseNote.value.trim() === "";' in script.text
     assert "const releaseNoteDraftToken = crypto.randomUUID();" in script.text
@@ -771,6 +772,8 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert '"/api/settings/deployment-package/build", {' in script.text
     assert 'method: "PUT", headers: settingsHeaders(true)' not in script.text
     assert "最近一次成功发布的产物如下。" in script.text
+    assert "发布后 ${preview.tag_name} 将指向当前 HEAD" in script.text
+    assert "不一致项：${preview.mismatched_declarations.join" in script.text
     assert '"/api/settings/deployment-package/open-output"' in script.text
     assert "随包模块：\\n${moduleSummary}" in script.text
     assert 'release_version: deploymentPackageChubVersion.value.trim()' in script.text

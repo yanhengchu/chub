@@ -282,7 +282,7 @@ class PluginLifecycleService:
             # execution dependency.  The page uses this projection only to
             # explain why newly received refinement tasks are dormant.
             try:
-                result["execution_ready"] = self.weixin_translation.runtime_available()
+                result["execution_ready"] = self.weixin_translation.execution_available()
             except (ApiError, OSError):
                 result["execution_ready"] = None
             except Exception:

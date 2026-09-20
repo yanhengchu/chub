@@ -583,6 +583,70 @@ def test_translation_stays_uninitialized_when_runtime_implementation_is_disabled
     assert "Unable to initialize Weixin translation execution settings" not in caplog.text
 
 
+def test_translation_stays_uninitialized_when_runtime_has_no_reasoning_levels(
+    settings, caplog
+) -> None:
+    class NoReasoningRuntimeSessionManager:
+        runtime_id = "bluecode"
+
+        def require_runtime_submission(self, runtime_id: str) -> None:
+            assert runtime_id == "bluecode"
+
+        def read_model_catalog(self, *, implementation_id=None):
+            assert implementation_id is None
+            return SimpleNamespace(
+                models=(SimpleNamespace(id="bluecode-model", default_level=None),),
+                default_model="bluecode-model",
+                default_reasoning_effort=None,
+            )
+
+    quick_interactions = MagicMock()
+    quick_interactions.deferred_restart = None
+
+    with caplog.at_level("WARNING"):
+        manager = WeixinTranslationManager(
+            settings.openclaw.weixin_chub_mode,
+            NoReasoningRuntimeSessionManager(),
+            quick_interactions,
+        )
+        manager.start_worker_recovery()
+
+    status = manager.status()
+    assert status.runtime_id == "bluecode"
+    assert status.runtime_available is True
+    assert status.execution_settings_available is False
+    assert status.execution_settings_unavailable_reason == (
+        "当前 Runtime 不支持微信润色所需的推理等级。"
+    )
+    assert status.model is None
+    assert status.reasoning_effort is None
+    assert "Unable to initialize Weixin translation execution settings" not in caplog.text
+
+
+def test_runtime_switch_to_no_reasoning_levels_clears_stale_execution_settings(
+    settings, caplog
+) -> None:
+    manager, ai_session_manager, _quick_interactions = manager_without_worker(settings)
+    manager.set_execution_settings("codex", "saved-model", "low")
+    ai_session_manager.runtime_id = "bluecode"
+    ai_session_manager.read_model_catalog.return_value = SimpleNamespace(
+        models=(SimpleNamespace(id="bluecode-model", default_level=None),),
+        default_model="bluecode-model",
+        default_reasoning_effort=None,
+    )
+
+    with caplog.at_level("WARNING"):
+        manager.reconcile_execution_settings()
+
+    status = manager.status()
+    assert status.runtime_id == "bluecode"
+    assert status.execution_settings_available is False
+    assert status.model is None
+    assert status.reasoning_effort is None
+    assert manager._state.execution_settings_implementation_id is None
+    assert "Unable to initialize Weixin translation execution settings" not in caplog.text
+
+
 def test_translation_reconciles_stale_model_after_runtime_catalog_changes(settings) -> None:
     manager, ai_session_manager, _quick_interactions = manager_without_worker(settings)
     manager.set_execution_settings("codex", "saved-model", "low")

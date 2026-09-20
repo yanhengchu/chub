@@ -44,7 +44,7 @@ python3 -m venv .venv
 .venv/bin/python main.py
 ```
 
-`config/settings.yaml` 是随项目发布、可独立运行的完整默认配置。`config/settings.local.yaml` 是可选且不提交的本机覆盖层；仅在需要调整设备标识、端口、工作目录、可信网络或第三方能力时创建，**不得覆盖 `app.version`**，以使运行节点版本始终对应已发布源码。覆盖文件读取或校验失败，或包含该受控字段时，Chub 在启动后的 `logs/hub.log` 记录脱敏错误并完整忽略该覆盖层，继续使用 `settings.yaml`；不会改写本机文件。
+`config/settings.yaml` 是随项目发布、可独立运行的完整默认配置。`config/settings.local.yaml` 是可选且不提交的本机覆盖层；仅在需要调整设备标识、端口、工作目录、可信网络或第三方能力时创建，**不得覆盖 `app.version`**，以使运行节点版本始终对应已发布源码。覆盖文件读取或校验失败时，Chub 在启动后的 `logs/hub.log` 记录脱敏错误并完整忽略该覆盖层；若仅包含受控的 `app.version`，则记录警告、忽略这一字段并继续应用其余合法本机设置。不会自动改写本机文件。
 
 Chub 始终提供 loopback 访问；启用默认的 Tailnet 可信访问后，会在启动时自动发现并监听当前可用的 Tailscale 地址。Tailscale 未启动、没有可用地址或地址已变化时，Chub 保持仅 loopback 监听并正常运行，这不表示 Web 启动失败；下次 Web 启动会再次尝试发现。不要配置公网监听或普通局域网监听。Android 通过同一 Tailnet 的浏览器访问 Chub；它不是原生 Android 应用或离线 PWA。
 

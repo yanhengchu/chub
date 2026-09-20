@@ -53,10 +53,10 @@ async def test_plugin_list_keeps_running_when_weixin_runtime_status_is_unknown(
 ) -> None:
     app = create_app(settings)
 
-    def unavailable() -> bool:
+    def unavailable() -> bool | None:
         raise OSError("runtime status unavailable")
 
-    monkeypatch.setattr(app.state.weixin_translation, "runtime_available", unavailable)
+    monkeypatch.setattr(app.state.weixin_translation, "execution_available", unavailable)
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:

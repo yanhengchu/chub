@@ -1253,59 +1253,93 @@ class AiSessionManager:
         permission_mode: PermissionMode | None = None,
         model: str | None = None,
         reasoning_effort: str | None = None,
+        *,
+        creation_request_id: str | None = None,
+        creation_request_fingerprint: str | None = None,
     ) -> SessionInfo:
-        try:
-            defaults = self.runtime_settings_store.read_general()
-        except RuntimeSettingsStoreUnavailable as exc:
-            raise ApiError(
-                503,
-                "ai_runtime_settings_unavailable",
-                "无法读取新建 Session 默认配置，请稍后重试。",
-            ) from exc
-        runtime_id, implementation_id = self.select_new_session_runtime()
-        if permission_mode is None or model is None or reasoning_effort is None:
-            permission_mode = permission_mode or defaults.new_session_permission
-            model = model if model is not None else defaults.model
-            reasoning_effort = (
-                reasoning_effort
-                if reasoning_effort is not None
-                else defaults.reasoning_effort
+        # This is the only shared writer for browser Session creation.  Keep
+        # lookup and persistence in one critical section so duplicate HTTP
+        # delivery with the same request ID replays one logical Session.
+        with self._lock:
+            self._require_store()
+            if creation_request_id is not None:
+                if creation_request_fingerprint is None:
+                    raise ValueError(
+                        "Session creation request IDs require a request fingerprint"
+                    )
+                existing = next(
+                    (
+                        session
+                        for session in self.store.list()
+                        if session.creation_request_id == creation_request_id
+                    ),
+                    None,
+                )
+                if existing is not None:
+                    if (
+                        existing.creation_request_fingerprint
+                        != creation_request_fingerprint
+                    ):
+                        raise ApiError(
+                            409,
+                            "session_creation_request_conflict",
+                            "本次 Session 创建请求与已有结果不一致，请关闭窗口后重新创建。",
+                        )
+                    return self._public(existing)
+            try:
+                defaults = self.runtime_settings_store.read_general()
+            except RuntimeSettingsStoreUnavailable as exc:
+                raise ApiError(
+                    503,
+                    "ai_runtime_settings_unavailable",
+                    "无法读取新建 Session 默认配置，请稍后重试。",
+                ) from exc
+            runtime_id, implementation_id = self.select_new_session_runtime()
+            if permission_mode is None or model is None or reasoning_effort is None:
+                permission_mode = permission_mode or defaults.new_session_permission
+                model = model if model is not None else defaults.model
+                reasoning_effort = (
+                    reasoning_effort
+                    if reasoning_effort is not None
+                    else defaults.reasoning_effort
+                )
+            if permission_mode == "ask":
+                raise ApiError(
+                    409,
+                    "quick_interaction_ask_not_supported",
+                    "快速交互不支持 Ask for approval，请选择只读、自动审核或完全访问权限。",
+                )
+            self.validate_model(
+                model,
+                reasoning_effort,
+                implementation_id=implementation_id,
             )
-        if permission_mode == "ask":
-            raise ApiError(
-                409,
-                "quick_interaction_ask_not_supported",
-                "快速交互不支持 Ask for approval，请选择只读、自动审核或完全访问权限。",
+            workspace = next(
+                (item for item in self.workspaces() if item.id == workspace_id),
+                None,
             )
-        self.validate_model(
-            model,
-            reasoning_effort,
-            implementation_id=implementation_id,
-        )
-        workspace = next(
-            (item for item in self.workspaces() if item.id == workspace_id),
-            None,
-        )
-        if workspace is None or not workspace.available:
-            raise ApiError(
-                400,
-                "workspace_unavailable",
-                "Selected workspace is unavailable",
+            if workspace is None or not workspace.available:
+                raise ApiError(
+                    400,
+                    "workspace_unavailable",
+                    "Selected workspace is unavailable",
+                )
+            session = AiSession(
+                id=str(uuid.uuid4()),
+                creation_request_id=creation_request_id,
+                creation_request_fingerprint=creation_request_fingerprint,
+                runtime_id=runtime_id,
+                implementation_id=implementation_id,
+                workspace_id=workspace.id,
+                workspace_name=workspace.name,
+                cwd=Path(workspace.path),
+                permission_mode=permission_mode,
+                model=model,
+                reasoning_effort=reasoning_effort,
+                activity="idle",
             )
-        session = AiSession(
-            id=str(uuid.uuid4()),
-            runtime_id=runtime_id,
-            implementation_id=implementation_id,
-            workspace_id=workspace.id,
-            workspace_name=workspace.name,
-            cwd=Path(workspace.path),
-            permission_mode=permission_mode,
-            model=model,
-            reasoning_effort=reasoning_effort,
-            activity="idle",
-        )
-        self.store.save(session)
-        return self._public(session)
+            self.store.save(session)
+            return self._public(session)
 
     def create_translation_session(self) -> SessionInfo:
         runtime_id, implementation_id = self.select_new_session_runtime(

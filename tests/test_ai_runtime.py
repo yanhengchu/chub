@@ -1,4 +1,5 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import json
 import logging
 import sqlite3
@@ -695,6 +696,57 @@ def test_session_manager_pins_new_sessions_to_the_default_implementation(
     assert manager.get_session(first.id).implementation_id == "codex-runtime-dev"
     assert manager.session_implementation_id(first.id) == "codex-runtime-dev"
     assert manager.get_session(second.id).implementation_id == "codex-010000"
+
+
+def test_session_creation_request_id_replays_one_session_for_concurrent_posts(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    request_id = "e9ec2869-d4e5-4472-bd9e-046a39a7e9f1"
+    request_fingerprint = "a" * 64
+    barrier = threading.Barrier(2)
+
+    def create() -> str:
+        barrier.wait()
+        return manager.create_session(
+            "chub",
+            permission_mode="full-access",
+            creation_request_id=request_id,
+            creation_request_fingerprint=request_fingerprint,
+        ).id
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        session_ids = list(executor.map(lambda _index: create(), range(2)))
+
+    assert len(set(session_ids)) == 1
+    stored = manager.store.list()
+    assert len(stored) == 1
+    assert stored[0].creation_request_id == request_id
+    assert stored[0].creation_request_fingerprint == request_fingerprint
+
+
+def test_session_creation_request_id_rejects_a_different_request(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    request_id = "e9ec2869-d4e5-4472-bd9e-046a39a7e9f1"
+    manager.create_session(
+        "chub",
+        permission_mode="full-access",
+        creation_request_id=request_id,
+        creation_request_fingerprint="a" * 64,
+    )
+
+    with pytest.raises(ApiError) as error:
+        manager.create_session(
+            "chub",
+            permission_mode="read-only",
+            creation_request_id=request_id,
+            creation_request_fingerprint="b" * 64,
+        )
+
+    assert error.value.code == "session_creation_request_conflict"
+    assert len(manager.store.list()) == 1
 
 
 def test_session_manager_pins_sessions_to_their_runtime_and_implementation(

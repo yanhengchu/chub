@@ -118,9 +118,9 @@ def test_release_build_contains_formal_modules_and_excludes_local_state(
 
     assert artifact.parent == settings.deployment_package.artifacts_dir
     assert len(digest) == 64
-    assert built.build_id == "{}-{}".format(
-        built.built_at.strftime("%Y%m%d%H%M"),
-        "a" * 12,
+    assert re.fullmatch(
+        rf"{built.built_at.strftime('%Y%m%d%H%M%S%f')}-{'a' * 12}-[a-f0-9]{{8}}",
+        built.build_id,
     )
     with zipfile.ZipFile(artifact) as archive:
         names = set(archive.namelist())
@@ -233,6 +233,37 @@ def test_release_build_contains_formal_modules_and_excludes_local_state(
         text=True,
     )
     assert imported.returncode == 0, imported.stderr
+
+
+def test_same_commit_rebuilds_use_distinct_microsecond_build_identifiers(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings.deployment_package.artifacts_dir = tmp_path / "releases"
+    service = DeploymentPackageService(settings)
+    source_versions = service._source_versions()
+    configuration = DeploymentPackageConfiguration(
+        chub_release_version=source_versions.chub,
+        runtime_implementation_id="codex-010001",
+        runtime_release_version=source_versions.runtime,
+        runtime_description="正式 Runtime。",
+        weixin_release_version=source_versions.weixin,
+        release_note="同版本重发。",
+    )
+    moments = iter(
+        (
+            datetime(2026, 9, 20, 8, 0, 0, 123456, tzinfo=timezone.utc),
+            datetime(2026, 9, 20, 8, 0, 0, 654321, tzinfo=timezone.utc),
+        )
+    )
+    monkeypatch.setattr("app.services.deployment_package._now", lambda: next(moments))
+
+    first = service._build(configuration, source_commit="a" * 40)
+    second = service._build(configuration, source_commit="a" * 40)
+
+    assert first.build_id != second.build_id
+    assert first.artifact != second.artifact
 
 
 def test_release_configuration_persists_without_changing_app_version(
@@ -691,6 +722,68 @@ def test_release_rejects_a_version_that_differs_from_committed_sources(
         service._require_git_release_baseline(configuration)
 
     assert error.value.code == "release_source_version_mismatch"
+    assert "Chub 项目版本" in error.value.message
+
+
+def test_release_preview_reports_tag_movement_and_declaration_mismatches(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings.deployment_package.artifacts_dir = tmp_path / "releases"
+    service = DeploymentPackageService(settings)
+    monkeypatch.setattr(
+        service,
+        "_all_source_version_declarations",
+        lambda: ("1.0.1",) * 6,
+    )
+
+    def git(*arguments: str, **_kwargs: object) -> str:
+        if arguments == ("rev-parse", "HEAD"):
+            return "a" * 40
+        if arguments == ("rev-parse", "chub-v1.0.1^{commit}"):
+            return "b" * 40
+        if arguments == ("rev-parse", "chub-v1.0.2^{commit}"):
+            return ""
+        raise AssertionError(arguments)
+
+    monkeypatch.setattr(service, "_git", git)
+
+    same = service.release_preview("1.0.1")
+    upgrade = service.release_preview("1.0.2")
+
+    assert same.release_kind == "same_version_republish"
+    assert same.head_commit == "a" * 40
+    assert same.current_tag_commit == "b" * 40
+    assert same.mismatched_declarations == ()
+    assert upgrade.release_kind == "version_upgrade"
+    assert upgrade.current_tag_commit is None
+    assert upgrade.mismatched_declarations == (
+        "Chub 项目版本",
+        "Codex Runtime 版本",
+        "微信编排版本",
+        "Chub 默认配置版本",
+        "Codex Runtime Chub 兼容版本",
+        "微信编排 Chub 兼容版本",
+    )
+
+    history = settings.deployment_package.artifacts_dir / "history"
+    history.mkdir(parents=True)
+    (history / "chub-release-1.0.2.json").write_text(
+        json.dumps(
+            {
+                "release_version": "1.0.2",
+                "tag_name": "chub-v1.0.2",
+                "commit": "c" * 40,
+                "built_at": "2026-09-20T16:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    blocked = service.release_preview("1.0.1")
+
+    assert blocked.release_kind == "requires_repair"
 
 
 def test_release_rejects_without_a_local_git_committer_identity(

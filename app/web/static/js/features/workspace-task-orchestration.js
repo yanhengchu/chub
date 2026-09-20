@@ -268,14 +268,20 @@
       processingTrigger.setAttribute("aria-label", `润色模式：${processingValue.textContent}`);
       const runtimeId = typeof status.runtime_id === "string" ? status.runtime_id : "";
       const runtimeAvailable = status.runtime_available === true;
-      [runtimeField, permissionField, modelField, reasoningField].forEach((field) => {
-        field.hidden = !runtimeAvailable;
+      const executionSettingsAvailable = status.execution_settings_available;
+      const executionSettingsUnavailable = executionSettingsAvailable === false;
+      const executionSettingsUnknown = executionSettingsAvailable == null;
+      runtimeField.hidden = !runtimeAvailable;
+      [permissionField, modelField, reasoningField].forEach((field) => {
+        field.hidden = !runtimeAvailable || executionSettingsUnavailable;
       });
       const runtimeLabel = runtimeAvailable ? runtimeId : (runtimeId || "未配置");
       runtimeStaticDisplay.querySelector("span").textContent = runtimeLabel;
       runtimeStaticDisplay.setAttribute("aria-label", `翻译 Runtime：${runtimeLabel}`);
       runtimeDescription.textContent = runtimeAvailable
-        ? "用于之后新提交的文本优化任务；Runtime 由通用默认设置决定。"
+        ? (executionSettingsUnavailable
+          ? (status.execution_settings_unavailable_reason || "当前 Runtime 暂不支持微信润色。")
+          : "用于之后新提交的文本优化任务；Runtime 由通用默认设置决定。")
         : "尚未导入可用于文本优化的 Runtime；导入并启用后会自动初始化。";
       const modelOptions = [];
       if (status.model && !models.some((item) => item.id === status.model)) {
@@ -315,6 +321,12 @@
         notes.push(status.execution_settings_recovery_error || "微信润色配置待恢复");
       }
       if (!runtimeAvailable) notes.push("文本优化尚未初始化，不会接收润色任务");
+      if (executionSettingsUnavailable) {
+        notes.push(status.execution_settings_unavailable_reason || "当前 Runtime 暂不支持微信润色");
+      }
+      if (runtimeAvailable && executionSettingsUnknown) {
+        notes.push("微信润色执行设置暂时无法确认");
+      }
       if (runtimeAvailable && !catalogAvailable) {
         notes.push("模型目录暂时无法读取，已保留当前执行配置");
       }
@@ -324,13 +336,15 @@
         (status.native_cleanup_retry_required || status.execution_settings_recovery_required) ? "error" : "",
       );
       modelPicker.setDisabled(
-        saving || loading || !runtimeAvailable || !catalogAvailable || (models.length === 0 && !status.model),
+        saving || loading || !runtimeAvailable || executionSettingsAvailable !== true
+          || !catalogAvailable || (models.length === 0 && !status.model),
       );
       reasoningPicker.setDisabled(
         saving
         || loading
         || !status.model
         || !runtimeAvailable
+        || executionSettingsAvailable !== true
         || !catalogAvailable,
       );
       processingPicker.setDisabled(saving || loading);
@@ -354,7 +368,10 @@
         ]);
         let nextCatalog = { models: [], default_model: null, default_reasoning_effort: null };
         let nextCatalogAvailable = false;
-        if (nextStatus?.runtime_available === true) {
+        if (
+          nextStatus?.runtime_available === true
+          && nextStatus?.execution_settings_available !== false
+        ) {
           try {
             const loadedCatalog = await apiRequest("/api/ai/models", { cache: "no-store" });
             if (!Array.isArray(loadedCatalog?.models)) {

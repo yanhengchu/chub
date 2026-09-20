@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 from datetime import datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
@@ -63,6 +65,42 @@ def _last_session_activity_at(
     if quick_activity_at is not None:
         return quick_activity_at
     return session.last_activity_at
+
+
+def _session_creation_request_id(value: str | None) -> str | None:
+    if value is None:
+        return None
+    try:
+        parsed = UUID(value)
+    except (ValueError, AttributeError) as exc:
+        raise ApiError(
+            422,
+            "session_creation_request_id_invalid",
+            "Session 创建请求标识无效，请关闭窗口后重新创建。",
+        ) from exc
+    if str(parsed) != value:
+        raise ApiError(
+            422,
+            "session_creation_request_id_invalid",
+            "Session 创建请求标识无效，请关闭窗口后重新创建。",
+        )
+    return value
+
+
+def _session_creation_request_fingerprint(payload: SessionCreateRequest) -> str:
+    request_data = {
+        "workspace_id": payload.workspace_id,
+        "permission_mode": payload.permission_mode,
+        "model": payload.model,
+        "reasoning_effort": payload.reasoning_effort,
+    }
+    encoded = json.dumps(
+        request_data,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 @api_router.get("/sessions", response_model=ApiResponse[SessionListData])
@@ -323,15 +361,36 @@ def list_models(
 def create_session(
     payload: SessionCreateRequest,
     request: Request,
+    creation_request_id_header: str | None = Header(
+        default=None,
+        alias="X-Chub-Session-Creation-Id",
+    ),
 ) -> ApiResponse[SessionInfo]:
+    creation_request_id = _session_creation_request_id(creation_request_id_header)
+    creation_request_fingerprint = (
+        _session_creation_request_fingerprint(payload)
+        if creation_request_id is not None
+        else None
+    )
     try:
         with request.app.state.quick_interactions.session_creation_guard():
-            session = request.app.state.ai_session_manager.create_session(
-                payload.workspace_id,
-                payload.permission_mode,
-                payload.model,
-                payload.reasoning_effort,
-            )
+            create = request.app.state.ai_session_manager.create_session
+            if creation_request_id is None:
+                session = create(
+                    payload.workspace_id,
+                    payload.permission_mode,
+                    payload.model,
+                    payload.reasoning_effort,
+                )
+            else:
+                session = create(
+                    payload.workspace_id,
+                    payload.permission_mode,
+                    payload.model,
+                    payload.reasoning_effort,
+                    creation_request_id=creation_request_id,
+                    creation_request_fingerprint=creation_request_fingerprint,
+                )
     except Exception:
         log_operation(
             request,

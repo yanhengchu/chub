@@ -15,6 +15,7 @@ from app.services.operation_log import log_operation
 from app.services.weixin_translation import TranslationSettingsStatus
 from app.services.deployment_package import (
     DeploymentPackageConfiguration,
+    DeploymentPackageReleasePreview,
     DeploymentPackageStatus,
     FORMAL_CODEX_DESCRIPTION,
     FORMAL_CODEX_IMPLEMENTATION_ID,
@@ -72,6 +73,12 @@ class DeploymentPackageBuildRequest(DeploymentPackageSettingsUpdate):
     @classmethod
     def normalize_release_note(cls, value: str) -> str:
         return value.strip()
+
+
+class DeploymentPackageReleasePreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    release_version: str = Field(pattern=RELEASE_VERSION_PATTERN)
 
 
 class DeploymentPackageReleaseNoteRequest(BaseModel):
@@ -339,6 +346,19 @@ def update_deployment_package_configuration(
         raise
     log_operation(request, action="update_deployment_package_configuration", status="succeeded", target="deployment-package", operation_id=operation_id)
     return ApiResponse(data=data)
+
+
+@router.post(
+    "/deployment-package/release-preview",
+    response_model=ApiResponse[DeploymentPackageReleasePreview],
+)
+def preview_deployment_package_release(
+    payload: DeploymentPackageReleasePreviewRequest,
+    request: Request,
+) -> ApiResponse[DeploymentPackageReleasePreview]:
+    return ApiResponse(
+        data=request.app.state.deployment_package.release_preview(payload.release_version)
+    )
 
 
 @router.post(

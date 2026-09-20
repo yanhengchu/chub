@@ -50,6 +50,7 @@
   let refreshTimer = null;
   let sessionRequestGeneration = 0;
   let creating = false;
+  let creationRequestId = null;
   let hasSessionSnapshot = false;
   let sessionsById = new Map();
   let runtimeSessionGroups = [];
@@ -1264,8 +1265,20 @@
     if (!creating && dialog.open) dialog.close();
   };
 
+  const newCreationRequestId = () => {
+    const cryptoApi = window.crypto;
+    if (typeof cryptoApi?.randomUUID === "function") return cryptoApi.randomUUID();
+    const bytes = new Uint8Array(16);
+    cryptoApi.getRandomValues(bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = [...bytes].map((item) => item.toString(16).padStart(2, "0")).join("");
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  };
+
   createButton.addEventListener("click", () => {
     syncCreation({ resetSelection: true });
+    creationRequestId = newCreationRequestId();
     setMessage(createMessage, "");
     dialog.showModal();
     window.requestAnimationFrame(() => {
@@ -1280,6 +1293,7 @@
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (creating) return;
     if (!workspaceSelect.value) return;
 
     creating = true;
@@ -1292,7 +1306,10 @@
     try {
       await request("/api/ai/sessions", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "X-Chub-Session-Creation-Id": creationRequestId || newCreationRequestId(),
+        },
         body: JSON.stringify({ workspace_id: workspaceSelect.value }),
       });
       dialog.close();

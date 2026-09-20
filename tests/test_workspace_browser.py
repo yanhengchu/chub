@@ -1498,6 +1498,7 @@ async def _mock_workspace_api_with_task_orchestration(route) -> None:
                 "enabled": True,
                 "runtime_id": "codex",
                 "runtime_available": True,
+                "execution_settings_available": True,
                 "model": "gpt-test",
                 "reasoning_effort": "medium",
                 "queued": 0,
@@ -1562,6 +1563,7 @@ async def _mock_workspace_api_without_task_runtime(route) -> None:
                 "enabled": True,
                 "runtime_id": None,
                 "runtime_available": False,
+                "execution_settings_available": False,
                 "model": None,
                 "reasoning_effort": None,
                 "queued": 0,
@@ -1588,6 +1590,48 @@ async def _mock_workspace_api_without_task_runtime(route) -> None:
     if payload is not None:
         await route.fulfill(status=200, content_type="application/json", body=json.dumps(payload))
         return
+    await _mock_workspace_api(route)
+
+
+async def _mock_workspace_api_with_task_runtime_without_reasoning(route) -> None:
+    path = urlsplit(route.request.url).path
+    if path == "/api/settings/weixin-translation":
+        await route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"success": True, "data": {
+                "mode": "auto",
+                "enabled": True,
+                "runtime_id": "bluecode",
+                "runtime_available": True,
+                "execution_settings_available": False,
+                "execution_settings_unavailable_reason": "当前 Runtime 不支持微信润色所需的推理等级。",
+                "model": None,
+                "reasoning_effort": None,
+                "queued": 0,
+                "running": 0,
+                "weixin_chub_mode_enabled": True,
+            }}),
+        )
+        return
+    if path == "/api/plugins":
+        await route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"success": True, "data": {"plugins": [{
+                "plugin_id": "weixin-orchestration",
+                "enabled_artifact_ids": ["development:weixin-orchestration"],
+                "execution_ready": False,
+                "artifacts": [{
+                    "artifact_id": "development:weixin-orchestration",
+                    "available": True,
+                    "version": "dev",
+                }],
+            }]}}),
+        )
+        return
+    if path == "/api/ai/models":
+        raise AssertionError("incompatible Runtime must not load a model catalog")
     await _mock_workspace_api(route)
 
 
@@ -1785,6 +1829,41 @@ async def test_task_orchestration_hides_execution_settings_without_runtime(
             await expect(page.locator("#workspace-task-orchestration-message")).to_contain_text(
                 "文本优化尚未初始化，不会接收润色任务",
             )
+        finally:
+            await context.close()
+
+    assert page_errors == []
+
+
+async def test_task_orchestration_explains_runtime_without_reasoning_levels(
+    workspace_browser_server: str,
+) -> None:
+    browser_session = session_factory()
+    async with browser_session(ensure_page=False) as chrome:
+        context = await chrome.browser.new_context(viewport={"width": 1280, "height": 900})
+        try:
+            await context.route(
+                f"{workspace_browser_server}/api/**",
+                _mock_workspace_api_with_task_runtime_without_reasoning,
+            )
+            page = await context.new_page()
+            page_errors: list[str] = []
+            page.on("pageerror", lambda error: page_errors.append(str(error)))
+            response = await page.goto(
+                f"{workspace_browser_server}/settings/task-orchestration",
+                wait_until="domcontentloaded",
+            )
+            assert response is not None and response.status == 200
+            await expect(page.locator('[aria-label="翻译 Runtime：bluecode"]')).to_have_text("bluecode")
+            await expect(page.locator("#workspace-task-orchestration-message")).to_contain_text(
+                "当前 Runtime 不支持微信润色所需的推理等级",
+            )
+            for label in ("翻译权限", "文本优化模型", "推理等级"):
+                await expect(
+                    page.locator(".workspace-task-orchestration-field").filter(
+                        has=page.get_by_text(label, exact=True),
+                    ),
+                ).to_be_hidden()
         finally:
             await context.close()
 
@@ -2334,6 +2413,52 @@ async def test_workspace_new_session_dialog_focuses_create_button(
         finally:
             await context.close()
 
+    assert page_errors == []
+
+
+async def test_workspace_session_creation_ignores_double_submit(
+    workspace_browser_server: str,
+) -> None:
+    create_requests: list[dict[str, str]] = []
+
+    async def route_workspace_api(route) -> None:
+        if (
+            urlsplit(route.request.url).path == "/api/ai/sessions"
+            and route.request.method == "POST"
+        ):
+            create_requests.append(route.request.headers)
+            await route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"success": True, "data": {"id": "created-session"}}),
+            )
+            return
+        await _mock_workspace_api_with_quick_sessions(route)
+
+    browser_session = session_factory()
+    async with browser_session(ensure_page=False) as chrome:
+        context = await chrome.browser.new_context(viewport={"width": 1280, "height": 900})
+        try:
+            await context.route(f"{workspace_browser_server}/api/**", route_workspace_api)
+            page = await context.new_page()
+            page_errors: list[str] = []
+            page.on("pageerror", lambda error: page_errors.append(str(error)))
+            response = await page.goto(workspace_browser_server, wait_until="domcontentloaded")
+            assert response is not None and response.status == 200
+            await page.locator("#workspace-session-create").click()
+            await page.locator("#workspace-session-create-form").evaluate("""(form) => {
+                form.dispatchEvent(new Event("submit", { cancelable: true }));
+                form.dispatchEvent(new Event("submit", { cancelable: true }));
+            }""")
+            await expect(page.locator("#workspace-session-create-dialog")).not_to_be_visible()
+        finally:
+            await context.close()
+
+    assert len(create_requests) == 1
+    assert re.fullmatch(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}",
+        create_requests[0]["x-chub-session-creation-id"],
+    )
     assert page_errors == []
 
 

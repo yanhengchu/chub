@@ -773,7 +773,7 @@ function initializeDeploymentPackageSettings() {
       setSettingsMessage(
         deploymentPackageMessage,
         [
-          "最近一次成功发布的产物如下。正式包不会自动更新当前运行中的 Web 或 Quick Worker；如需加载本次源码，待 Worker 空闲后先 reload Worker，再重启 Web。",
+          "最近一次成功发布的产物如下。正式包不会自动更新当前运行中的 Web 或 Quick Worker，不会推送本地 Git 提交或 tag，也不会导入或启用随包插件 ZIP；这些后续动作由维护者按需单独执行。",
           details,
         ].filter(Boolean).join("\n"),
         "",
@@ -794,31 +794,41 @@ function initializeDeploymentPackageSettings() {
   const runAction = async (confirmed = false) => {
     const generating = generationRequired();
     if (!generating && !confirmed && deploymentPackageReleaseDialog instanceof HTMLDialogElement) {
-      if (deploymentPackageReleaseDialogDetails instanceof HTMLElement) {
-        const target = deploymentPackageChubVersion.value.trim() || "未填写";
-        const sourceVersions = latestSourceVersions || {};
-        const current = sourceVersions.chub;
-        const declarationsMatch = current === target
-          && sourceVersions.runtime === target
-          && sourceVersions.weixin === target;
-        const numeric = (value) => /^\d+\.\d+\.\d+$/.test(value || "")
-          ? value.split(".").map(Number)
-          : null;
-        const targetParts = numeric(target);
-        const currentParts = numeric(current);
-        const higher = targetParts && currentParts
-          && targetParts.some((part, index) => part !== currentParts[index]
-            && part > currentParts[index]
-            && targetParts.slice(0, index).every((prefix, prefixIndex) => prefix === currentParts[prefixIndex]));
-        if (declarationsMatch) {
-          deploymentPackageReleaseDialogDetails.textContent = `目标版本：v${target}。这是同版本重发：不会创建版本提交，将从当前已提交 HEAD 重新构建并更新本地 tag 与发版记录。`;
-        } else if (higher) {
-          deploymentPackageReleaseDialogDetails.textContent = `目标版本：v${target}。这是升级发布：将统一更新固定版本声明并创建一条本地版本提交，然后构建正式包、更新本地 tag 与发版记录。`;
-        } else {
-          deploymentPackageReleaseDialogDetails.textContent = `目标版本：v${target}。版本声明当前不一致或目标不满足升级条件；服务端会在提交前执行最终校验，不会生成不合规发布。`;
-        }
+      const target = deploymentPackageChubVersion.value.trim();
+      if (!target) {
+        setSettingsMessage(deploymentPackageMessage, "请填写发布版本。", "error");
+        return;
       }
-      deploymentPackageReleaseDialog.showModal();
+      deploymentPackageBuild.disabled = true;
+      try {
+        const preview = await fetchSettingsApi("/api/settings/deployment-package/release-preview", {
+          method: "POST",
+          headers: settingsHeaders(true),
+          body: JSON.stringify({ release_version: target }),
+        });
+        if (deploymentPackageReleaseDialogDetails instanceof HTMLElement) {
+          const shortCommit = (commit) => typeof commit === "string" ? commit.slice(0, 12) : "尚未创建";
+          const tagBefore = preview.current_tag_commit
+            ? `当前 ${preview.tag_name}：${shortCommit(preview.current_tag_commit)}`
+            : `当前 ${preview.tag_name}：尚不存在`;
+          if (preview.release_kind === "same_version_republish") {
+            deploymentPackageReleaseDialogDetails.textContent = `目标版本：v${target}（同版本重发）。当前 HEAD：${shortCommit(preview.head_commit)}。${tagBefore}。发布后 ${preview.tag_name} 将指向当前 HEAD；不会创建版本提交。`;
+          } else if (preview.release_kind === "version_upgrade") {
+            deploymentPackageReleaseDialogDetails.textContent = `目标版本：v${target}（升级发布）。当前 HEAD：${shortCommit(preview.head_commit)}。${tagBefore}。发布后 ${preview.tag_name} 将指向本次新建的版本提交。`;
+          } else {
+            const mismatches = Array.isArray(preview.mismatched_declarations)
+              && preview.mismatched_declarations.length
+              ? `不一致项：${preview.mismatched_declarations.join("、")}。`
+              : "目标不满足发布条件。";
+            deploymentPackageReleaseDialogDetails.textContent = `目标版本：v${target}。${mismatches} 服务端会在提交前执行最终校验，不会生成不合规发布。`;
+          }
+        }
+        deploymentPackageReleaseDialog.showModal();
+      } catch (error) {
+        setSettingsMessage(deploymentPackageMessage, error instanceof Error ? error.message : "无法读取本次发布预览。", "error");
+      } finally {
+        updateAction();
+      }
       return;
     }
     inputs.forEach((input) => { input.disabled = true; });

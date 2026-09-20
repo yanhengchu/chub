@@ -55,6 +55,14 @@ class AiSession(_StrictModel):
     """Current logical Session record owned exclusively by Chub."""
 
     id: str = Field(min_length=36, max_length=36)
+    # A browser-created Session keeps the request UUID that created it.  This
+    # lets a retried POST return the existing logical Session after a response
+    # loss, rather than creating a second one.
+    creation_request_id: str | None = Field(default=None, min_length=36, max_length=36)
+    creation_request_fingerprint: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
     # Runtime IDs are opaque to Chub. The current backend writes ``codex``;
     # persisted records must still carry an explicit owner.
     runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
@@ -98,15 +106,17 @@ class AiSession(_StrictModel):
     def normalize_timestamps(cls, value: datetime | None) -> datetime | None:
         return normalize_utc_datetime(value) if value is not None else None
 
-    @field_validator("id")
+    @field_validator("id", "creation_request_id")
     @classmethod
-    def validate_id(cls, value: str) -> str:
+    def validate_uuid_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         try:
             parsed = UUID(value)
         except (ValueError, AttributeError) as exc:
-            raise ValueError("Session ID must be a UUID") from exc
+            raise ValueError("Session identifiers must be UUIDs") from exc
         if str(parsed) != value:
-            raise ValueError("Session ID must use canonical UUID form")
+            raise ValueError("Session identifiers must use canonical UUID form")
         return value
 
     @model_validator(mode="after")

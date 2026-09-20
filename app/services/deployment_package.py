@@ -120,6 +120,15 @@ class DeploymentPackageSourceVersions(_StrictModel):
     weixin: str = Field(pattern=RELEASE_VERSION_PATTERN)
 
 
+class DeploymentPackageReleasePreview(_StrictModel):
+    target_version: str = Field(pattern=RELEASE_VERSION_PATTERN)
+    head_commit: str = Field(pattern=r"^[a-f0-9]{40}$")
+    tag_name: str = Field(min_length=1, max_length=128)
+    current_tag_commit: str | None = Field(default=None, pattern=r"^[a-f0-9]{40}$")
+    release_kind: Literal["same_version_republish", "version_upgrade", "requires_repair"]
+    mismatched_declarations: tuple[str, ...] = ()
+
+
 class DeploymentPackageReleaseNoteGeneration(_StrictModel):
     status: Literal["idle", "requested", "running", "succeeded", "failed"] = "idle"
     message: str = Field(default="等待生成发版说明。", max_length=300)
@@ -414,6 +423,62 @@ class DeploymentPackageService:
             return values
         except (KeyError, OSError, TypeError, ValueError, yaml.YAMLError) as exc:
             raise ApiError(503, "deployment_package_versions_unavailable", "项目版本暂时无法读取。") from exc
+
+    @staticmethod
+    def _version_declaration_mismatches(version: str) -> tuple[str, ...]:
+        labels = (
+            "Chub 项目版本",
+            "Codex Runtime 版本",
+            "微信编排版本",
+            "Chub 默认配置版本",
+            "Codex Runtime Chub 兼容版本",
+            "微信编排 Chub 兼容版本",
+        )
+        return tuple(
+            label
+            for label, declared in zip(
+                labels,
+                DeploymentPackageService._all_source_version_declarations(),
+                strict=True,
+            )
+            if declared != version
+        )
+
+    def release_preview(self, version: str) -> DeploymentPackageReleasePreview:
+        requested = self._numeric_version(version)
+        declarations = self._all_source_version_declarations()
+        mismatches = self._version_declaration_mismatches(version)
+        try:
+            head_commit = self._git("rev-parse", "HEAD")
+            tag_name = f"chub-v{version}"
+            current_tag_commit = (
+                self._git("rev-parse", f"{tag_name}^{{commit}}", allow_failure=True)
+                or None
+            )
+        except OSError as exc:
+            raise ApiError(503, "release_preview_unavailable", "本地 Git 状态暂时无法确认。") from exc
+        current = max(self._numeric_version(item) for item in declarations)
+        previous = self._latest_successful_release_record()
+        minimum = current
+        if previous.version is not None:
+            minimum = max(minimum, self._numeric_version(previous.version))
+        release_kind: Literal[
+            "same_version_republish", "version_upgrade", "requires_repair"
+        ]
+        if not mismatches and requested >= minimum:
+            release_kind = "same_version_republish"
+        elif requested > current and requested >= minimum:
+            release_kind = "version_upgrade"
+        else:
+            release_kind = "requires_repair"
+        return DeploymentPackageReleasePreview(
+            target_version=version,
+            head_commit=head_commit,
+            tag_name=tag_name,
+            current_tag_commit=current_tag_commit,
+            release_kind=release_kind,
+            mismatched_declarations=mismatches,
+        )
 
     def save_configuration(self, configuration: DeploymentPackageConfiguration) -> DeploymentPackageStatus:
         with self._lock:
@@ -1028,10 +1093,14 @@ class DeploymentPackageService:
             or source.weixin != configuration.weixin_release_version
             or not self._source_declarations_match(configuration.chub_release_version)
         ):
+            mismatches = self._version_declaration_mismatches(
+                configuration.chub_release_version
+            )
             raise ApiError(
                 409,
                 "release_source_version_mismatch",
-                "版本声明尚未完成本次发布升级，请重新发起发布。",
+                "以下版本声明与目标版本不一致："
+                f"{'、'.join(mismatches) or '发布版本设置'}。",
             )
         tag_name = f"chub-v{configuration.chub_release_version}"
         try:
@@ -1401,7 +1470,9 @@ class DeploymentPackageService:
             modules.mkdir()
             built_at = _now()
             source_hash = source_commit[:12] if source_commit else "local"
-            build_id = f"{built_at.strftime('%Y%m%d%H%M')}-{source_hash}"
+            build_id = (
+                f"{built_at.strftime('%Y%m%d%H%M%S%f')}-{source_hash}-{uuid4().hex[:8]}"
+            )
             runtime_zip = modules / f"codex-runtime-release-{configuration.runtime_release_version}-{build_id}.zip"
             weixin_zip = modules / f"weixin-refinement-release-{configuration.weixin_release_version}-{build_id}.zip"
             subprocess.run([sys.executable, str(PROJECT_ROOT / "scripts" / "build" / "build-codex-runtime-zip.py"), "--output", str(runtime_zip), "--implementation-id", configuration.runtime_implementation_id, "--version", configuration.runtime_release_version, "--description", configuration.runtime_description, "--chub-version", configuration.chub_release_version], cwd=PROJECT_ROOT, check=True, capture_output=True, text=True, timeout=60)

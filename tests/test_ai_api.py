@@ -421,6 +421,47 @@ async def test_create_session_defaults_to_full_access(settings: Settings) -> Non
 
 
 @pytest.mark.anyio
+async def test_create_session_forwards_a_valid_idempotency_key(settings: Settings) -> None:
+    app = create_app(settings)
+    allow_session_writes(app)
+    manager = MagicMock()
+    manager.create_session.return_value = SessionInfo(
+        id="session-1",
+        runtime_id="codex",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd="/workspace/chub",
+        title=None,
+        can_archive=False,
+        status="new",
+        activity="unknown",
+        permission_mode="full-access",
+        error=None,
+        created_at="2026-08-07T10:00:00Z",
+        updated_at="2026-08-07T10:00:00Z",
+    )
+    app.state.ai_session_manager = manager
+    transport = httpx.ASGITransport(app=app)
+    request_id = "e9ec2869-d4e5-4472-bd9e-046a39a7e9f1"
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/ai/sessions",
+            headers={
+                **authorization(settings),
+                "X-Chub-Session-Creation-Id": request_id,
+            },
+            json={"workspace_id": "chub"},
+        )
+
+    assert response.status_code == 200
+    manager.create_session.assert_called_once()
+    assert manager.create_session.call_args.args == ("chub", None, None, None)
+    assert manager.create_session.call_args.kwargs["creation_request_id"] == request_id
+    assert len(manager.create_session.call_args.kwargs["creation_request_fingerprint"]) == 64
+
+
+@pytest.mark.anyio
 async def test_codex_model_catalog_is_protected_and_filtered_by_manager(
     settings: Settings,
 ) -> None:
