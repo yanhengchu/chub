@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import json
 import logging
 import os
+import shutil
+import stat
+import tempfile
 import zipfile
 from pathlib import Path
 from threading import RLock
@@ -12,20 +16,11 @@ from typing import Any
 from fastapi import Request
 
 from app.ai_runtime.development_plugins import development_runtime_artifact_id
-from app.core.module_sources import registered_module_source
+from app.core.module_sources import registered_module_source, registered_module_sources
 from app.core.config import PROJECT_ROOT, Settings
 from app.core.response import ApiError
 
-_PLUGIN_IDS = ("runtime", "weixin-orchestration", "deliveryline")
-_PLUGIN_NAMES = {
-    "runtime": "AI Runtime",
-    "weixin-orchestration": "微信任务润色",
-    "deliveryline": "Deliveryline",
-}
-_DELIVERYLINE_MANIFEST = "chub-business-module.json"
-_BUNDLED_MODULE_PREFIXES = {
-    "weixin-orchestration": "weixin-refinement-release-",
-}
+_BUSINESS_MANIFEST = "chub-business-module.json"
 LOGGER = logging.getLogger("hub.plugin_lifecycle")
 
 
@@ -36,23 +31,16 @@ class PluginLifecycleService:
         self,
         settings: Settings,
         ai_session_manager: Any,
-        weixin_chub_mode: Any,
-        weixin_translation: Any,
     ) -> None:
         self.settings = settings
         self.ai_session_manager = ai_session_manager
-        self.weixin_chub_mode = weixin_chub_mode
-        self.weixin_translation = weixin_translation
-        self.path = settings.business_modules.state_file.with_name("plugin-lifecycle.json")
+        self.path = settings.business_modules.state_file
         self._lock = RLock()
-        self._bundled_orchestration_identity_cache: dict[
-            Path, tuple[tuple[int, int, int, int, int], str | None, str | None]
-        ] = {}
 
     def list(self, request: Request) -> dict[str, object]:
         with self._lock:
             state = self._read()
-            return {"plugins": [self._status(request, key, state) for key in _PLUGIN_IDS]}
+            return {"plugins": [self._status(request, key, state) for key in self._plugin_ids()]}
 
     def imported_plugin_ids(self) -> frozenset[str]:
         with self._lock:
@@ -61,7 +49,7 @@ class PluginLifecycleService:
                 return frozenset()
             return frozenset(
                 plugin_id
-                for plugin_id in _PLUGIN_IDS
+                for plugin_id in self._plugin_ids()
                 if isinstance(imports.get(plugin_id), list) and imports[plugin_id]
             )
 
@@ -94,6 +82,7 @@ class PluginLifecycleService:
         final_id = artifact_id
         metadata = self._artifact_metadata(artifact)
         extension_updated = False
+        installation: tuple[str, bool] | None = None
         if artifact_id.startswith(("zip:", "bundled:")):
             archive = self._read_zip(plugin_id, artifact_id)
             if plugin_id == "runtime":
@@ -102,24 +91,19 @@ class PluginLifecycleService:
                 result = await install_runtime_plugin_archive(request, artifact_id.split(":", 1)[1], archive)
                 final_id = f"runtime:{result.module_id}"
                 extension_updated = True
-            elif plugin_id == "weixin-orchestration":
-                preview = self.weixin_chub_mode.orchestration_plugin_service.install(
-                    archive,
-                    source_name=artifact_id.split(":", 1)[1],
-                )
-                final_id = f"orchestration:{preview.implementation_ref}"
+            else:
+                metadata = self._inspect_business_archive(plugin_id, archive)
+                installation = self._install_business_archive(plugin_id, artifact_id, archive)
                 extension_updated = True
-            elif plugin_id == "deliveryline":
-                metadata = self._inspect_deliveryline_archive(archive)
-        elif plugin_id == "weixin-orchestration":
-            self.weixin_chub_mode.set_orchestration_implementation("weixin-orchestration-dev")
-            extension_updated = True
         with self._lock:
             state = self._read_after_extension_action(extension_updated)
             imports = state.setdefault("imports", {}).setdefault(plugin_id, [])
             if final_id not in imports:
                 imports.append(final_id)
             self._metadata(state, plugin_id)[final_id] = metadata
+            if installation is not None:
+                relative, _ = installation
+                state.setdefault("installations", {}).setdefault(plugin_id, {})[final_id] = relative
             self._write_after_extension_action(state, extension_updated)
             return self._status(request, plugin_id, state)
 
@@ -132,28 +116,30 @@ class PluginLifecycleService:
             is_enabled = artifact_id in self._enabled_ids(state, plugin_id)
         if is_enabled:
             await self.set_enabled(request, plugin_id, artifact_id, False)
-        extension_updated = is_enabled and plugin_id in {"runtime", "weixin-orchestration"}
+        extension_updated = is_enabled and plugin_id == "runtime"
         if artifact_id.startswith("runtime:"):
             from app.api.runtime_plugins import remove_runtime_plugin
 
             await remove_runtime_plugin(artifact_id[8:], request)
             extension_updated = True
-        elif artifact_id.startswith("orchestration:"):
-            self.weixin_chub_mode.remove_orchestration_plugin(artifact_id[14:])
-            extension_updated = True
-        elif plugin_id == "weixin-orchestration":
-            self.weixin_chub_mode.set_orchestration_implementation("disabled")
-            extension_updated = True
         with self._lock:
             state = self._read_after_extension_action(extension_updated)
             state.setdefault("imports", {}).setdefault(plugin_id, []).remove(artifact_id)
             self._metadata(state, plugin_id).pop(artifact_id, None)
+            installation = self._installation_path(state, plugin_id, artifact_id)
+            installed = state.setdefault("installations", {}).get(plugin_id)
+            if isinstance(installed, dict):
+                installed.pop(artifact_id, None)
+                if not installed:
+                    state.setdefault("installations", {}).pop(plugin_id, None)
             current = [item for item in self._enabled_ids(state, plugin_id) if item != artifact_id]
             if current:
                 state.setdefault("enabled", {})[plugin_id] = current
             else:
                 state.setdefault("enabled", {}).pop(plugin_id, None)
             self._write_after_extension_action(state, extension_updated)
+            if installation is not None:
+                self._remove_installation(installation)
             return self._status(request, plugin_id, state)
 
     async def set_enabled(self, request: Request, plugin_id: str, artifact_id: str, enabled: bool) -> dict[str, object]:
@@ -186,19 +172,12 @@ class PluginLifecycleService:
             )
             self.ai_session_manager.update_runtime_implementation_enabled(implementation_id, enabled)
             extension_updated = True
-        elif plugin_id == "weixin-orchestration":
-            if artifact_id == "development:weixin-orchestration":
-                self.weixin_chub_mode.set_orchestration_implementation("weixin-orchestration-dev")
-            else:
-                self.weixin_chub_mode.set_orchestration_implementation("module", artifact_id.removeprefix("orchestration:"))
-            self.weixin_chub_mode.set_orchestration_enabled(enabled)
-            extension_updated = True
         lifecycle_state_written = False
         try:
             with self._lock:
                 state = self._read_after_extension_action(extension_updated)
                 current = self._enabled_ids(state, plugin_id)
-                if enabled and plugin_id in {"weixin-orchestration", "deliveryline"}:
+                if enabled and plugin_id != "runtime":
                     current = [artifact_id]
                 elif enabled and artifact_id not in current:
                     current.append(artifact_id)
@@ -210,8 +189,6 @@ class PluginLifecycleService:
                     state.setdefault("enabled", {}).pop(plugin_id, None)
                 self._write_after_extension_action(state, extension_updated)
                 lifecycle_state_written = True
-                if plugin_id == "runtime" and enabled:
-                    self.weixin_translation.reconcile_execution_settings()
                 return self._status(request, plugin_id, state)
         except ApiError as exc:
             if (
@@ -247,10 +224,10 @@ class PluginLifecycleService:
                 artifacts.append(self._missing_artifact(artifact_id, metadata.get(artifact_id)))
         for artifact in artifacts:
             artifact_id = artifact["artifact_id"]
-            # Runtime/orchestration plugins report their installed metadata directly.
-            # Cached metadata is authoritative only for Deliveryline's state-only ZIP
-            # import and for artifacts that are no longer available on disk.
-            if artifact_id in metadata and (plugin_id == "deliveryline" or artifact_id not in known):
+            # Runtime modules report their installed metadata directly. Cached metadata
+            # is authoritative for business-module state-only ZIP imports and for
+            # artifacts that are no longer available on disk.
+            if artifact_id in metadata and (plugin_id != "runtime" or artifact_id not in known):
                 artifact.update(metadata[artifact_id])
             artifact["imported"] = artifact_id in imports
             artifact["enabled"] = artifact_id in enabled
@@ -272,25 +249,11 @@ class PluginLifecycleService:
             artifact.pop("implementation_ref", None)
         result: dict[str, object] = {
             "plugin_id": plugin_id,
-            "name": _PLUGIN_NAMES[plugin_id],
+            "name": self._plugin_name(plugin_id),
             "imported_artifact_ids": imports,
             "enabled_artifact_ids": enabled,
             "artifacts": artifacts,
         }
-        if plugin_id == "weixin-orchestration":
-            # Lifecycle enablement remains independent from this optional
-            # execution dependency.  The page uses this projection only to
-            # explain why newly received refinement tasks are dormant.
-            try:
-                result["execution_ready"] = self.weixin_translation.execution_available()
-            except (ApiError, OSError):
-                result["execution_ready"] = None
-            except Exception:
-                LOGGER.warning(
-                    "Unable to read Weixin refinement Runtime availability",
-                    exc_info=True,
-                )
-                result["execution_ready"] = None
         return result
 
     def _artifacts(self, request: Request, plugin_id: str) -> list[dict[str, object]]:
@@ -306,26 +269,7 @@ class PluginLifecycleService:
                 )
                 rows.append({"artifact_id": identifier, "source": item.source, "name": item.name, "version": item.version, "description": item.description or "提供 AI Runtime 执行能力。", "available": item.status == "active", "removable": item.removable, "reason": item.reason})
             return rows + self._candidates(plugin_id)
-        if plugin_id == "weixin-orchestration":
-            status = self.weixin_chub_mode.orchestration_settings()
-            development_version = self._development_weixin_version()
-            rows = [{"artifact_id": "development:weixin-orchestration", "source": "development", "name": "开发实现", "version": development_version, "description": "处理微信普通文本的润色、确认与任务续提。", "available": status.development_available, "removable": True, "reason": None}]
-            rows.extend({"artifact_id": f"orchestration:{item.implementation_ref}", "source": "zip", "name": item.name, "version": item.version, "description": item.description, "available": item.available, "removable": removable, "reason": item.reason} for item, _active, removable in self.weixin_chub_mode.list_orchestration_plugins())
-            return rows + self._candidates(plugin_id)
-        deliveryline = registered_module_source("business", "deliveryline")
-        return [{"artifact_id": "development:deliveryline", "source": "development", "name": "开发实现", "version": "dev", "description": "提供需求提出档案、评审前校验与归档查看；后续交付阶段尚未接入。", "available": bool(deliveryline and (deliveryline.root / "chub-business-module.json").is_file()), "removable": True, "reason": None}] + self._candidates(plugin_id)
-
-    @staticmethod
-    def _development_weixin_version() -> str:
-        try:
-            source = registered_module_source("orchestration", "weixin-refinement")
-            if source is None:
-                return "未知"
-            manifest = json.loads((source.root / "chub-capability-orchestration.json").read_text("utf-8"))
-            version = manifest.get("version") if isinstance(manifest, dict) else None
-            return version if isinstance(version, str) and version.strip() else "未知"
-        except (OSError, ValueError):
-            return "未知"
+        return [{"artifact_id": f"development:{plugin_id}", "source": "development", "name": "开发实现", "version": "dev", "description": f"{self._plugin_name(plugin_id)}业务插件开发实现。", "available": self._business_source_available(plugin_id), "removable": True, "reason": None if self._business_source_available(plugin_id) else "业务模块清单缺失或与当前 Chub 版本不兼容。"}] + self._candidates(plugin_id)
 
     def _candidates(self, plugin_id: str) -> list[dict[str, object]]:
         rows = []
@@ -346,11 +290,7 @@ class PluginLifecycleService:
                 })
         bundled_directory = PROJECT_ROOT / "bundled-modules"
         if bundled_directory.is_dir() and not bundled_directory.is_symlink():
-            pattern = "*-runtime-*.zip" if plugin_id == "runtime" else (
-                f"{_BUNDLED_MODULE_PREFIXES[plugin_id]}*.zip"
-                if plugin_id in _BUNDLED_MODULE_PREFIXES
-                else None
-            )
+            pattern = "*-runtime-*.zip" if plugin_id == "runtime" else f"{plugin_id}-*.zip"
             for path in sorted(bundled_directory.glob(pattern)) if pattern else ():
                 if not path.is_file() or path.is_symlink():
                     continue
@@ -364,65 +304,13 @@ class PluginLifecycleService:
                     "removable": True,
                     "reason": None,
                 }
-                if plugin_id == "weixin-orchestration":
-                    implementation_ref, invalid_reason = self._bundled_orchestration_implementation_ref(path)
-                    if implementation_ref is not None:
-                        row["implementation_ref"] = implementation_ref
-                    elif invalid_reason is not None:
-                        row["available"] = False
-                        row["reason"] = f"随包 ZIP 不可导入：{invalid_reason}"
                 rows.append(row)
         return rows
 
     def _imported_implementation_refs(
         self, plugin_id: str, imports: list[str]
     ) -> set[str]:
-        if plugin_id != "weixin-orchestration":
-            return set()
-        return {
-            artifact.implementation_ref
-            for artifact, _active, _removable in self.weixin_chub_mode.list_orchestration_plugins()
-            if artifact.available
-            and f"orchestration:{artifact.implementation_ref}" in imports
-        }
-
-    def _bundled_orchestration_implementation_ref(
-        self, path: Path
-    ) -> tuple[str | None, str | None]:
-        """Return a bundled artifact's immutable identity without loading its code."""
-        try:
-            stat = path.stat()
-        except OSError:
-            return None, "无法读取随包 ZIP。"
-        fingerprint = (
-            stat.st_dev,
-            stat.st_ino,
-            stat.st_ctime_ns,
-            stat.st_mtime_ns,
-            stat.st_size,
-        )
-        cached = self._bundled_orchestration_identity_cache.get(path)
-        if cached is not None and cached[0] == fingerprint:
-            return cached[1], cached[2]
-        try:
-            archive = self._read_zip("weixin-orchestration", f"bundled:{path.name}")
-            preview = self.weixin_chub_mode.orchestration_plugin_service.inspect_archive_identity(
-                archive,
-                source_name=path.name,
-            )
-            implementation_ref = preview.implementation_ref
-            invalid_reason = None
-        except ApiError as exc:
-            implementation_ref = None
-            invalid_reason = exc.message
-        self._bundled_orchestration_identity_cache[path] = (
-            fingerprint,
-            implementation_ref,
-            invalid_reason,
-        )
-        while len(self._bundled_orchestration_identity_cache) > 32:
-            self._bundled_orchestration_identity_cache.pop(next(iter(self._bundled_orchestration_identity_cache)))
-        return implementation_ref, invalid_reason
+        return set()
 
     def _find(self, request: Request, plugin_id: str, artifact_id: str) -> dict[str, object]:
         item = next((item for item in self._artifacts(request, plugin_id) if item["artifact_id"] == artifact_id), None)
@@ -436,18 +324,12 @@ class PluginLifecycleService:
             raise ApiError(422, "plugin_artifact_invalid", "插件 ZIP 格式无效。")
         if source == "zip":
             path = PROJECT_ROOT / "data/local/artifacts/plugins" / plugin_id / filename
-        elif source == "bundled" and plugin_id == "runtime" and "-runtime-" in filename:
-            path = PROJECT_ROOT / "bundled-modules" / filename
-        elif (
-            source == "bundled"
-            and (prefix := _BUNDLED_MODULE_PREFIXES.get(plugin_id)) is not None
-            and filename.startswith(prefix)
-        ):
+        elif source == "bundled" and ((plugin_id == "runtime" and "-runtime-" in filename) or (plugin_id != "runtime" and filename.startswith(f"{plugin_id}-"))):
             path = PROJECT_ROOT / "bundled-modules" / filename
         else:
             raise ApiError(422, "plugin_artifact_invalid", "插件 ZIP 格式无效。")
         maximum_bytes = 32 * 1024 * 1024
-        if plugin_id == "deliveryline":
+        if plugin_id != "runtime":
             maximum_bytes = self.settings.business_modules.max_archive_bytes
         try:
             if not path.is_file() or path.is_symlink() or path.stat().st_size > maximum_bytes:
@@ -459,29 +341,46 @@ class PluginLifecycleService:
         except (OSError, ValueError, zipfile.BadZipFile):
             raise ApiError(422, "plugin_artifact_invalid", "插件 ZIP 格式无效。") from None
 
-    def _inspect_deliveryline_archive(self, archive: bytes) -> dict[str, object]:
+    def _inspect_business_archive(self, plugin_id: str, archive: bytes) -> dict[str, object]:
         try:
             with zipfile.ZipFile(io.BytesIO(archive)) as package:
-                info = package.getinfo(_DELIVERYLINE_MANIFEST)
+                info = package.getinfo(_BUSINESS_MANIFEST)
                 if info.file_size > 64 * 1024:
                     raise ValueError
                 manifest = json.loads(package.read(info).decode("utf-8"))
         except (KeyError, UnicodeDecodeError, ValueError, zipfile.BadZipFile):
-            raise ApiError(422, "deliveryline_plugin_manifest_invalid", "Deliveryline 插件清单无效。") from None
-        if not isinstance(manifest, dict) or manifest.get("module_id") != "deliveryline" or manifest.get("module_type") != "business" or manifest.get("protocol_version") != 1:
-            raise ApiError(422, "deliveryline_plugin_manifest_invalid", "Deliveryline 插件清单不兼容。")
+            raise ApiError(422, f"{plugin_id}_plugin_manifest_invalid", f"{self._plugin_name(plugin_id)}插件清单无效。") from None
+        entry = manifest.get("entry") if isinstance(manifest, dict) else None
+        entry_module, entry_separator, entry_attribute = (
+            entry.partition(":") if isinstance(entry, str) else ("", "", "")
+        )
+        entry_valid = (
+            bool(entry_separator)
+            and bool(entry_module)
+            and bool(entry_attribute)
+            and all(part.isidentifier() for part in entry_module.split("."))
+            and entry_attribute.isidentifier()
+        )
+        if (
+            not isinstance(manifest, dict)
+            or manifest.get("module_id") != plugin_id
+            or manifest.get("module_type") != "business"
+            or manifest.get("protocol_version") != 1
+            or not entry_valid
+        ):
+            raise ApiError(422, f"{plugin_id}_plugin_manifest_invalid", f"{self._plugin_name(plugin_id)}插件清单不兼容。")
         if manifest.get("chub_version") != self.settings.app.version:
-            raise ApiError(422, "deliveryline_plugin_version_incompatible", "Deliveryline 插件与当前 Chub 版本不兼容。")
+            raise ApiError(422, f"{plugin_id}_plugin_version_incompatible", f"{self._plugin_name(plugin_id)}插件与当前 Chub 版本不兼容。")
         version = manifest.get("version")
         if not isinstance(version, str) or not version.strip():
-            raise ApiError(422, "deliveryline_plugin_manifest_invalid", "Deliveryline 插件版本无效。")
+            raise ApiError(422, f"{plugin_id}_plugin_manifest_invalid", f"{self._plugin_name(plugin_id)}插件版本无效。")
         name = manifest.get("display_name")
         description = manifest.get("description")
         return {
             "source": "zip",
-            "name": name.strip() if isinstance(name, str) and name.strip() else "Deliveryline",
+            "name": name.strip() if isinstance(name, str) and name.strip() else self._plugin_name(plugin_id),
             "version": version.strip(),
-            "description": description.strip() if isinstance(description, str) and description.strip() else "Deliveryline 业务插件。",
+            "description": description.strip() if isinstance(description, str) and description.strip() else f"{self._plugin_name(plugin_id)}业务插件。",
         }
 
     @staticmethod
@@ -502,10 +401,126 @@ class PluginLifecycleService:
             "reason": "已导入的插件制品当前不可用；可恢复制品后继续使用，或显式移除。",
         }
 
+    def _installation_path(
+        self,
+        state: dict[str, object],
+        plugin_id: str,
+        artifact_id: str,
+    ) -> Path | None:
+        installations = state.get("installations")
+        module_installations = installations.get(plugin_id) if isinstance(installations, dict) else None
+        relative = module_installations.get(artifact_id) if isinstance(module_installations, dict) else None
+        if not isinstance(relative, str) or not relative:
+            return None
+        candidate = self.settings.business_modules.install_dir / relative
+        try:
+            candidate.resolve(strict=True).relative_to(
+                self.settings.business_modules.install_dir.resolve(strict=True)
+            )
+        except (OSError, ValueError):
+            return None
+        return candidate if candidate.is_dir() and not candidate.is_symlink() else None
+
+    def _install_business_archive(
+        self,
+        plugin_id: str,
+        artifact_id: str,
+        archive: bytes,
+    ) -> tuple[str, bool]:
+        digest = hashlib.sha256(archive).hexdigest()
+        root = self.settings.business_modules.install_dir / plugin_id
+        target = root / digest
+        try:
+            root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if target.is_dir() and not target.is_symlink():
+                return f"{plugin_id}/{digest}", False
+            with zipfile.ZipFile(io.BytesIO(archive)) as package:
+                infos = package.infolist()
+                total_size = 0
+                for info in infos:
+                    path = Path(info.filename)
+                    if (
+                        path.is_absolute()
+                        or ".." in path.parts
+                        or not info.filename
+                        or stat.S_IFMT(info.external_attr >> 16) == stat.S_IFLNK
+                    ):
+                        raise ValueError
+                    total_size += info.file_size
+                    if total_size > 64 * 1024 * 1024:
+                        raise ValueError
+                temporary = Path(tempfile.mkdtemp(prefix=f".{digest}-", dir=root))
+                try:
+                    for info in infos:
+                        destination = temporary / Path(info.filename)
+                        if info.is_dir():
+                            destination.mkdir(mode=0o700, parents=True, exist_ok=True)
+                            continue
+                        destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                        with package.open(info, "r") as source, destination.open("wb") as target_file:
+                            shutil.copyfileobj(source, target_file, length=64 * 1024)
+                        os.chmod(destination, 0o600)
+                    os.chmod(temporary, 0o700)
+                    os.replace(temporary, target)
+                finally:
+                    if temporary.exists():
+                        shutil.rmtree(temporary, ignore_errors=True)
+        except (OSError, ValueError, zipfile.BadZipFile):
+            raise ApiError(422, f"{plugin_id}_plugin_install_invalid", f"{self._plugin_name(plugin_id)}插件无法安装。") from None
+        return f"{plugin_id}/{digest}", True
+
+    @staticmethod
+    def _remove_installation(path: Path) -> None:
+        try:
+            shutil.rmtree(path)
+        except OSError:
+            LOGGER.warning("Unable to remove business module installation %s", path, exc_info=True)
+
     @staticmethod
     def _require(plugin_id: str) -> None:
-        if plugin_id not in _PLUGIN_IDS:
+        if plugin_id not in ("runtime",) + tuple(source.module_id for source in registered_module_sources("business")):
             raise ApiError(404, "plugin_not_found", "插件不存在。")
+
+    @staticmethod
+    def _plugin_ids() -> tuple[str, ...]:
+        return ("runtime",) + tuple(
+            source.module_id for source in registered_module_sources("business")
+        )
+
+    @staticmethod
+    def _plugin_name(plugin_id: str) -> str:
+        if plugin_id == "runtime":
+            return "AI Runtime"
+        source = registered_module_source("business", plugin_id)
+        if source is not None:
+            try:
+                manifest = json.loads(
+                    (source.root / _BUSINESS_MANIFEST).read_text(encoding="utf-8")
+                )
+                name = manifest.get("display_name")
+                if isinstance(name, str) and name.strip():
+                    return name.strip()
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                pass
+        return plugin_id
+
+    def _business_source_available(self, plugin_id: str) -> bool:
+        source = registered_module_source("business", plugin_id)
+        if source is None:
+            return False
+        try:
+            manifest = json.loads(
+                (source.root / _BUSINESS_MANIFEST).read_text(encoding="utf-8")
+            )
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return False
+        return (
+            isinstance(manifest, dict)
+            and manifest.get("module_id") == plugin_id
+            and manifest.get("module_type") == "business"
+            and manifest.get("protocol_version") == 1
+            and manifest.get("chub_version") in {"dev", self.settings.app.version}
+        )
 
     def _runtime_implementation_id(self, artifact_id: str) -> str:
         if artifact_id.startswith("development:"):
@@ -539,12 +554,16 @@ class PluginLifecycleService:
         try:
             state = json.loads(self.path.read_text(encoding="utf-8"))
             if isinstance(state, dict) and isinstance(state.get("imports", {}), dict) and isinstance(state.get("enabled", {}), dict):
+                if not isinstance(state.get("installations", {}), dict):
+                    state["installations"] = {}
                 obsolete = False
                 for key in ("imports", "enabled", "metadata"):
                     value = state.get(key)
-                    if isinstance(value, dict) and "codex-runtime" in value:
-                        value.pop("codex-runtime", None)
-                        obsolete = True
+                    if isinstance(value, dict):
+                        for obsolete_key in ("codex-runtime", "weixin-orchestration"):
+                            if obsolete_key in value:
+                                value.pop(obsolete_key, None)
+                                obsolete = True
                 if obsolete:
                     self._write(state)
                 return state
@@ -552,7 +571,7 @@ class PluginLifecycleService:
             pass
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             raise ApiError(503, "plugin_lifecycle_state_unavailable", "插件生命周期状态不可用。") from None
-        return {"imports": {}, "enabled": {}, "metadata": {}}
+        return {"imports": {}, "enabled": {}, "metadata": {}, "installations": {}}
 
     def _write(self, state: dict[str, object]) -> None:
         temporary = self.path.with_suffix(".tmp")

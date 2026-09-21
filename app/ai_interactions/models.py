@@ -15,7 +15,7 @@ QuickInteractionStatus = Literal["requested", "running", "succeeded", "failed", 
 QuickInteractionNotificationStatus = Literal["pending", "sending", "sent", "failed", "skipped"]
 QuickInteractionDeferredRestartStatus = Literal["pending", "started", "succeeded", "start_failed", "sensitive_task_failed", "cleared"]
 QuickInteractionNotificationRoute = Literal["default", "weixin-task"]
-QuickInteractionKind = Literal["standard", "translation"]
+QuickInteractionKind = Literal["standard"]
 TASK_SUMMARY_MAX_LENGTH = 27
 
 
@@ -76,7 +76,6 @@ class QuickInteractionTask(BaseModel):
     prompt: str | None = Field(default=None, max_length=20_000)
     summary: str | None = Field(default=None, max_length=48)
     kind: QuickInteractionKind = "standard"
-    translation_original: str | None = Field(default=None, max_length=8000)
     permission_mode: PermissionMode | None = None
     model: str | None = Field(default=None, max_length=128)
     reasoning_effort: str | None = Field(default=None, max_length=32)

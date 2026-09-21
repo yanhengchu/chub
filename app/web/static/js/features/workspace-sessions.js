@@ -218,7 +218,7 @@
 
   const sessionTitle = (session) => session.title || session.workspace_name || "未命名 Session";
 
-  const isVisibleQuickSession = (session) => session.workspace_id !== "weixin-translation";
+  const isVisibleQuickSession = () => true;
 
   const quickSessionLabel = (session) => {
     const slot = session.weixin_session_slot;

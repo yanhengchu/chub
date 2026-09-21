@@ -68,9 +68,8 @@ def listen_sockets(
         try:
             listeners.append(bind_listener(host, settings.server.port))
         except OSError as error:
-            LOGGER.info(
-                "Tailnet listener inactive at %s:%s; keeping loopback-only access "
-                "(normal when Tailscale is stopped or its address changed): %s",
+            LOGGER.debug(
+                "Tailnet listener unavailable at %s:%s; keeping loopback-only access: %s",
                 host,
                 settings.server.port,
                 error,

@@ -28,6 +28,18 @@ move_path() {
   mv -- "$source" "$target"
 }
 
+discard_retired_file() {
+  local source=$1
+  if [[ ! -e "$source" ]]; then
+    return
+  fi
+  if [[ -L "$source" || ! -f "$source" ]]; then
+    printf 'Retired state must be a regular non-symbolic file: %s\n' "$source" >&2
+    exit 1
+  fi
+  rm -- "$source"
+}
+
 merge_json_array() {
   local source=$1
   local target=$2
@@ -278,8 +290,7 @@ merge_directory data/artifacts/automations/downloads data/local/artifacts/automa
 merge_directory data/artifacts/weekly-reports data/local/artifacts/weekly-reports
 move_path data/state/openclaw/weixin-chub-mode.json \
   data/local/state/openclaw/weixin-chub-mode.json
-move_path data/state/openclaw/weixin-translation.json \
-  data/local/state/openclaw/weixin-translation.json
+discard_retired_file data/state/openclaw/weixin-translation.json
 merge_shared_requests
 
 find data/local/state data/local/runtime data/local/artifacts -type d -exec chmod 700 {} + 2>/dev/null || true

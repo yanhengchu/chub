@@ -23,7 +23,7 @@
 
   function buildSessionPreview(session) {
     const displayTitle = sessionDisplayTitle(session);
-    const renameAllowed = session?.workspace_id !== "weixin-translation";
+    const renameAllowed = Boolean(session);
     return Object.freeze({
       displayTitle,
       documentTitle: `${displayTitle} · 快速交互`,

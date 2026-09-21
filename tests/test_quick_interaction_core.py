@@ -137,7 +137,7 @@ const result = {
     { status: "running", activity: "unknown", permission_mode: "full-access" },
   ].map(core.sessionSwitcherStatus),
   switcherEntries: core.sessionSwitcherEntries([
-    { id: "translation", created_at: "2026-08-15T00:00:00Z", workspace_id: "weixin-translation", weixin_session_slot: null },
+    { id: "unassigned-newest", created_at: "2026-08-15T00:00:00Z", weixin_session_slot: null },
     { id: "unassigned-other", created_at: "2026-08-11T00:00:00Z", weixin_session_slot: null },
     { id: "slot-nine", created_at: "2026-08-12T00:00:00Z", weixin_session_slot: 9 },
     { id: "current", created_at: "2026-08-14T00:00:00Z", weixin_session_slot: null },
@@ -145,7 +145,7 @@ const result = {
     { id: "invalid-slot", created_at: "2026-08-10T00:00:00Z", weixin_session_slot: 10 },
   ]).map((session) => session.id),
   switcherLabels: Array.from(core.sessionSwitcherLabels(core.sessionSwitcherEntries([
-    { id: "translation", created_at: "2026-08-15T00:00:00Z", workspace_id: "weixin-translation", weixin_session_slot: null },
+    { id: "unassigned-newest", created_at: "2026-08-15T00:00:00Z", weixin_session_slot: null },
     { id: "unassigned-other", created_at: "2026-08-11T00:00:00Z", weixin_session_slot: null },
     { id: "slot-nine", created_at: "2026-08-12T00:00:00Z", weixin_session_slot: 9 },
     { id: "current", created_at: "2026-08-14T00:00:00Z", weixin_session_slot: null },
@@ -234,15 +234,17 @@ process.stdout.write(JSON.stringify(result));
             "blocked": False,
         },
             "switcherStatuses": ["待输出", "执行中", "异常", "权限需调整", "状态未知"],
-        "switcherEntries": [
-            "current",
+            "switcherEntries": [
+                "unassigned-newest",
+                "current",
             "slot-two",
             "slot-nine",
             "unassigned-other",
             "invalid-slot",
         ],
-        "switcherLabels": [
-            ["current", "S"],
+            "switcherLabels": [
+                ["unassigned-newest", "S"],
+                ["current", "S"],
             ["slot-two", "S2"],
             ["slot-nine", "S9"],
             ["unassigned-other", "S"],
@@ -310,6 +312,56 @@ core.request("/api/ai/sessions").then(() => {
         "message": "连接 Chub 失败，正在重试。",
         "retryable": True,
         "transport": True,
+    }
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js is required for JavaScript behavior tests")
+def test_quick_interaction_client_releases_retained_request_id_without_replay() -> None:
+    program = """
+const values = new Map();
+global.sessionStorage = {
+  getItem: (key) => values.get(key) || null,
+  setItem: (key, value) => values.set(key, value),
+  removeItem: (key) => values.delete(key),
+};
+global.crypto = { randomUUID: () => "request-id" };
+let submittedRequestId = null;
+global.fetch = async (_path, options) => {
+  submittedRequestId = options.headers["X-Chub-Task-Request-Id"];
+  return {
+    ok: false,
+    status: 409,
+    json: async () => ({
+      success: false,
+      error: {
+        code: "task_orchestration_retained",
+        message: "任务详情已过期，请重新提交。",
+      },
+    }),
+  };
+};
+const core = require(process.argv[1]);
+core.createClient({ sessionId: "session-1" }).submitTask({ prompt: "retry" })
+  .then(() => { process.exitCode = 1; })
+  .catch((error) => {
+    process.stdout.write(JSON.stringify({
+      code: error.code,
+      hasSubmittedRequestId: typeof submittedRequestId === "string" && submittedRequestId.length > 0,
+      retained: values.has("hub.quickInteractionRequest.v1.session-1"),
+    }));
+  });
+"""
+    result = subprocess.run(
+        [NODE, "-e", program, str(CORE_SCRIPT)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert json.loads(result.stdout) == {
+        "code": "task_orchestration_retained",
+        "hasSubmittedRequestId": True,
+        "retained": False,
     }
 
 
@@ -475,20 +527,20 @@ def test_quick_interaction_context_reads_hidden_current_session_directly() -> No
 const requests = [];
 global.fetch = async (path) => {
   requests.push(String(path));
-  const detail = String(path).includes("translation-session");
+  const detail = String(path).includes("selected-session");
   return {
     ok: true,
     status: 200,
     json: async () => ({
       success: true,
       data: detail
-        ? { id: "translation-session", workspace_id: "weixin-translation" }
+        ? { id: "selected-session", workspace_id: "workspace" }
         : { available: true, workspaces: [], sessions: [{ id: "ordinary" }] },
     }),
   };
 };
 const core = require(process.argv[1]);
-const client = core.createClient({ token: "", sessionId: "translation-session" });
+const client = core.createClient({ token: "", sessionId: "selected-session" });
 (async () => {
   const context = await client.loadSessionContext();
   process.stdout.write(JSON.stringify({ context, requests }));
@@ -505,11 +557,11 @@ const client = core.createClient({ token: "", sessionId: "translation-session" }
     )
 
     behavior = json.loads(result.stdout)
-    assert behavior["context"]["session"]["id"] == "translation-session"
+    assert behavior["context"]["session"]["id"] == "selected-session"
     assert behavior["context"]["sessions"] == [{"id": "ordinary"}]
     assert behavior["requests"] == [
         "/api/ai/sessions",
-        "/api/ai/sessions/translation-session",
+        "/api/ai/sessions/selected-session",
     ]
 
 

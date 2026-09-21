@@ -30,6 +30,8 @@ class ProjectDocumentSummary(BaseModel):
     status: str
     category: str
     category_label: str
+    group: str
+    group_label: str
     updated_at: datetime
     archived: bool
 

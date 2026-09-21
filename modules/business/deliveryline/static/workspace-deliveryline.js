@@ -281,5 +281,6 @@
     });
     load().catch((error) => window.setWorkspaceToolbarError?.(error.message));
   };
-  window.initializeWorkspaceDeliveryline();
+  window.initializeWorkspaceBusinessModule = window.initializeWorkspaceDeliveryline;
+  window.initializeWorkspaceBusinessModule();
 })();

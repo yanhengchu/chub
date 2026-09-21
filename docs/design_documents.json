@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "documents": [
     {
       "id": "project-readme",
@@ -7,6 +7,7 @@
       "summary": "介绍 Chub 的产品定位、当前能力、使用入口、运行方式与维护约定。",
       "status": "持续维护",
       "category": "project_baseline",
+      "group": "project-core-documents",
       "path": "@project/README.md"
     },
     {
@@ -15,6 +16,7 @@
       "summary": "定义 Chub 核心、AI Runtime 与第三方服务三层架构、状态所有权和跨模块约束。",
       "status": "持续维护",
       "category": "project_baseline",
+      "group": "project-core-documents",
       "path": "CHUB_ARCHITECTURE_DESIGN.md"
     },
     {
@@ -23,6 +25,7 @@
       "summary": "统一登记 Chub 当前可用的命令、插件、固定 API，并维护微信固定指令产品契约。",
       "status": "持续维护",
       "category": "project_baseline",
+      "group": "project-core-documents",
       "path": "CHUB_INTEGRATION_CAPABILITIES.md"
     },
     {
@@ -31,6 +34,7 @@
       "summary": "定义 Chub 正式部署包、随包 Runtime/微信编排 ZIP、目标设备核心安装与可选 OpenClaw 接入边界。",
       "status": "已验收",
       "category": "delivery_requirement",
+      "group": "deployment-interface",
       "path": "CHUB_DEPLOYMENT_PACKAGE_DESIGN.md"
     },
     {
@@ -39,6 +43,7 @@
       "summary": "定义 AI Runtime 共享契约、能力矩阵、AI Session/Worker 边界及多 Runtime 接入判定。",
       "status": "已验收",
       "category": "delivery_requirement",
+      "group": "ai-runtime",
       "path": "CHUB_AI_RUNTIME_DESIGN.md"
     },
     {
@@ -47,23 +52,26 @@
       "summary": "定义 Runtime 插件模块的版本槽位、默认实现选择、正式 ZIP 覆盖、开发重载和双端注册边界。",
       "status": "持续维护",
       "category": "delivery_requirement",
+      "group": "ai-runtime",
       "path": "CHUB_RUNTIME_PLUGIN_DESIGN.md"
     },
     {
       "id": "chub-task-orchestration-externalization",
       "title": "Chub 任务编排插件模块架构设计",
-      "summary": "定义任务编排插件模块的通用执行面、检查点、版本绑定、模块协议和生命周期；首个微信 ZIP 已完成 macOS 实机生命周期、执行与 Web 重启恢复验证，通用架构持续维护。",
+      "summary": "定义入口无关的任务编排分发器、插件执行面、检查点、版本绑定、模块协议和生命周期。",
       "status": "持续维护",
       "category": "delivery_requirement",
+      "group": "task-orchestration",
       "path": "CHUB_TASK_ORCHESTRATION_PLUGIN_DESIGN.md"
     },
     {
-      "id": "weixin-task-orchestration-externalization",
-      "title": "Chub 微信任务编排插件模块设计",
-      "summary": "定义微信普通正文的内置、开发与 ZIP 插件分流、恢复和模块维护边界；已完成 macOS 下首个模块及 Web/Quick Worker 重启恢复的实机验收。",
-      "status": "已验收",
+      "id": "chub-task-prompt-optimizer-plugin",
+      "title": "Chub 任务提示词优化插件设计",
+      "summary": "定义独立任务编排插件的任务来源、提示词优化目标、处理结果、恢复和具体场景接入验收边界。",
+      "status": "持续维护",
       "category": "delivery_requirement",
-      "path": "WEIXIN_TASK_ORCHESTRATION_PLUGIN_DESIGN.md"
+      "group": "task-orchestration",
+      "path": "CHUB_TASK_PROMPT_OPTIMIZER_PLUGIN_DESIGN.md"
     },
     {
       "id": "ai-session-state",
@@ -71,6 +79,7 @@
       "summary": "定义 Chub Session、Native Session 数据消费与映射、Activity、交互入口、usage 投影、操作、微信槽位和单 writer 状态语义。",
       "status": "已验收",
       "category": "delivery_requirement",
+      "group": "task-orchestration",
       "path": "AI_SESSION_STATE_DESIGN.md"
     },
     {
@@ -79,6 +88,7 @@
       "summary": "面向 AI Agent 定义 Quick Worker 独立服务、非实时任务、Session 租约、恢复、通知终态和重启协调。",
       "status": "已验收",
       "category": "delivery_requirement",
+      "group": "task-orchestration",
       "path": "CHUB_QUICK_WORKER_DESIGN.md"
     },
     {
@@ -87,6 +97,7 @@
       "summary": "定义当前 Codex Runtime 的专属边界，以及 Codex/OpenAI 用量来源、统一接口、缓存、失败边界和展示口径。",
       "status": "已验收",
       "category": "delivery_requirement",
+      "group": "ai-runtime",
       "path": "CHUB_CODEX_RUNTIME_DESIGN.md"
     },
     {
@@ -95,6 +106,7 @@
       "summary": "面向 AI Agent 统一定义 Chub/OpenClaw/微信 ClawBot 的接入、版本化插件补丁、Context Token、幂等、通知与安全验收边界。",
       "status": "已验收",
       "category": "delivery_requirement",
+      "group": "external-integration-learning",
       "path": "OPENCLAW_CUSTOMIZATION_DESIGN.md"
     },
     {
@@ -103,6 +115,7 @@
       "summary": "定义本期周报从飞书资料准备、输入发布、重点确认到正式生成与复核的端到端流程。",
       "status": "已验收",
       "category": "delivery_requirement",
+      "group": "delivery-automation",
       "path": "WEEKLY_REPORT_AUTOMATION_DESIGN.md"
     },
     {
@@ -111,6 +124,7 @@
       "summary": "定义工作台与设置页的前端分层、公共交互、侧栏视觉基线、主题注册和完整视觉 Token。",
       "status": "已验收",
       "category": "delivery_requirement",
+      "group": "deployment-interface",
       "path": "FRONTEND_UI_DESIGN.md"
     },
     {
@@ -119,14 +133,16 @@
       "summary": "记录独立于 Chub Runtime 的本机模型学习环境、资源边界和验收范围。",
       "status": "已验收",
       "category": "independent_learning",
+      "group": "external-integration-learning",
       "path": "LOCAL_LLM_LEARNING_DEPLOYMENT_DESIGN.md"
     },
     {
       "id": "deliveryline-platform",
       "title": "Deliveryline 需求交付管理平台设计",
-      "summary": "定义 Deliveryline 的产品定位、需求交付主体阶段，以及当前插件生命周期与首页入口边界。",
+      "summary": "定义 Deliveryline 的产品定位、交付线与交付项产品模型、AI 协作边界，以及当前插件入口基线。",
       "status": "持续维护",
       "category": "delivery_requirement",
+      "group": "delivery-automation",
       "path": "DELIVERYLINE_PLATFORM_DESIGN.md"
     }
   ]

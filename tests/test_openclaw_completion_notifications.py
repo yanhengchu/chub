@@ -24,150 +24,18 @@ def task(
     result: str = "执行完成",
     notification_route: str = "default",
     summary: str | None = None,
-    kind: str = "standard",
-    translation_original: str | None = None,
 ) -> QuickInteractionTask:
     return QuickInteractionTask(
         id="task-1",
         session_id="session-1",
         prompt="执行任务",
         summary=summary,
-        kind=kind,
-        translation_original=translation_original,
         status="succeeded",
         result=result,
         notification_route=notification_route,
         created_at=utc_now(),
         updated_at=utc_now(),
     )
-
-
-def test_translation_notification_contains_original_polish_and_english() -> None:
-    notifier = OpenClawCompletionNotifier(OpenClawCompletionNotificationConfig())
-
-    messages = notifier._messages_for(
-        task(
-            result="润色：\n请检查服务状态。\n\nEnglish：\nPlease check the service status.",
-            kind="translation",
-            translation_original="检查下服务咋样",
-        )
-    )
-
-    assert messages == [
-        "文本优化与翻译\n\n原文：\n检查下服务咋样\n\n"
-        "润色：\n请检查服务状态。\n\n"
-        "English：\nPlease check the service status."
-    ]
-
-
-def test_translation_notification_is_bounded_to_five_parts() -> None:
-    notifier = OpenClawCompletionNotifier(
-        OpenClawCompletionNotificationConfig(max_message_chars=256)
-    )
-
-    messages = notifier._messages_for(
-        task(
-            result="润色：\n" + "内容" * 2000 + "\n\nEnglish：\n" + "text " * 2000,
-            kind="translation",
-            translation_original="原文" * 1000,
-        )
-    )
-
-    assert len(messages) == 5
-    assert all(len(message) <= 256 for message in messages)
-    assert "结果超过微信发送上限" in messages[-1]
-
-
-def test_optimized_task_notification_reports_real_submission_state() -> None:
-    notifier = OpenClawCompletionNotifier(
-        OpenClawCompletionNotificationConfig(enabled=True)
-    )
-    notifier._send_messages = MagicMock(
-        return_value=CompletionNotificationResult("sent")
-    )
-    notifier.session_slot_validator = MagicMock(return_value=True)
-    notifier.session_current_validator = MagicMock(return_value=True)
-    notifier.session_context_reader = lambda _session_id: (2, "服务检查")
-    delivery_route = QuickInteractionWeixinRoute(
-        account_id="weixin-account",
-        recipient="owner@im.wechat",
-    )
-
-    result = notifier.notify_weixin_optimized_task(
-        delivery_route,
-        outcome="started",
-        target_session_id="session-2",
-        task="请检查服务状态。",
-        english="Please check the service status.",
-    )
-
-    assert result.status == "sent"
-    kwargs = notifier._send_messages.call_args.kwargs
-    assert kwargs["required_account_id"] == "weixin-account"
-    message = kwargs["message_factory"]()[0]
-    assert message == (
-        "Started\n\n▶ S2 · 服务检查\n\n"
-        "Submitted:\n请检查服务状态。\n\n"
-        "English:\nPlease check the service status."
-    )
-    notifier.session_slot_validator.assert_called_once_with(2, "session-2")
-    notifier.session_current_validator.assert_called_once_with(2, "session-2")
-
-
-def test_optimized_task_notification_marks_reused_slot_unavailable() -> None:
-    notifier = OpenClawCompletionNotifier(
-        OpenClawCompletionNotificationConfig(enabled=True)
-    )
-    notifier._send_messages = MagicMock(
-        return_value=CompletionNotificationResult("sent")
-    )
-    notifier.session_slot_validator = MagicMock(return_value=False)
-    notifier.session_current_validator = MagicMock(return_value=True)
-    notifier.session_context_reader = lambda _session_id: (2, "服务检查")
-
-    notifier.notify_weixin_optimized_task(
-        QuickInteractionWeixinRoute(
-            account_id="weixin-account",
-            recipient="owner@im.wechat",
-        ),
-        outcome="started",
-        target_session_id="old-session",
-        task="请检查服务状态。",
-        english="Please check the service status.",
-    )
-
-    message = notifier._send_messages.call_args.kwargs["message_factory"]()[0]
-    assert "S2 · 服务检查 (Unavailable)" in message
-    assert "▶ S2" not in message
-    notifier.session_current_validator.assert_not_called()
-
-
-def test_translation_confirmation_notification_has_fixed_text_commands() -> None:
-    notifier = OpenClawCompletionNotifier(
-        OpenClawCompletionNotificationConfig(enabled=True)
-    )
-    notifier._send_messages = MagicMock(
-        return_value=CompletionNotificationResult("sent")
-    )
-    notifier.session_context_reader = lambda _session_id: (2, "服务检查")
-    route = QuickInteractionWeixinRoute(
-        account_id="weixin-account",
-        recipient="owner@im.wechat",
-    )
-
-    result = notifier.notify_weixin_translation_confirmation(
-        route,
-        target_session_id="session-2",
-        task="请检查服务状态。",
-        english="Please check the service status.",
-    )
-
-    assert result.status == "sent"
-    message = notifier._send_messages.call_args.kwargs["message_factory"]()[0]
-    assert "Translation ready" in message
-    assert message.endswith("Please confirm.")
-    assert "text ok" not in message
-    assert "text-check" not in message
 
 
 def executable(tmp_path: Path) -> Path:
@@ -380,18 +248,16 @@ def test_notification_does_not_label_timeout_as_an_error_source() -> None:
     notifier = OpenClawCompletionNotifier(
         OpenClawCompletionNotificationConfig(max_message_chars=256)
     )
-    timed_out_translation = task(kind="translation").model_copy(
+    timed_out_task = task().model_copy(
         update={
             "status": "timed_out",
             "result": None,
-            "error": "翻译任务超时",
+            "error": "任务超时",
             "error_source": "chub",
         }
     )
 
-    assert notifier._messages_for(timed_out_translation) == [
-        "文本优化与翻译失败\n\n翻译任务超时"
-    ]
+    assert notifier._messages_for(timed_out_task) == ["Timed out\n\n任务超时"]
 
 
 def test_completion_usage_footer_only_applies_to_successful_main_task() -> None:
@@ -407,8 +273,6 @@ def test_completion_usage_footer_only_applies_to_successful_main_task() -> None:
     assert notifier._completion_usage_footer(
         task().model_copy(update={"status": "failed", "result": None})
     ) is None
-    assert notifier._completion_usage_footer(task(kind="translation")) is None
-
     assert notifier.completion_usage_reader.call_count == 1
 
 

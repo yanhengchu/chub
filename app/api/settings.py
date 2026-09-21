@@ -9,10 +9,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app.core.response import ApiError, ApiResponse
 from app.core.security import require_trusted_network
-from app.deliveryline.store import DeliverylineError
+from app.core.business_modules import loaded_business_module, loaded_business_modules
 from app.services.internal_session_visibility import internal_session_visibility_lock
 from app.services.operation_log import log_operation
-from app.services.weixin_translation import TranslationSettingsStatus
 from app.services.deployment_package import (
     DeploymentPackageConfiguration,
     DeploymentPackageReleasePreview,
@@ -28,36 +27,6 @@ router = APIRouter(
     tags=["settings"],
     dependencies=[Depends(require_trusted_network)],
 )
-
-class TranslationSettingsUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    mode: Literal["direct", "auto", "confirm"] | None = None
-    model: str | None = Field(default=None, max_length=128)
-    reasoning_effort: str | None = Field(default=None, max_length=32)
-    show_internal_native_session: bool | None = None
-
-    @field_validator("model", "reasoning_effort", mode="before")
-    @classmethod
-    def normalize_selection(cls, value: object) -> object:
-        if isinstance(value, str):
-            value = value.strip()
-            return value or None
-        return value
-
-    @model_validator(mode="after")
-    def validate_mode(self):
-        mode_fields = {"mode"} & self.model_fields_set
-        execution_fields = {"model", "reasoning_effort"} & self.model_fields_set
-        display_fields = {"show_internal_native_session"} & self.model_fields_set
-        if not mode_fields and not execution_fields and not display_fields:
-            raise ValueError("a translation setting is required")
-        if display_fields and self.show_internal_native_session is None:
-            raise ValueError("show_internal_native_session must be a boolean")
-        if sum(bool(fields) for fields in (mode_fields, execution_fields, display_fields)) > 1:
-            raise ValueError("provide mode or execution settings only")
-        return self
-
 
 class DeploymentPackageSettingsUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -101,28 +70,91 @@ class InternalSessionVisibilityUpdate(BaseModel):
 
 
 class InternalSessionVisibilityData(BaseModel):
+    business_modules: dict[str, bool] = Field(default_factory=dict)
+    # Kept as a response compatibility alias for existing clients.
     deliveryline: bool | None = None
-    translation: bool | None = None
     today_focus: bool
     deployment_package: bool
+
+
+@router.get(
+    "/business-modules/{module_id}/session-visibility",
+    response_model=ApiResponse[InternalSessionVisibilityUpdate],
+)
+def get_business_module_session_visibility(
+    request: Request,
+    module_id: str,
+) -> ApiResponse[InternalSessionVisibilityUpdate]:
+    module = loaded_business_module(request, module_id)
+    if (
+        module is None
+        or module.session_visibility_get is None
+        or module_id not in request.app.state.plugin_lifecycle.imported_plugin_ids()
+    ):
+        raise ApiError(404, "business_module_not_found", "业务模块不可用。")
+    try:
+        return ApiResponse(
+            data=InternalSessionVisibilityUpdate(
+                show_sessions=module.session_visibility_get(request)
+            )
+        )
+    except (OSError, RuntimeError):
+        raise ApiError(
+            503,
+            "internal_session_visibility_unavailable",
+            "内部会话显示设置暂时不可用。",
+        ) from None
+
+
+@router.put(
+    "/business-modules/{module_id}/session-visibility",
+    response_model=ApiResponse[InternalSessionVisibilityUpdate],
+)
+def update_business_module_session_visibility(
+    request: Request,
+    module_id: str,
+    payload: InternalSessionVisibilityUpdate,
+) -> ApiResponse[InternalSessionVisibilityUpdate]:
+    module = loaded_business_module(request, module_id)
+    if (
+        module is None
+        or module.session_visibility_get is None
+        or module.session_visibility_set is None
+        or module_id not in request.app.state.plugin_lifecycle.imported_plugin_ids()
+    ):
+        raise ApiError(404, "business_module_not_found", "业务模块不可用。")
+    try:
+        module.session_visibility_set(request, payload.show_sessions)
+        return ApiResponse(
+            data=InternalSessionVisibilityUpdate(
+                show_sessions=module.session_visibility_get(request)
+            )
+        )
+    except (OSError, RuntimeError):
+        raise ApiError(
+            503,
+            "internal_session_visibility_update_failed",
+            "内部会话显示设置未能完成，请稍后重试。",
+        ) from None
 
 
 def _internal_session_visibility_data(request: Request) -> InternalSessionVisibilityData:
     try:
         imported_plugins = request.app.state.plugin_lifecycle.imported_plugin_ids()
-        deliveryline = None
-        if "deliveryline" in imported_plugins:
-            deliveryline = request.app.state.deliveryline_collaboration.show_sessions()
-        translation = None
-        if "weixin-orchestration" in imported_plugins:
-            translation = request.app.state.weixin_translation.status().show_internal_native_session
+        module_visibility: dict[str, bool] = {}
+        for module in loaded_business_modules(request):
+            if (
+                module.module_id in imported_plugins
+                and module.session_visibility_get is not None
+            ):
+                module_visibility[module.module_id] = module.session_visibility_get(request)
         return InternalSessionVisibilityData(
-            deliveryline=deliveryline,
-            translation=translation,
+            business_modules=module_visibility,
+            deliveryline=module_visibility.get("deliveryline"),
             today_focus=request.app.state.ai_search.show_sessions(),
             deployment_package=request.app.state.deployment_package.show_release_note_session(),
         )
-    except (DeliverylineError, OSError):
+    except (OSError, RuntimeError):
         raise ApiError(
             503,
             "internal_session_visibility_unavailable",
@@ -135,15 +167,17 @@ def _internal_session_visibility_setters(
     current: InternalSessionVisibilityData,
 ) -> list[tuple[Callable[[bool], object], bool]]:
     setters: list[tuple[Callable[[bool], object], bool]] = []
-    if current.deliveryline is not None:
-        setters.append((request.app.state.deliveryline_collaboration.set_show_sessions, current.deliveryline))
-    if current.translation is not None:
-        setters.append(
-            (
-                request.app.state.weixin_translation.set_show_internal_native_session,
-                current.translation,
+    for module in loaded_business_modules(request):
+        value = current.business_modules.get(module.module_id)
+        if value is None and module.module_id == "deliveryline":
+            value = current.deliveryline
+        if value is not None and module.session_visibility_set is not None:
+            setters.append(
+                (
+                    lambda value, module=module: module.session_visibility_set(request, value),
+                    value,
+                )
             )
-        )
     setters.extend(
         (
             (request.app.state.ai_search.set_show_sessions, current.today_focus),
@@ -154,105 +188,6 @@ def _internal_session_visibility_setters(
         )
     )
     return setters
-
-
-@router.get(
-    "/weixin-translation",
-    response_model=ApiResponse[TranslationSettingsStatus],
-)
-def get_weixin_translation_settings(
-    request: Request,
-) -> ApiResponse[TranslationSettingsStatus]:
-    try:
-        result = request.app.state.weixin_translation.status()
-    except OSError:
-        raise ApiError(
-            503,
-            "weixin_translation_settings_unavailable",
-            "微信翻译设置暂时无法读取。",
-        ) from None
-    return ApiResponse(data=result)
-
-
-@router.put(
-    "/weixin-translation",
-    response_model=ApiResponse[TranslationSettingsStatus],
-)
-def update_weixin_translation_settings(
-    request: Request,
-    payload: TranslationSettingsUpdate,
-) -> ApiResponse[TranslationSettingsStatus]:
-    mode = payload.mode
-    model_update = "model" in payload.model_fields_set
-    reasoning_update = "reasoning_effort" in payload.model_fields_set
-    execution_update = model_update or reasoning_update
-    display_update = "show_internal_native_session" in payload.model_fields_set
-    target = (
-        "internal_native_session_display"
-        if display_update
-        else "translation_execution_settings" if execution_update else mode
-    )
-    operation_id = log_operation(
-        request,
-        action="update_weixin_translation_setting",
-        status="requested",
-        target=target,
-    )
-    log_operation(
-        request,
-        action="update_weixin_translation_setting",
-        status="started",
-        target=target,
-        operation_id=operation_id,
-    )
-    try:
-        if display_update:
-            with internal_session_visibility_lock:
-                result = request.app.state.weixin_translation.set_show_internal_native_session(
-                    payload.show_internal_native_session
-                )
-        elif execution_update:
-            current = request.app.state.weixin_translation.status()
-            result = request.app.state.weixin_translation.set_execution_settings(
-                current.runtime_id,
-                payload.model if model_update else current.model,
-                payload.reasoning_effort if reasoning_update else current.reasoning_effort,
-            )
-        else:
-            assert mode is not None
-            if mode != "direct" and request.app.state.weixin_chub_mode.orchestration_enabled():
-                request.app.state.weixin_chub_mode.require_orchestration_implementation_available()
-            result = request.app.state.weixin_translation.set_processing_mode(mode)
-    except ApiError:
-        log_operation(
-            request,
-            action="update_weixin_translation_setting",
-            status="failed",
-            target=target,
-            operation_id=operation_id,
-        )
-        raise
-    except OSError:
-        log_operation(
-            request,
-            action="update_weixin_translation_setting",
-            status="failed",
-            target=target,
-            operation_id=operation_id,
-        )
-        raise ApiError(
-            503,
-            "weixin_translation_settings_unavailable",
-            "微信翻译设置暂时无法保存。",
-        ) from None
-    log_operation(
-        request,
-        action="update_weixin_translation_setting",
-        status="succeeded",
-        target=target,
-        operation_id=operation_id,
-    )
-    return ApiResponse(data=result)
 
 
 @router.put(
@@ -272,14 +207,14 @@ def update_internal_session_visibility(
                     setter(payload.show_sessions)
                     applied.append((setter, previous))
             result = _internal_session_visibility_data(request)
-        except (ApiError, DeliverylineError, OSError) as exc:
+        except (ApiError, OSError, RuntimeError) as exc:
             if not applied and isinstance(exc, ApiError):
                 raise
             rollback_failed = False
             for setter, previous in reversed(applied):
                 try:
                     setter(previous)
-                except (ApiError, DeliverylineError, OSError):
+                except (ApiError, OSError, RuntimeError):
                     rollback_failed = True
             if rollback_failed:
                 raise ApiError(
@@ -336,7 +271,6 @@ def update_deployment_package_configuration(
                 runtime_implementation_id=FORMAL_CODEX_IMPLEMENTATION_ID,
                 runtime_release_version=payload.release_version,
                 runtime_description=FORMAL_CODEX_DESCRIPTION,
-                weixin_release_version=payload.release_version,
                 include_development_sources=payload.include_development_sources,
                 release_note="",
             )
@@ -501,7 +435,6 @@ def build_deployment_package(
         runtime_implementation_id=FORMAL_CODEX_IMPLEMENTATION_ID,
         runtime_release_version=payload.release_version,
         runtime_description=FORMAL_CODEX_DESCRIPTION,
-        weixin_release_version=payload.release_version,
         include_development_sources=payload.include_development_sources,
         release_note=payload.release_note,
     )

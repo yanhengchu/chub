@@ -21,48 +21,18 @@ window.initializeWorkspaceWorkstation = () => {
     developmentRefresh: byId("workspace-development-refresh"),
     developmentEnvironment: byId("workspace-development-environment"),
     developmentRuntimeList: byId("workspace-development-runtime-list"),
-    developmentWeixinRow: byId("workspace-development-weixin-row"),
-    developmentWeixinDetail: byId("workspace-development-weixin-detail"),
-    developmentDeliverylineRow: byId("workspace-development-deliveryline-row"),
-    developmentDeliverylineDetail: byId("workspace-development-deliveryline-detail"),
-    thirdPartyEnvironment: byId("workspace-third-party-environment"),
-    thirdPartyRefresh: byId("workspace-third-party-refresh"),
-    openclawDetail: byId("workspace-openclaw-detail"),
-    openclawStart: byId("workspace-openclaw-start"),
-    openclawRestart: byId("workspace-openclaw-restart"),
-    openclawWeixinDetail: byId("workspace-openclaw-weixin-detail"),
-    openclawBindWeixin: byId("workspace-openclaw-bind-weixin"),
-    openclawWeixinDialog: byId("workspace-openclaw-weixin-dialog"),
-    openclawWeixinClose: byId("workspace-openclaw-weixin-close"),
-    openclawWeixinAccountSummary: byId("workspace-openclaw-weixin-account-summary"),
-    openclawWeixinOwnerSummary: byId("workspace-openclaw-weixin-owner-summary"),
-    openclawWeixinQrPanel: byId("workspace-openclaw-weixin-qr-panel"),
-    openclawWeixinQr: byId("workspace-openclaw-weixin-qr"),
-    openclawWeixinVerifyForm: byId("workspace-openclaw-weixin-verify-form"),
-    openclawWeixinVerifyCode: byId("workspace-openclaw-weixin-verify-code"),
-    openclawWeixinMessage: byId("workspace-openclaw-weixin-message"),
-    openclawWeixinCancel: byId("workspace-openclaw-weixin-cancel"),
-    openclawWeixinStart: byId("workspace-openclaw-weixin-start"),
+    developmentBusinessList: byId("workspace-development-business-list"),
   };
   if (!Object.values(elements).every((element) => element instanceof HTMLElement)) return;
-  const thirdPartyAvailable = elements.thirdPartyEnvironment.dataset.thirdPartyAvailable === "true";
 
   let workerState = null;
   let upgradeState = null;
   let hubRestarting = false;
   let workerRestarting = false;
   let upgradeStarting = false;
-  let openclawOperating = false;
-  let thirdPartyLoading = false;
   let developmentLoading = false;
   let developmentRefreshing = false;
   let developmentSnapshot = null;
-  let openclawStatus = null;
-  let openclawIntegration = null;
-  let openclawWeixinLogin = null;
-  let openclawWeixinPollTimer = 0;
-  let openclawWeixinQrObjectUrl = "";
-  let openclawWeixinQrUpdatedAt = "";
   let workerTimer = 0;
   let workerRetryDelay = 1000;
   let upgradeTimer = 0;
@@ -74,7 +44,6 @@ window.initializeWorkspaceWorkstation = () => {
   let upgradeIsCurrent = false;
   let snapshot = { status: null, worker: null, upgrade: null };
   const snapshotCacheKey = "chub.workspace.workstation.v1";
-  const thirdPartySnapshotCacheKey = "chub.workspace.thirdParty.v1";
   const developmentSnapshotCacheKey = "chub.workspace.development.v1";
   const workbenchStatusLoadingMinimumMs = 220;
   const requestAbortController = new AbortController();
@@ -153,31 +122,6 @@ window.initializeWorkspaceWorkstation = () => {
     }
   };
 
-  const readThirdPartySnapshot = () => {
-    try {
-      const cached = JSON.parse(
-        window.sessionStorage.getItem(thirdPartySnapshotCacheKey) || "null",
-      );
-      if (!isSnapshotValue(cached?.status) || !isSnapshotValue(cached?.login)) {
-        return null;
-      }
-      return cached;
-    } catch {
-      return null;
-    }
-  };
-
-  const cacheThirdPartySnapshot = (status, login, integration) => {
-    try {
-      window.sessionStorage.setItem(
-        thirdPartySnapshotCacheKey,
-        JSON.stringify({ status, login, integration }),
-      );
-    } catch {
-      // The latest server data remains usable when browser storage is unavailable.
-    }
-  };
-
   const readDevelopmentSnapshot = () => {
     try {
       const cached = JSON.parse(
@@ -185,8 +129,6 @@ window.initializeWorkspaceWorkstation = () => {
       );
       if (
         !isSnapshotValue(cached?.runtime)
-        || !isSnapshotValue(cached?.orchestration)
-        || !isSnapshotValue(cached?.modules)
       ) return null;
       return cached;
     } catch {
@@ -194,11 +136,11 @@ window.initializeWorkspaceWorkstation = () => {
     }
   };
 
-  const cacheDevelopmentSnapshot = (runtime, runtimeManagement, orchestration, modules, deliveryline, runtimePlugin, weixin) => {
+  const cacheDevelopmentSnapshot = (runtime, runtimeManagement, businessPlugins, runtimePlugin) => {
     try {
       window.sessionStorage.setItem(
         developmentSnapshotCacheKey,
-        JSON.stringify({ runtime, runtimeManagement, orchestration, modules, deliveryline, runtimePlugin, weixin }),
+        JSON.stringify({ runtime, runtimeManagement, businessPlugins, runtimePlugin }),
       );
     } catch {
       // The latest server data remains usable when browser storage is unavailable.
@@ -213,11 +155,6 @@ window.initializeWorkspaceWorkstation = () => {
   const setSummaryStatus = (target, text, kind = "muted") => {
     target.textContent = text;
     target.className = `workspace-preview-summary-status workspace-preview-summary-status-${kind}`;
-  };
-
-  const setMessage = (target, text = "", kind = "") => {
-    target.textContent = text;
-    target.className = kind ? `message message-${kind}` : "message";
   };
 
   const toolbarStatus = (data) => {
@@ -266,40 +203,26 @@ window.initializeWorkspaceWorkstation = () => {
 
   const tailnetSummary = (state) => ({
     available: ["已就绪", "远程访问", "success"],
-    unavailable: ["不可用", "远程访问", "warning"],
-    unknown: ["状态未知", "远程访问", "muted"],
+    unavailable: ["未启用", "仅本机访问", "muted"],
+    unknown: ["未检查", "远程访问", "muted"],
   })[state] || ["状态未知", "远程访问", "muted"];
 
   const upgradeLabel = (data) => ({
-    idle: "无待升级",
-    available: "可执行",
-    blocked: "暂不可用",
+    idle: "可执行",
     preparing: "正在准备",
-    draining: "正在停止任务",
-    archiving: "正在清理",
-    cleaning: "正在清理",
-    restarting: "正在恢复",
+    rebuilding: "正在重建",
     succeeded: "已完成",
-    failed: "恢复失败",
+    failed: "未完成",
+    unknown: "状态未知",
   })[data.state] || "状态未知";
 
   const syncControls = () => {
     if (disposed) return;
-    const upgradeRunning = Boolean(upgradeState?.operation?.status === "started");
+    const upgradeRunning = Boolean(["requested", "started"].includes(upgradeState?.operation?.status));
     elements.chubRestart.disabled = hubRestarting || upgradeRunning;
     elements.workerRestart.disabled = workerRestarting || !workerState?.can_restart || upgradeRunning;
     elements.upgradeStart.disabled = upgradeStarting || !upgradeIsCurrent || !upgradeState?.can_start;
     elements.developmentRefresh.disabled = developmentLoading || developmentRefreshing;
-    const gatewayReady = Boolean(openclawStatus?.installed && openclawStatus?.configured);
-    const activeLogin = ["starting", "waiting_scan", "needs_verification", "confirming", "cancelling"].includes(openclawWeixinLogin?.state);
-    const gatewayStopped = openclawStatus?.state === "stopped";
-    const gatewayRestartable = ["running", "degraded"].includes(openclawStatus?.state);
-    elements.openclawStart.hidden = !gatewayStopped;
-    elements.openclawRestart.hidden = !gatewayRestartable;
-    elements.openclawStart.disabled = openclawOperating || upgradeRunning || openclawStatus?.state !== "stopped";
-    elements.openclawRestart.disabled = openclawOperating || upgradeRunning || !gatewayReady || !gatewayRestartable;
-    elements.thirdPartyRefresh.disabled = thirdPartyLoading;
-    elements.openclawBindWeixin.disabled = thirdPartyLoading || openclawOperating || !gatewayReady || activeLogin || !openclawWeixinLogin;
   };
 
   const renderStatus = (data) => {
@@ -308,7 +231,7 @@ window.initializeWorkspaceWorkstation = () => {
     elements.systemSummaryDetail.textContent = `内存 ${Math.round(system.memory_percent)}% · 磁盘 ${Math.round(system.disk_percent)}%`;
     setStatus(
       elements.chubDetail,
-      `Chub v${data.hub.version} · ${system.operating_system} ${system.operating_system_version} · Python ${system.python_version}`,
+      `Chub v${data.hub.version} · Web 控制面（页面与 API）· 重启不影响 Quick Worker 与已受理任务`,
       "success",
     );
     const [summary, summaryDetail, summaryKind] = tailnetSummary(data.tailnet.state);
@@ -326,11 +249,14 @@ window.initializeWorkspaceWorkstation = () => {
     const versionDetail = data.worker_version && data.protocol_version
       ? `Worker ${workerVersion} · 协议 v${data.protocol_version}${data.state === "incompatible" && data.expected_protocol_version ? `（当前 Chub 需要 v${data.expected_protocol_version}）` : ""} · `
       : "";
+    const readyDetail = data.worker_version && data.state === "ready"
+      ? `Worker ${workerVersion} · 后台 AI 任务执行服务 · 重启会中断在途任务`
+      : `${versionDetail}${data.message}`;
     setStatus(
       elements.workerDetail,
       operationFailed || data.state === "restarting"
         ? (operationFailed ? data.operation.message : data.message)
-        : `${versionDetail}${data.message}`,
+        : readyDetail,
       operationFailed ? "failed" : workerKind(data.state),
     );
     setSummaryStatus(
@@ -344,7 +270,17 @@ window.initializeWorkspaceWorkstation = () => {
 
   const renderUpgrade = (data) => {
     upgradeState = data;
-    setStatus(elements.upgradeDetail, `状态：${upgradeLabel(data)}。${data.message}`, data.state === "failed" ? "failed" : data.can_start ? "success" : "warning");
+    if (data.state === "succeeded") {
+      setStatus(elements.upgradeDetail, "可按当前代码、配置和 requirements 重建 Chub 工作站。", "success");
+    } else if (["preparing", "rebuilding"].includes(data.state)) {
+      setStatus(
+        elements.upgradeDetail,
+        "状态：重建已启动。当前页面将短暂断开，无法实时显示进度；请稍后手动刷新本页查看最终结果。",
+        "warning",
+      );
+    } else {
+      setStatus(elements.upgradeDetail, `状态：${upgradeLabel(data)}。${data.message}`, data.state === "failed" ? "failed" : data.can_start ? "success" : "warning");
+    }
     syncControls();
   };
 
@@ -353,7 +289,7 @@ window.initializeWorkspaceWorkstation = () => {
     return normalized ? `v${normalized}` : "未知版本";
   };
 
-  const renderDevelopment = (runtime, runtimeManagement, orchestration, modules, deliveryline, runtimePlugin, weixin) => {
+  const renderDevelopment = (runtime, runtimeManagement, businessPlugins, runtimePlugin) => {
     const artifactTitle = (plugin, artifact, includeArtifactName = false) => {
       const name = plugin?.name || "未知插件";
       const artifactName = includeArtifactName ? ` · ${artifact?.name || "未知实现"}` : "";
@@ -388,46 +324,27 @@ window.initializeWorkspaceWorkstation = () => {
       }));
       return importedArtifacts.length > 0;
     };
-    const renderLifecyclePlugin = (plugin, row, detail) => {
-      const imported = Array.isArray(plugin?.imported_artifact_ids) ? plugin.imported_artifact_ids : [];
-      const enabled = Array.isArray(plugin?.enabled_artifact_ids) ? plugin.enabled_artifact_ids : [];
-      row.hidden = imported.length === 0;
-      if (imported.length === 0) return false;
-      const artifactId = enabled[0] || imported[0];
-      const artifact = (plugin?.artifacts || []).find((item) => item.artifact_id === artifactId);
-      const isEnabled = enabled.length > 0;
-      setStatus(
-        detail,
-        `插件版本：${artifactTitle(plugin, artifact)} · 导入状态：已导入 · 启用状态：${isEnabled ? "已启用" : "未启用"}。`,
-        isEnabled ? "success" : "warning",
-      );
-      return true;
-    };
     const runtimeInstalled = renderRuntimeArtifacts(runtimePlugin);
-    const weixinInstalled = renderLifecyclePlugin(weixin, elements.developmentWeixinRow, elements.developmentWeixinDetail);
-    elements.developmentEnvironment.hidden = !runtimeInstalled && !weixinInstalled;
-    const deliverylineInstalled = Array.isArray(deliveryline?.imported_artifact_ids) && deliveryline.imported_artifact_ids.length > 0;
-    elements.developmentDeliverylineRow.hidden = !deliverylineInstalled;
-    const deliverylineEnabled = Array.isArray(deliveryline?.enabled_artifact_ids) && deliveryline.enabled_artifact_ids.length > 0;
-    if (deliverylineInstalled) {
-      const deliverylineArtifactId = deliverylineEnabled
-        ? deliveryline.enabled_artifact_ids[0]
-        : deliveryline.imported_artifact_ids[0];
-      const deliverylineArtifact = (deliveryline.artifacts || []).find(
-        (item) => item.artifact_id === deliverylineArtifactId,
-      );
-      const deliverylineVersion = deliverylineArtifact?.source === "development"
-        ? "Deliveryline · 开发实现"
-        : deliverylineArtifact?.version
-          ? `Deliveryline · 正式版 ${formalVersion(deliverylineArtifact.version)}`
-          : "Deliveryline · 未知版本";
-      setStatus(
-        elements.developmentDeliverylineDetail,
-        `插件版本：${deliverylineVersion} · 导入状态：已导入 · 启用状态：${deliverylineEnabled ? "已启用" : "未启用"}。`,
-        deliverylineEnabled ? "success" : "warning",
-      );
-    }
-    elements.developmentEnvironment.hidden = elements.developmentEnvironment.hidden && !deliverylineInstalled;
+    const importedBusinessPlugins = (Array.isArray(businessPlugins) ? businessPlugins : [])
+      .filter((plugin) => Array.isArray(plugin.imported_artifact_ids) && plugin.imported_artifact_ids.length > 0);
+    elements.developmentBusinessList.replaceChildren(...importedBusinessPlugins.flatMap((plugin) => {
+      const enabled = Array.isArray(plugin.enabled_artifact_ids) ? plugin.enabled_artifact_ids : [];
+      return plugin.imported_artifact_ids.map((artifactId) => {
+        const artifact = (plugin.artifacts || []).find((item) => item.artifact_id === artifactId);
+        const row = document.createElement("div");
+        row.className = "workstation-status-row";
+        const copy = document.createElement("div");
+        copy.className = "workstation-status-copy";
+        const title = document.createElement("strong");
+        title.textContent = artifactTitle(plugin, artifact, true);
+        const detail = document.createElement("span");
+        setStatus(detail, `导入状态：已导入 · 启用状态：${enabled.includes(artifactId) ? "已启用" : "未启用"}。`, enabled.includes(artifactId) ? "success" : "warning");
+        copy.append(title, detail);
+        row.append(copy);
+        return row;
+      });
+    }));
+    elements.developmentEnvironment.hidden = !runtimeInstalled && importedBusinessPlugins.length === 0;
     syncControls();
   };
 
@@ -440,7 +357,7 @@ window.initializeWorkspaceWorkstation = () => {
 
   const scheduleUpgradeRefresh = () => {
     window.clearTimeout(upgradeTimer);
-    if (!disposed && ["preparing", "draining", "archiving", "cleaning", "restarting"].includes(upgradeState?.state)) {
+    if (!disposed && ["preparing", "rebuilding"].includes(upgradeState?.state)) {
       upgradeTimer = window.setTimeout(loadUpgrade, 1000);
     }
   };
@@ -493,7 +410,7 @@ window.initializeWorkspaceWorkstation = () => {
 
   const loadUpgrade = async () => {
     try {
-      const data = await request("/api/maintenance/system-upgrade");
+      const data = await request("/api/maintenance/workstation-rebuild", { cache: "no-store" });
       if (disposed) return false;
       renderUpgrade(data);
       snapshot.upgrade = data;
@@ -502,101 +419,12 @@ window.initializeWorkspaceWorkstation = () => {
     } catch (error) {
       if (disposed || error?.name === "AbortError") return false;
       if (!snapshot.upgrade) {
-        setStatus(elements.upgradeDetail, error.message || "升级与恢复状态读取失败。", "failed");
+        setStatus(elements.upgradeDetail, error.message || "工作站重建状态读取失败。", "failed");
       }
       return false;
     }
     scheduleUpgradeRefresh();
     return true;
-  };
-
-  const renderOpenClaw = (status, login, integration = openclawIntegration) => {
-    elements.thirdPartyEnvironment.hidden = status?.installed !== true;
-    openclawStatus = status;
-    openclawIntegration = integration;
-    openclawWeixinLogin = login;
-    const gatewayVersion = typeof status?.version === "string" && status.version
-      ? `OpenClaw / Gateway v${status.version} · `
-      : "";
-    const gatewayDetail = status?.state === "running"
-      ? "Gateway 运行正常并已通过连接探测。"
-      : status?.message || "暂时无法读取 OpenClaw Gateway 状态。";
-    const gatewayKind = ["running"].includes(status?.state)
-      ? "success"
-      : ["degraded", "stopped", "unconfigured", "service_missing"].includes(status?.state)
-        ? "warning"
-        : ["unavailable", "unknown"].includes(status?.state) ? "failed" : "muted";
-    setStatus(elements.openclawDetail, `${gatewayVersion}${gatewayDetail}`, gatewayKind);
-    elements.openclawWeixinAccountSummary.textContent = status?.channel_message || "当前消息通道状态不可用。";
-    elements.openclawWeixinOwnerSummary.textContent = status?.owner_message || "当前 Owner 授权状态不可用。";
-    const activePresentation = {
-      starting: ["正在准备微信绑定。", "warning"],
-      waiting_scan: ["等待使用手机微信扫码。", "warning"],
-      needs_verification: ["等待提交手机显示的验证码。", "warning"],
-      confirming: ["正在确认微信连接。", "warning"],
-      cancelling: ["正在取消微信绑定。", "warning"],
-    }[login?.state];
-    const channelPresentation = {
-      running: [status?.channel_message, "success"],
-      degraded: [status?.channel_message, "warning"],
-      stopped: [status?.channel_message, "failed"],
-      not_configured: [status?.channel_message, "muted"],
-      unavailable: [status?.channel_message, "muted"],
-      unknown: [status?.channel_message, "failed"],
-    }[status?.channel_state];
-    const [weixinDetail, weixinKind] = activePresentation
-      || channelPresentation
-      || ["暂时无法读取微信 ClawBot 状态。", "muted"];
-    const weixinAdapterVersion = typeof integration?.weixin_adapter?.version === "string"
-      && integration.weixin_adapter.version
-      ? `微信 ClawBot v${integration.weixin_adapter.version} · `
-      : "";
-    setStatus(
-      elements.openclawWeixinDetail,
-      `${weixinAdapterVersion}${weixinDetail || "暂时无法读取微信 ClawBot 状态。"}`,
-      weixinKind,
-    );
-    elements.openclawBindWeixin.textContent = status?.channel_state === "running" ? "重新绑定微信" : "绑定微信";
-    syncControls();
-  };
-
-  const loadThirdParty = async () => {
-    thirdPartyLoading = true;
-    syncControls();
-    try {
-      const status = await request("/api/openclaw/status", { cache: "no-store" });
-      if (disposed) return false;
-      if (status?.installed !== true) {
-        renderOpenClaw(status, null, null);
-        try {
-          window.sessionStorage.removeItem(thirdPartySnapshotCacheKey);
-        } catch {
-          // Cached third-party state is optional.
-        }
-        return true;
-      }
-      const [login, integration] = await Promise.all([
-        request("/api/openclaw/weixin/login", { cache: "no-store" }),
-        request("/api/openclaw/integration", { cache: "no-store" }).catch(() => undefined),
-      ]);
-      if (disposed) return false;
-      renderOpenClaw(status, login, integration);
-      cacheThirdPartySnapshot(status, login, openclawIntegration);
-      return true;
-    } catch (error) {
-      if (disposed || error?.name === "AbortError") return false;
-      if (!openclawStatus) {
-        setStatus(elements.openclawDetail, error.message || "暂时无法读取 OpenClaw Gateway 状态。", "failed");
-        setStatus(elements.openclawWeixinDetail, error.message || "暂时无法读取微信 ClawBot 状态。", "failed");
-      } else {
-        showToolbarFeedback(error.message || "第三方服务状态读取失败。");
-      }
-      syncControls();
-      return false;
-    } finally {
-      thirdPartyLoading = false;
-      syncControls();
-    }
   };
 
   const loadDevelopment = async () => {
@@ -610,23 +438,12 @@ window.initializeWorkspaceWorkstation = () => {
       ]);
       if (disposed) return false;
       const runtimePlugin = lifecycle?.plugins?.find((plugin) => plugin.plugin_id === "runtime") || null;
-      const weixin = lifecycle?.plugins?.find((plugin) => plugin.plugin_id === "weixin-orchestration") || null;
-      const enabledIds = Array.isArray(weixin?.enabled_artifact_ids) ? weixin.enabled_artifact_ids : [];
-      const activeId = enabledIds[0] || "";
-      const activeModule = activeId.startsWith("orchestration:") ? activeId.slice("orchestration:".length) : null;
-      const modules = { modules: (weixin?.artifacts || [])
-        .filter((item) => item.artifact_id?.startsWith("orchestration:"))
-        .map((item) => ({ ...item, implementation_ref: item.artifact_id.slice("orchestration:".length) })) };
-      const orchestration = {
-        implementation: activeId === "development:weixin-orchestration" ? "weixin-orchestration-dev" : activeModule ? "module" : "disabled",
-        module_ref: activeModule,
-        enabled: activeId !== "",
-        development_available: Boolean((weixin?.artifacts || []).find((item) => item.artifact_id === "development:weixin-orchestration")?.available),
-      };
-      const deliveryline = lifecycle?.plugins?.find((plugin) => plugin.plugin_id === "deliveryline") || null;
-      developmentSnapshot = { runtime, runtimeManagement, orchestration, modules, deliveryline, runtimePlugin, weixin };
-      renderDevelopment(runtime, runtimeManagement, orchestration, modules, deliveryline, runtimePlugin, weixin);
-      cacheDevelopmentSnapshot(runtime, runtimeManagement, orchestration, modules, deliveryline, runtimePlugin, weixin);
+      const businessPlugins = Array.isArray(lifecycle?.plugins)
+        ? lifecycle.plugins.filter((plugin) => plugin.plugin_id !== "runtime")
+        : [];
+      developmentSnapshot = { runtime, runtimeManagement, businessPlugins, runtimePlugin };
+      renderDevelopment(runtime, runtimeManagement, businessPlugins, runtimePlugin);
+      cacheDevelopmentSnapshot(runtime, runtimeManagement, businessPlugins, runtimePlugin);
       return true;
     } catch (error) {
       if (disposed || error?.name === "AbortError") return false;
@@ -645,7 +462,6 @@ window.initializeWorkspaceWorkstation = () => {
   const refreshDevelopment = async () => {
     developmentRefreshing = true;
     syncControls();
-    setStatus(elements.developmentWeixinDetail, "正在重新读取当前微信任务润色实现。", "warning");
     try {
       await loadDevelopment();
     } finally {
@@ -654,118 +470,7 @@ window.initializeWorkspaceWorkstation = () => {
     }
   };
 
-  const controlOpenClaw = async (action) => {
-    openclawOperating = true;
-    syncControls();
-    if (action === "restart") {
-      setStatus(
-        elements.openclawDetail,
-        "正在重启与恢复 OpenClaw Gateway，并确认 Gateway 与消息通道最终状态。",
-        "warning",
-      );
-    } else if (action === "start") {
-      setStatus(elements.openclawDetail, "正在启动 OpenClaw Gateway，并确认最终状态。", "warning");
-    }
-    try {
-      const status = await request(`/api/openclaw/${action}`, { method: "POST" });
-      const login = await request("/api/openclaw/weixin/login", { cache: "no-store" });
-      renderOpenClaw(status, login);
-      cacheThirdPartySnapshot(status, login, openclawIntegration);
-    } catch (error) {
-      const message = error.message || "OpenClaw Gateway 操作失败。";
-      setStatus(elements.openclawDetail, message, "failed");
-      showToolbarFeedback(message);
-    } finally {
-      openclawOperating = false;
-      syncControls();
-    }
-  };
-
-  const releaseOpenClawWeixinQr = () => {
-    if (openclawWeixinQrObjectUrl) URL.revokeObjectURL(openclawWeixinQrObjectUrl);
-    openclawWeixinQrObjectUrl = "";
-    openclawWeixinQrUpdatedAt = "";
-    elements.openclawWeixinQr.removeAttribute("src");
-    elements.openclawWeixinQrPanel.hidden = true;
-  };
-
-  const stopOpenClawWeixinPolling = () => {
-    if (openclawWeixinPollTimer) window.clearTimeout(openclawWeixinPollTimer);
-    openclawWeixinPollTimer = 0;
-  };
-
-  const closeOpenClawWeixinDialog = () => {
-    stopOpenClawWeixinPolling();
-    releaseOpenClawWeixinQr();
-    elements.openclawWeixinVerifyForm.hidden = true;
-    elements.openclawWeixinVerifyCode.value = "";
-    if (elements.openclawWeixinDialog.open) elements.openclawWeixinDialog.close();
-  };
-
-  const loadOpenClawWeixinQr = async (updatedAt) => {
-    if (disposed || (openclawWeixinQrObjectUrl && openclawWeixinQrUpdatedAt === updatedAt)) return;
-    try {
-      const response = await fetch("/api/openclaw/weixin/login/qr", {
-        cache: "no-store",
-        signal: requestAbortController.signal,
-      });
-      if (disposed || !response.ok || !elements.openclawWeixinDialog.open) throw new Error("weixin_qr_unavailable");
-      releaseOpenClawWeixinQr();
-      openclawWeixinQrObjectUrl = URL.createObjectURL(await response.blob());
-      openclawWeixinQrUpdatedAt = updatedAt;
-      elements.openclawWeixinQr.src = openclawWeixinQrObjectUrl;
-      elements.openclawWeixinQrPanel.hidden = false;
-    } catch {
-      if (disposed) return;
-      setMessage(elements.openclawWeixinMessage, "微信绑定二维码读取失败。", "error");
-    }
-  };
-
-  const renderOpenClawWeixinLogin = (login) => {
-    const previousState = openclawWeixinLogin?.state;
-    openclawWeixinLogin = login;
-    const active = ["starting", "waiting_scan", "needs_verification", "confirming", "cancelling"].includes(login.state);
-    const needsVerification = login.state === "needs_verification";
-    elements.openclawWeixinCancel.hidden = !active || login.state === "cancelling";
-    elements.openclawWeixinStart.hidden = active;
-    elements.openclawWeixinStart.textContent = openclawStatus?.channel_state === "running" || login.state !== "idle" ? "重新生成二维码" : "生成二维码";
-    elements.openclawWeixinVerifyForm.hidden = !needsVerification;
-    setMessage(elements.openclawWeixinMessage, login.message, login.state === "succeeded" ? "success" : login.state === "failed" ? "error" : "");
-    if (login.qr_available) void loadOpenClawWeixinQr(login.updated_at);
-    else releaseOpenClawWeixinQr();
-    if (openclawStatus) renderOpenClaw(openclawStatus, login);
-    if (login.state === "succeeded" && previousState !== "succeeded") void loadThirdParty();
-  };
-
-  const pollOpenClawWeixinLogin = async () => {
-    stopOpenClawWeixinPolling();
-    if (disposed || !elements.openclawWeixinDialog.open) return;
-    try {
-      const login = await request("/api/openclaw/weixin/login", { cache: "no-store" });
-      renderOpenClawWeixinLogin(login);
-      if (!disposed && ["starting", "waiting_scan", "needs_verification", "confirming", "cancelling"].includes(login.state)) {
-        openclawWeixinPollTimer = window.setTimeout(pollOpenClawWeixinLogin, 1000);
-      }
-    } catch (error) {
-      if (disposed || error?.name === "AbortError") return;
-      setMessage(elements.openclawWeixinMessage, error.message || "微信绑定状态读取失败。", "error");
-      if (!disposed && elements.openclawWeixinDialog.open) openclawWeixinPollTimer = window.setTimeout(pollOpenClawWeixinLogin, 2000);
-    }
-  };
-
-  const discoverThirdPartyAfterRefresh = async () => {
-    if (thirdPartyAvailable) return false;
-    try {
-      const status = await request("/api/openclaw/status", { cache: "no-store" });
-      if (status?.installed !== true || disposed) return false;
-      window.location.reload();
-      return true;
-    } catch {
-      return false;
-    }
-  };
-
-  const refresh = async ({ discoverThirdParty = false } = {}) => {
+  const refresh = async () => {
     const refreshStartedAt = window.performance.now();
     elements.refresh.disabled = true;
     statusIsCurrent = false;
@@ -774,7 +479,6 @@ window.initializeWorkspaceWorkstation = () => {
     syncControls();
     setToolbarStatus("正在读取工作台状态…");
     const results = await Promise.all([loadStatus(), loadWorker(), loadUpgrade()]);
-    if (discoverThirdParty && await discoverThirdPartyAfterRefresh()) return;
     if (disposed) return;
     const remainingLoadingTime = Math.max(
       0,
@@ -835,17 +539,17 @@ window.initializeWorkspaceWorkstation = () => {
   const restartChub = async () => {
     hubRestarting = true;
     syncControls();
-    setStatus(elements.chubDetail, "正在请求 Chub 重启，并等待新实例确认。", "warning");
+    setStatus(elements.chubDetail, "正在重启 Web 控制面，并确认新实例健康。", "warning");
     try {
       const previous = await request("/api/health", { cache: "no-store" });
       await request("/api/maintenance/restart", { method: "POST" });
       await waitForRestart(previous.instance_id);
       setStatus(
         elements.chubDetail,
-        "Chub 已重启并恢复。浏览器将在稍后自动刷新页面。",
+        "Web 控制面已重启并恢复。浏览器将在稍后自动刷新页面。",
         "success",
       );
-      setToolbarStatus("Chub 已重启并恢复。");
+      setToolbarStatus("Chub Web 控制面已重启并恢复。");
       if (!disposed) pageReloadTimer = window.setTimeout(() => window.location.reload(), 2000);
     } finally {
       hubRestarting = false;
@@ -881,16 +585,12 @@ window.initializeWorkspaceWorkstation = () => {
   };
 
   const startUpgrade = async () => {
-    const fingerprint = upgradeState?.plan?.fingerprint;
-    if (!fingerprint) throw new Error("恢复方案尚未就绪，请先刷新状态。");
     upgradeStarting = true;
     syncControls();
     try {
-      const data = await request("/api/maintenance/system-upgrade", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fingerprint }),
-      });
+      const data = await request("/api/maintenance/workstation-rebuild", { method: "POST" });
+      const operationId = data.operation?.operation_id;
+      if (!operationId) throw new Error("工作站重建未能创建可确认的维护操作。");
       renderUpgrade(data);
       snapshot.upgrade = data;
       upgradeIsCurrent = true;
@@ -909,25 +609,14 @@ window.initializeWorkspaceWorkstation = () => {
     if (snapshot.worker) renderWorker(snapshot.worker);
     if (snapshot.upgrade) renderUpgrade(snapshot.upgrade);
   }
-  const cachedThirdPartySnapshot = thirdPartyAvailable ? readThirdPartySnapshot() : null;
-  if (cachedThirdPartySnapshot) {
-    renderOpenClaw(
-      cachedThirdPartySnapshot.status,
-      cachedThirdPartySnapshot.login,
-      cachedThirdPartySnapshot.integration,
-    );
-  }
   const cachedDevelopmentSnapshot = readDevelopmentSnapshot();
   if (cachedDevelopmentSnapshot) {
     developmentSnapshot = cachedDevelopmentSnapshot;
     renderDevelopment(
       cachedDevelopmentSnapshot.runtime,
       cachedDevelopmentSnapshot.runtimeManagement,
-      cachedDevelopmentSnapshot.orchestration,
-      cachedDevelopmentSnapshot.modules,
-      cachedDevelopmentSnapshot.deliveryline,
+      cachedDevelopmentSnapshot.businessPlugins,
       cachedDevelopmentSnapshot.runtimePlugin || cachedDevelopmentSnapshot.codex,
-      cachedDevelopmentSnapshot.weixin,
     );
   }
   syncControls();
@@ -940,80 +629,15 @@ window.initializeWorkspaceWorkstation = () => {
     window.clearTimeout(upgradeTimer);
     window.clearTimeout(pageReloadTimer);
     cancelPendingWaits();
-    stopOpenClawWeixinPolling();
-    releaseOpenClawWeixinQr();
   };
 
-  elements.refresh.addEventListener("click", () => { void refresh({ discoverThirdParty: true }); });
-  if (thirdPartyAvailable) elements.thirdPartyRefresh.addEventListener("click", () => { void loadThirdParty(); });
-  elements.developmentRefresh.addEventListener("click", () => { void refreshDevelopment(); });
-  if (thirdPartyAvailable) elements.openclawStart.addEventListener("click", () => { void controlOpenClaw("start"); });
-  if (thirdPartyAvailable) elements.openclawRestart.addEventListener("click", () => {
-    void showConfirmationDialog({
-      title: "重启与恢复 OpenClaw Gateway",
-      body: "Gateway 和微信消息通道会短暂中断。Chub 将先检查固定插件和补丁基线，再确认 Gateway 与消息通道最终状态。",
-      confirmLabel: "确认重启与恢复",
-      tone: "secondary",
-      closeOnConfirm: true,
-      onConfirm: () => controlOpenClaw("restart"),
-    });
-  });
-  if (thirdPartyAvailable) elements.openclawBindWeixin.addEventListener("click", async () => {
-    elements.openclawWeixinDialog.showModal();
-    setMessage(elements.openclawWeixinMessage, "正在读取微信绑定状态…");
-    await pollOpenClawWeixinLogin();
-  });
-  if (thirdPartyAvailable) elements.openclawWeixinClose.addEventListener("click", closeOpenClawWeixinDialog);
-  if (thirdPartyAvailable) elements.openclawWeixinStart.addEventListener("click", async () => {
-    elements.openclawWeixinStart.disabled = true;
-    setMessage(elements.openclawWeixinMessage, "正在生成微信绑定二维码…");
-    try {
-      renderOpenClawWeixinLogin(await request("/api/openclaw/weixin/login", { method: "POST" }));
-      openclawWeixinPollTimer = window.setTimeout(pollOpenClawWeixinLogin, 500);
-    } catch (error) {
-      setMessage(elements.openclawWeixinMessage, error.message || "微信绑定启动失败。", "error");
-    } finally {
-      elements.openclawWeixinStart.disabled = false;
-    }
-  });
-  if (thirdPartyAvailable) elements.openclawWeixinCancel.addEventListener("click", async () => {
-    elements.openclawWeixinCancel.disabled = true;
-    try {
-      renderOpenClawWeixinLogin(await request("/api/openclaw/weixin/login", { method: "DELETE" }));
-    } catch (error) {
-      setMessage(elements.openclawWeixinMessage, error.message || "微信绑定取消失败。", "error");
-    } finally {
-      elements.openclawWeixinCancel.disabled = false;
-    }
-  });
-  if (thirdPartyAvailable) elements.openclawWeixinVerifyForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const code = elements.openclawWeixinVerifyCode.value.trim();
-    if (!code) return;
-    try {
-      elements.openclawWeixinVerifyCode.value = "";
-      renderOpenClawWeixinLogin(await request("/api/openclaw/weixin/login/verify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code }),
-      }));
-    } catch (error) {
-      setMessage(elements.openclawWeixinMessage, error.message || "验证码提交失败。", "error");
-    }
-  });
-  if (thirdPartyAvailable) elements.openclawWeixinDialog.addEventListener("click", (event) => {
-    if (event.target === elements.openclawWeixinDialog) closeOpenClawWeixinDialog();
-  });
-  if (thirdPartyAvailable) elements.openclawWeixinDialog.addEventListener("close", () => {
-    stopOpenClawWeixinPolling();
-    releaseOpenClawWeixinQr();
-  });
+  elements.refresh.addEventListener("click", () => { void refresh(); });
   elements.chubRestart.addEventListener("click", () => {
     void showConfirmationDialog({
-      title: "重启 Chub",
-      body: "只重启 Chub Web 控制面；已接受的快速任务、Quick Worker 和原生 Runtime 会话不会被停止。",
+      title: "重启 Chub Web 控制面",
+      body: "重启 Chub 的页面与 API 服务，加载新页面与代码。\nQuick Worker 不会重启。\n已受理的 AI 任务和原生 Runtime Session 会继续运行。\n未提交的页面输入可能丢失。\n页面会短暂断开；确认新实例已启动且健康后，浏览器会自动刷新。",
       confirmLabel: "确认重启",
-      pendingLabel: "正在等待新实例…",
+      pendingLabel: "正在重启 Web 控制面，并确认新实例健康…",
       tone: "secondary",
       errorMessage: "Chub 重启失败。",
       onConfirm: restartChub,
@@ -1022,27 +646,26 @@ window.initializeWorkspaceWorkstation = () => {
   elements.workerRestart.addEventListener("click", () => {
     void showConfirmationDialog({
       title: "重启 Chub Quick Worker",
-      body: "排队任务会取消，执行中的快速任务会停止并标记为未完成，且不会自动重试。Chub 和 OpenClaw 不受影响。",
+      body: "重启后台 AI 任务执行服务，加载新的 Worker 代码与协议。\n排队任务会取消。\n执行中的任务会停止并标记为未完成，且不会自动重试。\nChub 页面与 API、OpenClaw 和原生 Runtime Session 不会重启。",
       confirmLabel: "确认重启",
-      pendingLabel: "正在下发…",
+      pendingLabel: "正在停止任务并等待新 Worker 就绪…",
       errorMessage: "Quick Worker 重启失败。",
       onConfirm: restartWorker,
     });
   });
   elements.upgradeStart.addEventListener("click", () => {
     void showConfirmationDialog({
-      title: "升级与恢复",
-      body: "此操作会清理 Chub 自有 AI 运行状态并重启 Chub Web 与 Quick Worker；本地关联 Session 会按固定边界清理，Runtime 原生会话保留。",
-      confirmLabel: "确认升级与恢复",
-      pendingLabel: "正在开始…",
-      errorMessage: "升级与恢复未能启动。",
+      title: "重建 Chub 工作站",
+      body: "将使用当前代码、配置和 requirements 重建 Chub 工作站。\n缺失或变更的项目 Python 依赖会自动同步。\n当前 Chub 任务会结束，不会恢复或自动重试。\nChub 自有的可重建运行态会清理，并导入启用当前默认 Runtime。\n配置、日志、文档、原生 Runtime Session、OpenClaw 数据和浏览器资料会保留。\n页面会短暂断开；稍后刷新或重新尝试即可。",
+      confirmLabel: "确认重建",
+      pendingLabel: "正在准备运行环境并重建工作站…",
+      errorMessage: "工作站重建未能启动。",
       onConfirm: startUpgrade,
     });
   });
 
   void refresh();
   void loadDevelopment();
-  if (thirdPartyAvailable) void loadThirdParty();
 };
 
 window.initializeWorkspaceWorkstation();

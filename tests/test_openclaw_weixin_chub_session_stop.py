@@ -289,6 +289,7 @@ def test_interrupted_session_stop_is_not_replayed_after_restart(
         manager.ai_session_manager,
         quick_interactions,
         manager.route_validator,
+        task_orchestrator=manager.task_orchestrator,
         session_stopper=stopper,
         session_stop_notifier=manager.session_stop_notifier,
     )

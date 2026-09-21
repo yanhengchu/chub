@@ -32,7 +32,6 @@ from app.core.response import ApiError
 from app.quick_worker import QuickWorkerServer
 from app.quick_worker import WorkerRequestNotSent
 from app.services.deferred_restart import DeferredRestartRequest
-from app.services.weixin_translation import TRANSLATION_PROMPT
 
 
 def manager(
@@ -420,7 +419,7 @@ def test_submit_persistence_failure_rolls_back_registration(
     assert quick_interactions._tasks == {}
 
 
-def test_isolated_worker_maps_page_weixin_and_translation_to_one_protocol(
+def test_isolated_worker_maps_page_and_weixin_to_one_protocol(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -473,35 +472,19 @@ def test_isolated_worker_maps_page_weixin_and_translation_to_one_protocol(
     )
     quick_interactions._active_task_ids.clear()
     quick_interactions._running_sessions.clear()
-    translation = quick_interactions.submit(
-        session.id,
-        "translation",
-        operation_id="translation-operation",
-        source_ip="127.0.0.1",
-        notification_route=route,
-        kind="translation",
-        model="gpt-translation",
-        reasoning_effort="high",
-    )
-
     assert [item["task_kind"] for item in submissions] == [
         "standard",
         "weixin",
-        "translation",
     ]
-    assert all(task.worker_task_id for task in (page, weixin, translation))
-    assert submissions[2]["queue_key"] == "weixin-translation"
+    assert all(task.worker_task_id for task in (page, weixin))
     assert all(item["runtime_id"] == "codex" for item in submissions)
-    assert submissions[2]["permission_profile"] == "read-only"
-    assert submissions[2]["model"] == "gpt-translation"
-    assert submissions[2]["reasoning_effort"] == "high"
     assert submissions[0]["permission_profile"] == "auto-review"
     assert submissions[0]["model"] == "gpt-page"
     assert submissions[0]["reasoning_effort"] == "high"
     assert submissions[1]["permission_profile"] == "read-only"
     assert submissions[1]["model"] == "gpt-next"
     assert submissions[1]["reasoning_effort"] == "low"
-    assert thread.start.call_count == 3
+    assert thread.start.call_count == 2
 
 
 def test_isolated_worker_unavailable_fails_without_web_runner(
@@ -773,44 +756,6 @@ def test_isolated_worker_accepts_wrapped_8000_character_prompt(
     assert len(submission["prompt"].encode("utf-8")) < 48 * 1024
 
 
-def test_isolated_worker_accepts_json_escaped_8000_character_translation(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    quick_interactions = manager(tmp_path)
-    quick_interactions.worker_settings = SimpleNamespace()
-    quick_interactions.ai_session_manager.get_session.return_value.native_session_id = (
-        "11111111-1111-4111-8111-111111111111"
-    )
-    quick_interactions.ai_session_manager.get_session.return_value.permission_mode = "read-only"
-    quick_interactions._worker_call = MagicMock(
-        side_effect=lambda _action, **payload: accepted_worker_task(payload["task"])
-    )
-    thread = MagicMock()
-    monkeypatch.setattr(
-        "app.ai_interactions.quick_interactions.threading.Thread",
-        MagicMock(return_value=thread),
-    )
-    original = "\x00" * 8_000
-    prompt = TRANSLATION_PROMPT.format(
-        source_json=json.dumps(original, ensure_ascii=False)
-    )
-
-    task = quick_interactions.submit(
-        "session-1",
-        prompt,
-        operation_id="operation-escaped-translation",
-        source_ip="127.0.0.1",
-        kind="translation",
-        translation_original=original,
-    )
-
-    submission = quick_interactions._worker_call.call_args.kwargs["task"]
-    assert task.worker_task_id is not None
-    assert task.prompt == original
-    assert len(submission["prompt"]) > 48_000
-    assert len(submission["prompt"].encode("utf-8")) < 56 * 1024
-
 
 def test_isolated_worker_success_merges_deferred_restart_request(
     tmp_path: Path,
@@ -942,103 +887,6 @@ def test_worker_terminal_fallbacks_are_runtime_generic(
 
 
 @pytest.mark.anyio
-async def test_isolated_business_adapter_runs_page_weixin_and_translation_via_worker(
-    settings,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    native_id = "11111111-1111-4111-8111-111111111111"
-    monkeypatch.setenv("FAKE_CODEX_SESSION_ID", native_id)
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    executable = tmp_path / "fake-codex"
-    executable.write_text(
-        """#!/usr/bin/env python3
-import json
-import os
-import sys
-from pathlib import Path
-args = sys.argv[1:]
-result_path = Path(args[args.index("--output-last-message") + 1])
-native_id = args[args.index("resume") + 1] if "resume" in args else os.environ["FAKE_CODEX_SESSION_ID"]
-prompt = sys.stdin.read()
-print(json.dumps({"type": "thread.started", "thread_id": native_id}), flush=True)
-if "SOURCE_JSON:" in prompt:
-    result = "润色：\\n清晰中文\\n\\nEnglish：\\nClear English"
-else:
-    result = f"result:{prompt}"
-result_path.write_text(result, encoding="utf-8")
-""",
-        encoding="utf-8",
-    )
-    executable.chmod(0o700)
-    server = QuickWorkerServer(
-        settings,
-        allow_test_tasks=True,
-        codex_workspaces={"isolated": workspace},
-        codex_executable=executable,
-        codex_home=tmp_path / "codex-home",
-    )
-    await server.start()
-    try:
-        quick_interactions = manager(tmp_path)
-        quick_interactions.worker_settings = settings
-        del quick_interactions._worker_call
-        session = quick_interactions.ai_session_manager.get_session.return_value
-        session.workspace_id = "isolated"
-        session.cwd = workspace
-        session.native_session_id = native_id
-        quick_interactions.ai_session_manager.bind_quick_interaction_native_session = MagicMock()
-        route = QuickInteractionWeixinRoute(
-            account_id="weixin-account",
-            recipient="owner@im.wechat",
-        )
-        submissions = (
-            ("page-session", "page", None, "standard"),
-            ("weixin-session", "weixin", route, "standard"),
-            (
-                "translation-session",
-                TRANSLATION_PROMPT.format(source_json='"translation"'),
-                route,
-                "translation",
-            ),
-        )
-        completed = []
-        for session_id, prompt, notification_route, kind in submissions:
-            session.id = session_id
-            session.permission_mode = "read-only" if kind == "translation" else "auto-review"
-            task = await asyncio.to_thread(
-                quick_interactions.submit,
-                session_id,
-                prompt,
-                operation_id=f"operation-{kind}-{session_id}",
-                source_ip="127.0.0.1",
-                notification_route=notification_route,
-                kind=kind,
-            )
-            deadline = asyncio.get_running_loop().time() + 5
-            while asyncio.get_running_loop().time() < deadline:
-                snapshot = quick_interactions.get(task.id)
-                if snapshot.status not in {"requested", "running"}:
-                    completed.append(snapshot)
-                    break
-                await asyncio.sleep(0.02)
-            else:
-                raise AssertionError("Worker-backed business task did not finish")
-
-        assert [task.status for task in completed] == ["succeeded"] * 3
-        assert [
-            server.task_manager.get(task.worker_task_id or "").status
-            for task in completed
-        ] == ["succeeded"] * 3
-        translation_spec = server.task_manager._read_spec(
-            completed[2].worker_task_id or ""
-        )
-        assert translation_spec.permission_profile == "read-only"
-        assert completed[2].result == "润色：\n清晰中文\n\nEnglish：\nClear English"
-        quick_interactions.close()
-    finally:
-        await server.close()
 
 
 @pytest.mark.anyio
@@ -1135,6 +983,7 @@ result_path.write_text(f"recovered:{prompt}", encoding="utf-8")
         release_path.write_text("release", encoding="utf-8")
         deadline = asyncio.get_running_loop().time() + 3
         while asyncio.get_running_loop().time() < deadline:
+            await asyncio.to_thread(second._reconcile_worker_once, initial=False)
             recovered = second.get(task.id)
             delivery_path = (
                 server.task_manager.tasks_dir
@@ -1157,24 +1006,6 @@ result_path.write_text(f"recovered:{prompt}", encoding="utf-8")
         if second is not None:
             second.close()
         await server.close()
-
-
-@pytest.mark.parametrize(
-    "result",
-    [
-        "润色：\n\nEnglish：\nEnglish",
-        "润色：\n中文\n\nEnglish：\n",
-        "前言\n润色：\n中文\n\nEnglish：\nEnglish",
-    ],
-)
-def test_translation_result_validation_rejects_invalid_shapes(result: str) -> None:
-    assert QuickInteractionManager._valid_translation_result(result) is False
-
-
-def test_translation_result_validation_accepts_exact_nonempty_sections() -> None:
-    assert QuickInteractionManager._valid_translation_result(
-        "润色：\n清晰中文\n\nEnglish：\nClear English"
-    )
 
 
 def test_quick_interaction_completion_notification_is_independent(
@@ -1396,13 +1227,6 @@ def test_running_standard_task_summaries_include_all_standard_tasks(
             "notification_route": "weixin-task",
         }
     )
-    translation_task = web_task.model_copy(
-        update={
-            "id": "translation-task",
-            "session_id": "session-translation",
-            "kind": "translation",
-        }
-    )
     completed_task = web_task.model_copy(
         update={
             "id": "completed-task",
@@ -1412,7 +1236,7 @@ def test_running_standard_task_summaries_include_all_standard_tasks(
     )
     quick_interactions._tasks = {
         task.id: task
-        for task in (web_task, weixin_task, translation_task, completed_task)
+        for task in (web_task, weixin_task, completed_task)
     }
 
     snapshot = quick_interactions.running_standard_task_summaries()
@@ -2287,7 +2111,7 @@ def test_worker_reconciliation_converges_native_session_conflict(
     assert calls == ["task_list", "task_get", "task_acknowledge"]
 
 
-def test_worker_reconciliation_allows_translation_native_session_rotation(
+def test_worker_reconciliation_binds_the_confirmed_native_session(
     settings,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2295,20 +2119,19 @@ def test_worker_reconciliation_allows_translation_native_session_rotation(
     quick_interactions = worker_manager(tmp_path, settings)
     quick_interactions.ai_session_manager.get_session.return_value = AiSessionFixture(
         id="session-1",
-        workspace_id="weixin-translation",
-        workspace_name="微信文本优化与翻译",
+        workspace_id="workspace",
+        workspace_name="工作区",
         cwd=tmp_path,
         session_id="old-native-session",
         status="stopped",
         permission_mode="read-only",
     )
     task = QuickInteractionTask(
-        id="task-translation-rotation",
+        id="task-native-session-binding",
         worker_task_id="qw-1750000000000-33333333333333333333333333333333",
         session_id="session-1",
         implementation_id="codex-runtime-dev",
-        prompt="优化文本",
-        kind="translation",
+        prompt="执行任务",
         status="running",
         created_at=utc_now(),
         updated_at=utc_now(),
@@ -2330,12 +2153,13 @@ def test_worker_reconciliation_allows_translation_native_session_rotation(
         "worker_generation": "generation-1",
         "runner_pid": None,
         "cancellation_requested": False,
-        "result": "润色：\n优化后的文本\n\nEnglish：\nPolished text",
+        "result": "任务完成",
         "error": None,
         "error_source": None,
         "error_code": None,
         "exit_code": 0,
         "native_session_id": new_native_session_id,
+        "execution_id": "a" * 32,
     }
     calls: list[str] = []
 
@@ -2355,10 +2179,12 @@ def test_worker_reconciliation_allows_translation_native_session_rotation(
 
     finished = quick_interactions.get(task.id)
     assert finished.status == "succeeded"
-    assert finished.result == "润色：\n优化后的文本\n\nEnglish：\nPolished text"
+    assert finished.result == "任务完成"
     quick_interactions.ai_session_manager.bind_quick_interaction_native_session.assert_called_once_with(
         task.session_id,
         new_native_session_id,
+        worker_task_id=task.worker_task_id,
+        execution_id="a" * 32,
         implementation_id="codex-runtime-dev",
     )
     assert quick_interactions.is_running(task.session_id) is False
@@ -2903,7 +2729,7 @@ def test_list_for_session_returns_latest_first(tmp_path: Path) -> None:
     assert tasks[0].prompt == "较新"
 
 
-def test_latest_completed_standard_task_excludes_translation_and_active_tasks(
+def test_latest_completed_task_excludes_active_tasks(
     tmp_path: Path,
 ) -> None:
     quick_interactions = manager(tmp_path)
@@ -2917,15 +2743,6 @@ def test_latest_completed_standard_task_excludes_translation_and_active_tasks(
         created_at=base,
         updated_at=base,
     )
-    translation = completed.model_copy(
-        update={
-            "id": "translation",
-            "kind": "translation",
-            "prompt": "内部翻译",
-            "created_at": base + timedelta(minutes=2),
-            "updated_at": base + timedelta(minutes=2),
-        }
-    )
     active = completed.model_copy(
         update={
             "id": "active-standard",
@@ -2938,7 +2755,6 @@ def test_latest_completed_standard_task_excludes_translation_and_active_tasks(
     )
     quick_interactions._tasks = {
         completed.id: completed,
-        translation.id: translation,
         active.id: active,
     }
 
@@ -3310,7 +3126,7 @@ def test_deferred_restart_ready_waits_only_for_requesting_task_notifications(
     assert quick_interactions.deferred_restart_ready(request) == "ready"
 
 
-def test_deferred_restart_ready_ignores_translation_work(tmp_path: Path) -> None:
+def test_deferred_restart_ready_without_active_work(tmp_path: Path) -> None:
     quick_interactions = manager(tmp_path)
     requester = QuickInteractionTask(
         id="requester-1",
@@ -3321,19 +3137,7 @@ def test_deferred_restart_ready_ignores_translation_work(tmp_path: Path) -> None
         created_at=utc_now(),
         updated_at=utc_now(),
     )
-    task = QuickInteractionTask(
-        id="translation-1",
-        session_id="translation-session",
-        prompt="translate",
-        kind="translation",
-        status="running",
-        notification_status="sending",
-        created_at=utc_now(),
-        updated_at=utc_now(),
-    )
     quick_interactions._tasks[requester.id] = requester
-    quick_interactions._tasks[task.id] = task
-    quick_interactions._active_task_ids.add(task.id)
     request = DeferredRestartRequest(
         operation_id="operation-1:restart",
         requested_instance_id="instance-1",
@@ -3468,21 +3272,20 @@ def test_submission_uses_fixed_restart_sensitive_rule(
     assert submission["restart_sensitive"] is expected
 
 
-def test_failed_translation_does_not_queue_notification(tmp_path: Path) -> None:
+def test_failed_default_task_does_not_queue_notification(tmp_path: Path) -> None:
     notifier = MagicMock()
     quick_interactions = manager(tmp_path, completion_notifier=notifier)
     task = QuickInteractionTask(
-        id="translation-1",
-        session_id="translation-session",
-        prompt="translate",
-        kind="translation",
+        id="task-1",
+        session_id="session-1",
+        prompt="task",
         status="running",
         created_at=utc_now(),
         updated_at=utc_now(),
     )
     quick_interactions._tasks[task.id] = task
 
-    quick_interactions._finish(task.id, "failed", "translation failed")
+    quick_interactions._finish(task.id, "failed", "task failed")
 
     assert quick_interactions.get(task.id).notification_status == "skipped"
     notifier.assert_not_called()
@@ -3911,34 +3714,31 @@ def test_submit_allows_idle_running_terminal(
     thread.start.assert_called_once()
 
 
-def test_translation_submissions_share_worker_queue_without_native_claim(
+def test_second_submission_for_a_running_session_is_rejected(
     tmp_path: Path,
 ) -> None:
     quick_interactions = manager(tmp_path)
     session = quick_interactions.ai_session_manager.get_session.return_value
-    session.workspace_id = "weixin-translation"
-    session.permission_mode = "read-only"
     quick_interactions._start_worker_observer = MagicMock()
 
     first = quick_interactions.submit(
         "session-1",
-        "first translation",
-        operation_id="translation-operation-1",
+        "first task",
+        operation_id="operation-1",
         source_ip="127.0.0.1",
-        kind="translation",
-    )
-    second = quick_interactions.submit(
-        "session-1",
-        "second translation",
-        operation_id="translation-operation-2",
-        source_ip="127.0.0.1",
-        kind="translation",
     )
 
     assert first.status == "requested"
-    assert second.status == "requested"
-    quick_interactions.ai_session_manager.register_quick_native_claim.assert_not_called()
-    assert quick_interactions._worker_call.call_count == 2
+    with pytest.raises(ApiError) as error:
+        quick_interactions.submit(
+            "session-1",
+            "second task",
+            operation_id="operation-2",
+            source_ip="127.0.0.1",
+        )
+    assert error.value.code == "quick_interaction_in_progress"
+    quick_interactions.ai_session_manager.register_quick_native_claim.assert_called_once()
+    assert quick_interactions._worker_call.call_count == 1
 
 
 def test_session_operation_rejects_running_quick_interaction(tmp_path: Path) -> None:

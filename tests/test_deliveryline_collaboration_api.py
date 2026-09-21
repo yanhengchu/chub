@@ -9,7 +9,7 @@ import pytest
 
 from app.application import create_app
 from app.core.response import ApiError
-from app.deliveryline.store import DeliverylineUnavailable
+from modules.business.deliveryline.store import DeliverylineUnavailable
 
 
 class _Manager:
@@ -116,7 +116,7 @@ async def test_delete_removes_associated_collaboration_session_before_line(setti
     app.state.quick_interactions = quick
     deleted_session_ids: list[str] = []
     monkeypatch.setattr(
-        "app.deliveryline.collaboration.delete_session",
+        "modules.business.deliveryline.collaboration.delete_session",
         lambda session_id, **_kwargs: deleted_session_ids.append(session_id),
     )
     transport = httpx.ASGITransport(app=app)
@@ -140,7 +140,7 @@ async def test_delete_preserves_line_when_associated_session_cannot_be_deleted(s
         monkeypatch.setattr(app.state.ai_session_manager, name, getattr(manager, name))
     app.state.quick_interactions = quick
     monkeypatch.setattr(
-        "app.deliveryline.collaboration.delete_session",
+        "modules.business.deliveryline.collaboration.delete_session",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(ApiError(409, "session_busy", "关联 Session 仍在执行。")),
     )
     transport = httpx.ASGITransport(app=app)

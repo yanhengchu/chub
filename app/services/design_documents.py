@@ -21,7 +21,7 @@ DOCUMENTS_ROOT = PROJECT_ROOT / "docs"
 DOCUMENTS_INDEX = DOCUMENTS_ROOT / "design_documents.json"
 MAX_DOCUMENT_BYTES = 512 * 1024
 MAX_DOCUMENT_SOURCE_CHARS = 6_000
-DOCUMENT_INDEX_VERSION = 2
+DOCUMENT_INDEX_VERSION = 3
 DOCUMENT_STATUSES = (
     "调研中",
     "待实现",
@@ -48,13 +48,59 @@ DOCUMENT_CATEGORY_LABELS = {
     category: label for category, label, _description in DOCUMENT_CATEGORIES
 }
 ALLOWED_DOCUMENT_CATEGORIES = frozenset(DOCUMENT_CATEGORY_LABELS)
+DOCUMENT_GROUPS = (
+    (
+        "project-core-documents",
+        "项目核心文档",
+        "项目说明、总体架构与当前能力契约。",
+        frozenset({"project_baseline"}),
+    ),
+    (
+        "deployment-interface",
+        "部署与界面规范",
+        "正式部署、安装方式与工作台界面规范。",
+        frozenset({"delivery_requirement"}),
+    ),
+    (
+        "delivery-automation",
+        "交付与自动化",
+        "Deliveryline 需求交付与周报自动化。",
+        frozenset({"delivery_requirement"}),
+    ),
+    (
+        "ai-runtime",
+        "AI Runtime",
+        "Runtime 架构、插件与 Codex 专属能力。",
+        frozenset({"delivery_requirement"}),
+    ),
+    (
+        "task-orchestration",
+        "任务编排",
+        "Session 状态、Quick Worker 与通用/微信任务编排。",
+        frozenset({"delivery_requirement"}),
+    ),
+    (
+        "external-integration-learning",
+        "外部集成与独立学习",
+        "OpenClaw 定制集成与本机大模型学习资料。",
+        frozenset({"delivery_requirement", "independent_learning"}),
+    ),
+)
+DOCUMENT_GROUP_LABELS = {
+    group: label for group, label, _description, _categories in DOCUMENT_GROUPS
+}
+DOCUMENT_GROUP_CATEGORIES = {
+    group: categories
+    for group, _label, _description, categories in DOCUMENT_GROUPS
+}
+ALLOWED_DOCUMENT_GROUPS = frozenset(DOCUMENT_GROUP_LABELS)
 LOGGER = logging.getLogger("hub.project_documents")
 _STATE_LOCK = Lock()
 _DOCUMENT_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 _PROJECT_DOCUMENT_PATHS = {
     "@project/README.md": PROJECT_ROOT / "README.md",
 }
-_HOME_DOCUMENTS_PER_CATEGORY = 3
+_HOME_DOCUMENTS_PER_GROUP = 5
 
 
 @dataclass(frozen=True)
@@ -65,6 +111,7 @@ class DesignDocument:
     status: str
     relative_path: str
     category: str = "project_baseline"
+    group: str = ""
 
 
 @dataclass(frozen=True)
@@ -76,6 +123,8 @@ class DesignDocumentView:
     updated_at: datetime
     category: str = "project_baseline"
     category_label: str = "项目基线"
+    group: str = ""
+    group_label: str = ""
     archived: bool = False
     html: str | None = None
 
@@ -226,6 +275,7 @@ def _load_documents() -> tuple[DesignDocument, ...]:
         summary = value.get("summary")
         status = value.get("status")
         category = value.get("category")
+        group = value.get("group", "")
         relative_path = value.get("path")
         if (
             not isinstance(document_id, str)
@@ -241,6 +291,9 @@ def _load_documents() -> tuple[DesignDocument, ...]:
             or status.strip() not in ALLOWED_DOCUMENT_STATUSES
             or not isinstance(category, str)
             or category.strip() not in ALLOWED_DOCUMENT_CATEGORIES
+            or not isinstance(group, str)
+            or group.strip() not in ALLOWED_DOCUMENT_GROUPS
+            or category.strip() not in DOCUMENT_GROUP_CATEGORIES[group.strip()]
             or not isinstance(relative_path, str)
             or not relative_path
         ):
@@ -253,6 +306,7 @@ def _load_documents() -> tuple[DesignDocument, ...]:
             status=status.strip(),
             relative_path=relative_path,
             category=category.strip(),
+            group=group.strip(),
         )
         try:
             _document_path(document)
@@ -340,6 +394,8 @@ def _metadata(
         updated_at=datetime.fromtimestamp(path.stat().st_mtime),
         category=document.category,
         category_label=DOCUMENT_CATEGORY_LABELS[document.category],
+        group=document.group,
+        group_label=DOCUMENT_GROUP_LABELS.get(document.group, ""),
         archived=document.id in (archived_document_ids or set()),
     )
 
@@ -374,18 +430,20 @@ def list_design_documents(
 def select_home_design_documents(
     documents: list[DesignDocumentView],
     *,
-    per_category_limit: int = _HOME_DOCUMENTS_PER_CATEGORY,
+    per_group_limit: int = _HOME_DOCUMENTS_PER_GROUP,
 ) -> list[DesignDocumentView]:
-    if per_category_limit <= 0:
+    if per_group_limit <= 0:
         return []
     selected = []
-    for category, _label, _description in DOCUMENT_CATEGORIES:
-        category_documents = [
-            document for document in documents if document.category == category
+    for group, _label, _description, _categories in DOCUMENT_GROUPS:
+        group_documents = [
+            document
+            for document in documents
+            if document.group == group
         ]
-        if category != "project_baseline":
-            category_documents.sort(key=lambda item: item.updated_at, reverse=True)
-        selected.extend(category_documents[:per_category_limit])
+        if group != "project-core-documents":
+            group_documents.sort(key=lambda item: item.updated_at, reverse=True)
+        selected.extend(group_documents[:per_group_limit])
     return selected
 
 
@@ -472,6 +530,8 @@ def get_design_document(
         updated_at=metadata.updated_at,
         category=metadata.category,
         category_label=metadata.category_label,
+        group=metadata.group,
+        group_label=metadata.group_label,
         archived=metadata.archived,
         html=cleaned,
     )

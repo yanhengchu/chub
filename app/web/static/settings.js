@@ -62,6 +62,7 @@ const deploymentPackageReleaseDialogCancel = document.querySelector("#deployment
 const deploymentPackageReleaseDialogConfirm = document.querySelector("#deployment-package-release-dialog-confirm");
 const deploymentPackageReleaseDialogDetails = document.querySelector("#deployment-package-release-dialog-details");
 let deploymentPackagePolling = null;
+let disposeOpenClawSettings = () => {};
 
 const settingsChoicePickers = new Map();
 const settingsChoicePickerObservers = [];
@@ -729,7 +730,7 @@ function initializeDeploymentPackageSettings() {
     const reloadHint = latestAppVersion && sourceVersions.chub && latestAppVersion !== sourceVersions.chub
       ? "运行中的 Web 尚未加载当前源码；如需切换运行版本，待 Worker 空闲后先 reload Worker，再重启 Web。"
       : "";
-    deploymentPackageCurrentAppVersion.textContent = `当前源码：Chub v${sourceVersions.chub || "未知"}；Runtime v${sourceVersions.runtime || "未知"}；微信编排 v${sourceVersions.weixin || "未知"}。${runtimeVersion}${reloadHint} 可同版本重发，或输入更高的 MAJOR.MINOR.PATCH 版本。`;
+    deploymentPackageCurrentAppVersion.textContent = `当前源码：Chub v${sourceVersions.chub || "未知"}；Runtime v${sourceVersions.runtime || "未知"}。${runtimeVersion}${reloadHint} 可同版本重发，或输入更高的 MAJOR.MINOR.PATCH 版本。`;
     deploymentPackageChubVersion.value = configuration.chub_release_version || "";
     deploymentPackageIncludeDevelopment.checked = configuration.include_development_sources === true;
     if (generationRequested
@@ -904,6 +905,257 @@ function initializeDeploymentPackageSettings() {
 }
 
 function initializeOpenClawSettings() {
+  const byId = (id) => document.getElementById(id);
+  const elements = {
+    detail: byId("settings-openclaw-detail"),
+    start: byId("settings-openclaw-start"),
+    restart: byId("settings-openclaw-restart"),
+    weixinDetail: byId("settings-openclaw-weixin-detail"),
+    bindWeixin: byId("settings-openclaw-bind-weixin"),
+    runtimeMessage: byId("settings-openclaw-runtime-message"),
+    weixinDialog: byId("settings-openclaw-weixin-dialog"),
+    weixinClose: byId("settings-openclaw-weixin-close"),
+    weixinAccountSummary: byId("settings-openclaw-weixin-account-summary"),
+    weixinOwnerSummary: byId("settings-openclaw-weixin-owner-summary"),
+    weixinQrPanel: byId("settings-openclaw-weixin-qr-panel"),
+    weixinQr: byId("settings-openclaw-weixin-qr"),
+    weixinVerifyForm: byId("settings-openclaw-weixin-verify-form"),
+    weixinVerifyCode: byId("settings-openclaw-weixin-verify-code"),
+    weixinMessage: byId("settings-openclaw-weixin-message"),
+    weixinCancel: byId("settings-openclaw-weixin-cancel"),
+    weixinStart: byId("settings-openclaw-weixin-start"),
+  };
+  if (!Object.values(elements).every((element) => element instanceof HTMLElement)) return;
+
+  const activeLoginStates = new Set([
+    "starting",
+    "waiting_scan",
+    "needs_verification",
+    "confirming",
+    "cancelling",
+  ]);
+  let disposed = false;
+  let loading = false;
+  let operating = false;
+  let status = null;
+  let login = null;
+  let integration = null;
+  let pollTimer = 0;
+  let qrObjectUrl = "";
+  let qrUpdatedAt = "";
+  const requestAbortController = new AbortController();
+
+  const setStatus = (target, text, kind = "muted") => {
+    target.textContent = text;
+    target.className = `workstation-status-detail workstation-status-detail-${kind}`;
+  };
+
+  const syncControls = () => {
+    const gatewayReady = Boolean(status?.installed && status?.configured);
+    const gatewayStopped = status?.state === "stopped";
+    const gatewayRestartable = ["running", "degraded"].includes(status?.state);
+    const activeLogin = activeLoginStates.has(login?.state);
+    elements.start.hidden = !gatewayStopped;
+    elements.restart.hidden = !gatewayRestartable;
+    elements.start.disabled = loading || operating || !gatewayStopped;
+    elements.restart.disabled = loading || operating || !gatewayReady || !gatewayRestartable;
+    elements.bindWeixin.disabled = loading || operating || !gatewayReady || activeLogin || !login;
+  };
+
+  const renderRuntime = () => {
+    const gatewayVersion = typeof status?.version === "string" && status.version
+      ? `OpenClaw / Gateway v${status.version} · `
+      : "";
+    const gatewayDetail = status?.state === "running"
+      ? "Gateway 运行正常并已通过连接探测。"
+      : status?.message || "暂时无法读取 OpenClaw Gateway 状态。";
+    const gatewayKind = status?.state === "running"
+      ? "success"
+      : ["degraded", "stopped", "unconfigured", "service_missing"].includes(status?.state)
+        ? "warning"
+        : ["unavailable", "unknown"].includes(status?.state) ? "failed" : "muted";
+    setStatus(elements.detail, `${gatewayVersion}${gatewayDetail}`, gatewayKind);
+    elements.weixinAccountSummary.textContent = status?.channel_message || "当前消息通道状态不可用。";
+    elements.weixinOwnerSummary.textContent = status?.owner_message || "当前 Owner 授权状态不可用。";
+    const activePresentation = {
+      starting: ["正在准备微信绑定。", "warning"],
+      waiting_scan: ["等待使用手机微信扫码。", "warning"],
+      needs_verification: ["等待提交手机显示的验证码。", "warning"],
+      confirming: ["正在确认微信连接。", "warning"],
+      cancelling: ["正在取消微信绑定。", "warning"],
+    }[login?.state];
+    const channelPresentation = {
+      running: [status?.channel_message, "success"],
+      degraded: [status?.channel_message, "warning"],
+      stopped: [status?.channel_message, "failed"],
+      not_configured: [status?.channel_message, "muted"],
+      unavailable: [status?.channel_message, "muted"],
+      unknown: [status?.channel_message, "failed"],
+    }[status?.channel_state];
+    const [weixinDetail, weixinKind] = activePresentation
+      || channelPresentation
+      || ["暂时无法读取微信 ClawBot 状态。", "muted"];
+    const adapterVersion = typeof integration?.weixin_adapter?.version === "string"
+      && integration.weixin_adapter.version
+      ? `微信 ClawBot v${integration.weixin_adapter.version} · `
+      : "";
+    setStatus(
+      elements.weixinDetail,
+      `${adapterVersion}${weixinDetail || "暂时无法读取微信 ClawBot 状态。"}`,
+      weixinKind,
+    );
+    elements.bindWeixin.textContent = status?.channel_state === "running" ? "重新绑定微信" : "绑定微信";
+    syncControls();
+  };
+
+  const releaseQr = () => {
+    if (qrObjectUrl) URL.revokeObjectURL(qrObjectUrl);
+    qrObjectUrl = "";
+    qrUpdatedAt = "";
+    elements.weixinQr.removeAttribute("src");
+    elements.weixinQrPanel.hidden = true;
+  };
+
+  const stopPolling = () => {
+    if (pollTimer) window.clearTimeout(pollTimer);
+    pollTimer = 0;
+  };
+
+  const closeWeixinDialog = () => {
+    stopPolling();
+    releaseQr();
+    elements.weixinVerifyForm.hidden = true;
+    elements.weixinVerifyCode.value = "";
+    if (elements.weixinDialog.open) elements.weixinDialog.close();
+  };
+
+  const loadQr = async (updatedAt) => {
+    if (disposed || (qrObjectUrl && qrUpdatedAt === updatedAt)) return;
+    try {
+      const response = await fetch("/api/openclaw/weixin/login/qr", {
+        cache: "no-store",
+        signal: requestAbortController.signal,
+      });
+      if (disposed || !response.ok || !elements.weixinDialog.open) {
+        throw new Error("weixin_qr_unavailable");
+      }
+      releaseQr();
+      qrObjectUrl = URL.createObjectURL(await response.blob());
+      qrUpdatedAt = updatedAt;
+      elements.weixinQr.src = qrObjectUrl;
+      elements.weixinQrPanel.hidden = false;
+    } catch {
+      if (!disposed) setSettingsMessage(elements.weixinMessage, "微信绑定二维码读取失败。", "error");
+    }
+  };
+
+  const renderWeixinLogin = (nextLogin) => {
+    const previousState = login?.state;
+    login = nextLogin;
+    const active = activeLoginStates.has(login.state);
+    elements.weixinCancel.hidden = !active || login.state === "cancelling";
+    elements.weixinStart.hidden = active;
+    elements.weixinStart.textContent = status?.channel_state === "running" || login.state !== "idle"
+      ? "重新生成二维码"
+      : "生成二维码";
+    elements.weixinVerifyForm.hidden = login.state !== "needs_verification";
+    setSettingsMessage(
+      elements.weixinMessage,
+      login.message,
+      login.state === "succeeded" ? "success" : login.state === "failed" ? "error" : "",
+    );
+    if (login.qr_available) void loadQr(login.updated_at);
+    else releaseQr();
+    renderRuntime();
+    if (login.state === "succeeded" && previousState !== "succeeded") void load();
+  };
+
+  const pollWeixinLogin = async () => {
+    stopPolling();
+    if (disposed || !elements.weixinDialog.open) return;
+    try {
+      renderWeixinLogin(await fetchSettingsApi("/api/openclaw/weixin/login", { cache: "no-store" }));
+      if (!disposed && activeLoginStates.has(login?.state)) {
+        pollTimer = window.setTimeout(pollWeixinLogin, 1000);
+      }
+    } catch (error) {
+      if (disposed) return;
+      setSettingsMessage(
+        elements.weixinMessage,
+        error instanceof Error ? error.message : "微信绑定状态读取失败。",
+        "error",
+      );
+      if (elements.weixinDialog.open) pollTimer = window.setTimeout(pollWeixinLogin, 2000);
+    }
+  };
+
+  const load = async () => {
+    loading = true;
+    syncControls();
+    try {
+      const nextStatus = await fetchSettingsApi("/api/openclaw/status", { cache: "no-store" });
+      if (disposed) return;
+      status = nextStatus;
+      if (status?.installed !== true) {
+        login = null;
+        integration = await fetchSettingsApi("/api/openclaw/integration", { cache: "no-store" });
+        if (disposed) return;
+        renderRuntime();
+        render(status, integration);
+        setSettingsMessage(elements.runtimeMessage, "");
+        return;
+      }
+      const [nextLogin, nextIntegration] = await Promise.all([
+        fetchSettingsApi("/api/openclaw/weixin/login", { cache: "no-store" }),
+        fetchSettingsApi("/api/openclaw/integration", { cache: "no-store" }),
+      ]);
+      if (disposed) return;
+      login = nextLogin;
+      integration = nextIntegration;
+      renderRuntime();
+      render(status, integration);
+      setSettingsMessage(elements.runtimeMessage, "");
+    } catch (error) {
+      if (disposed) return;
+      const message = error instanceof Error ? error.message : "第三方服务状态读取失败。";
+      setStatus(elements.detail, message, "failed");
+      setStatus(elements.weixinDetail, message, "failed");
+      setSettingsMessage(elements.runtimeMessage, message, "error");
+    } finally {
+      loading = false;
+      syncControls();
+    }
+  };
+
+  const controlGateway = async (action) => {
+    operating = true;
+    setSettingsMessage(elements.runtimeMessage, "");
+    setStatus(
+      elements.detail,
+      action === "restart"
+        ? "正在重启与恢复 OpenClaw Gateway，并确认 Gateway 与消息通道最终状态。"
+        : "正在启动 OpenClaw Gateway，并确认最终状态。",
+      "warning",
+    );
+    syncControls();
+    try {
+      status = await fetchSettingsApi(`/api/openclaw/${action}`, { method: "POST" });
+      [login, integration] = await Promise.all([
+        fetchSettingsApi("/api/openclaw/weixin/login", { cache: "no-store" }),
+        fetchSettingsApi("/api/openclaw/integration", { cache: "no-store" }),
+      ]);
+      renderRuntime();
+      render(status, integration);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "OpenClaw Gateway 操作失败。";
+      setStatus(elements.detail, message, "failed");
+      setSettingsMessage(elements.runtimeMessage, message, "error");
+    } finally {
+      operating = false;
+      syncControls();
+    }
+  };
+
   const presentation = {
     verified: ["已匹配", "success"],
     mismatch: ["不匹配", "failed"],
@@ -970,24 +1222,85 @@ function initializeOpenClawSettings() {
     renderPatches(patches, false);
     setSettingsMessage(settingsOpenClawIntegrationMessage, "");
   };
-  const load = async () => {
+  elements.start.addEventListener("click", () => { void controlGateway("start"); });
+  elements.restart.addEventListener("click", () => {
+    void showConfirmationDialog({
+      title: "重启与恢复 OpenClaw Gateway",
+      body: "Gateway 和微信消息通道会短暂中断。Chub 将先检查固定插件和补丁基线，再确认 Gateway 与消息通道最终状态。",
+      confirmLabel: "确认重启与恢复",
+      tone: "secondary",
+      closeOnConfirm: true,
+      onConfirm: () => controlGateway("restart"),
+    });
+  });
+  elements.bindWeixin.addEventListener("click", async () => {
+    elements.weixinDialog.showModal();
+    setSettingsMessage(elements.weixinMessage, "正在读取微信绑定状态…");
+    await pollWeixinLogin();
+  });
+  elements.weixinClose.addEventListener("click", closeWeixinDialog);
+  elements.weixinStart.addEventListener("click", async () => {
+    elements.weixinStart.disabled = true;
+    setSettingsMessage(elements.weixinMessage, "正在生成微信绑定二维码…");
     try {
-      const status = await fetchSettingsApi("/api/openclaw/status");
-      const data = await fetchSettingsApi("/api/openclaw/integration");
-      render(status, data);
-    } catch (_error) {
-      settingsOpenClawIntegrationList?.replaceChildren(createRow(
-        "集成状态",
-        "暂时无法读取插件配置和补丁清单。",
-        "unknown",
-      ));
-      settingsOpenClawPatchList?.replaceChildren();
+      renderWeixinLogin(await fetchSettingsApi("/api/openclaw/weixin/login", { method: "POST" }));
+      pollTimer = window.setTimeout(pollWeixinLogin, 500);
+    } catch (error) {
       setSettingsMessage(
-        settingsOpenClawIntegrationMessage,
-        "请确认当前连接位于可信网络，并稍后刷新页面重试。",
+        elements.weixinMessage,
+        error instanceof Error ? error.message : "微信绑定启动失败。",
+        "error",
+      );
+    } finally {
+      elements.weixinStart.disabled = false;
+    }
+  });
+  elements.weixinCancel.addEventListener("click", async () => {
+    elements.weixinCancel.disabled = true;
+    try {
+      renderWeixinLogin(await fetchSettingsApi("/api/openclaw/weixin/login", { method: "DELETE" }));
+    } catch (error) {
+      setSettingsMessage(
+        elements.weixinMessage,
+        error instanceof Error ? error.message : "微信绑定取消失败。",
+        "error",
+      );
+    } finally {
+      elements.weixinCancel.disabled = false;
+    }
+  });
+  elements.weixinVerifyForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const code = elements.weixinVerifyCode.value.trim();
+    if (!code) return;
+    try {
+      elements.weixinVerifyCode.value = "";
+      renderWeixinLogin(await fetchSettingsApi("/api/openclaw/weixin/login/verify", {
+        method: "POST",
+        headers: settingsHeaders(true),
+        body: JSON.stringify({ code }),
+      }));
+    } catch (error) {
+      setSettingsMessage(
+        elements.weixinMessage,
+        error instanceof Error ? error.message : "验证码提交失败。",
         "error",
       );
     }
+  });
+  elements.weixinDialog.addEventListener("click", (event) => {
+    if (event.target === elements.weixinDialog) closeWeixinDialog();
+  });
+  elements.weixinDialog.addEventListener("close", () => {
+    stopPolling();
+    releaseQr();
+  });
+  disposeOpenClawSettings = () => {
+    if (disposed) return;
+    disposed = true;
+    requestAbortController.abort();
+    stopPolling();
+    releaseQr();
   };
   void load();
 }
@@ -1011,10 +1324,7 @@ if (settingsPage === "appearance") {
   window.initializeSessionVisibilitySettings?.();
 } else if (settingsPage === "runtime") {
   window.initializeWorkspacePluginLifecycle?.();
-} else if (settingsPage === "task-orchestration") {
-  window.initializeWorkspaceTaskOrchestration?.();
-  window.initializeWorkspacePluginLifecycle?.();
-} else if (settingsPage === "deliveryline") {
+} else if (document.querySelector("[data-plugin-version-picker]")) {
   initializeSettingsChoicePickers();
   window.initializeWorkspacePluginLifecycle?.();
 } else if (settingsPage === "openclaw") {
@@ -1022,6 +1332,8 @@ if (settingsPage === "appearance") {
 }
 
   window.disposeSettingsPage = () => {
+    disposeOpenClawSettings();
+    disposeOpenClawSettings = () => {};
     window.disposeSessionVisibilitySettings?.();
     window.disposeWorkspaceTaskOrchestration?.();
     closeSettingsChoicePicker();

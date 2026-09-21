@@ -88,7 +88,7 @@ def test_tailnet_discovery_does_not_disable_local_runtime(
     assert application.state.ai_session_manager.runtime_adapter.status().reason is None
 
 
-def test_unavailable_tailnet_listener_keeps_loopback_available(
+def test_unavailable_tailnet_listener_keeps_loopback_available_without_info_log(
     settings: Settings,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -111,8 +111,7 @@ def test_unavailable_tailnet_listener_keeps_loopback_available(
 
     assert listeners == [loopback_listener]
     assert availability == [False]
-    assert "keeping loopback-only access" in caplog.text
-    assert "normal when Tailscale is stopped" in caplog.text
+    assert "Tailnet listener" not in caplog.text
 
 
 def test_auto_tailnet_listener_binds_discovered_host(

@@ -5,7 +5,7 @@ from subprocess import CompletedProcess
 
 import pytest
 
-from app.deliveryline.store import DeliverylineNotFound, DeliverylineStore, DeliverylineTransitionNotAllowed, DeliverylineUnavailable
+from modules.business.deliveryline.store import DeliverylineNotFound, DeliverylineStore, DeliverylineTransitionNotAllowed, DeliverylineUnavailable
 
 
 def test_source_becomes_pending_line_and_confirmed_goal_creates_a_version(tmp_path: Path) -> None:
@@ -82,6 +82,6 @@ def test_conflicted_shared_line_is_not_overwritten(tmp_path: Path, monkeypatch: 
     store = DeliverylineStore(tmp_path / "requirements")
     line = store.create("冲突交付线")
     monkeypatch.setattr(store, "_git_repository_root", lambda _path: tmp_path)
-    monkeypatch.setattr("app.deliveryline.store.subprocess.run", lambda args, **_kwargs: CompletedProcess(args, 0, b"100644 conflict\trequirements/record.json\n", b""))
+    monkeypatch.setattr("modules.business.deliveryline.store.subprocess.run", lambda args, **_kwargs: CompletedProcess(args, 0, b"100644 conflict\trequirements/record.json\n", b""))
     with pytest.raises(DeliverylineUnavailable, match="未解决的 Git 冲突"):
         store.confirm_goal(line.id, {"title": "标题", "source_role": "混合资料", "overall_goal": "目标", "confirmed_facts": [], "scope_boundary": "", "open_questions": []})

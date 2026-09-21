@@ -13,6 +13,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SOURCE = PROJECT_ROOT / "modules" / "business" / "deliveryline"
 MANIFEST_NAME = "chub-business-module.json"
+PACKAGE_NAME = "deliveryline"
 
 
 def default_output(version: str, *, built_at: datetime | None = None) -> Path:
@@ -41,7 +42,11 @@ def build(output: Path, version: str = "1.0.0") -> Path:
     output.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for source in sorted(SOURCE.rglob("*")):
-            if not source.is_file():
+            if (
+                not source.is_file()
+                or "__pycache__" in source.parts
+                or source.suffix == ".pyc"
+            ):
                 continue
             relative = source.relative_to(SOURCE).as_posix()
             if relative == MANIFEST_NAME:
@@ -50,12 +55,13 @@ def build(output: Path, version: str = "1.0.0") -> Path:
                     raise ValueError("Deliveryline module manifest is invalid")
                 manifest["version"] = normalized_version
                 manifest["chub_version"] = _chub_version()
+                manifest["entry"] = f"{PACKAGE_NAME}:create_business_module"
                 archive.writestr(
                     relative,
                     json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
                 )
             else:
-                archive.write(source, relative)
+                archive.write(source, f"{PACKAGE_NAME}/{relative}")
     output.chmod(0o600)
     return output
 

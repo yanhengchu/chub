@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+OPERATION_ID="${1:-}"
+PYTHON_BIN="$PROJECT_ROOT/.venv/bin/python"
+
+case "$OPERATION_ID" in
+    ""|*[!a-f0-9]*) echo "chub-workstation-rebuild: invalid operation id" >&2; exit 2 ;;
+esac
+[[ "${#OPERATION_ID}" -eq 32 ]] || { echo "chub-workstation-rebuild: invalid operation id" >&2; exit 2; }
+
+record_failure() {
+    if [[ -x "$PYTHON_BIN" ]]; then
+        (
+            cd "$PROJECT_ROOT"
+            "$PYTHON_BIN" -m app.workstation_rebuild_cli fail "$OPERATION_ID" \
+                --message "${1:-Chub 工作站重建未完成。}"
+        ) >/dev/null 2>&1 || true
+    fi
+}
+
+trap 'record_failure "Chub 工作站重建未完成，请查看维护日志。"' ERR
+
+bootstrap_environment() {
+    if [[ ! -x "$PYTHON_BIN" ]]; then
+        command -v python3 >/dev/null 2>&1 || {
+            echo "chub-workstation-rebuild: Python 3 is unavailable" >&2
+            return 1
+        }
+        python3 -m venv "$PROJECT_ROOT/.venv"
+    fi
+    "$PYTHON_BIN" -m pip install --disable-pip-version-check --requirement "$PROJECT_ROOT/requirements.txt"
+}
+
+platform_action() {
+    "$PROJECT_ROOT/scripts/platform/service-management.sh" "$@"
+}
+
+wait_for_health() {
+    local health_url runtime_url payload
+    health_url="$(cd "$PROJECT_ROOT" && "$PYTHON_BIN" - <<'PY'
+from app.core.config import load_settings
+print(f"http://127.0.0.1:{load_settings().server.port}/api/health")
+PY
+    )"
+    runtime_url="${health_url%/health}/ai/runtime-implementations"
+    for _attempt in $(seq 1 60); do
+        if "$PYTHON_BIN" - "$health_url" <<'PY' >/dev/null 2>&1
+import json, sys, urllib.request
+with urllib.request.urlopen(sys.argv[1], timeout=1) as response:
+    payload = json.load(response)
+data = payload.get("data") if payload.get("success") is True else None
+if response.status != 200 or not isinstance(data, dict):
+    raise SystemExit(1)
+if data.get("status") != "ok" or data.get("quick_worker_ready") is not True:
+    raise SystemExit(1)
+PY
+        then
+            if "$PYTHON_BIN" - "$runtime_url" <<'PY' >/dev/null 2>&1
+import json, sys, urllib.request
+with urllib.request.urlopen(sys.argv[1], timeout=1) as response:
+    payload = json.load(response)
+data = payload.get("data") if payload.get("success") is True else None
+items = data.get("implementations") if isinstance(data, dict) else None
+if response.status != 200 or not isinstance(items, list):
+    raise SystemExit(1)
+if not any(
+    isinstance(item, dict)
+    and item.get("is_default") is True
+    and item.get("imported") is True
+    and item.get("enabled") is True
+    and item.get("healthy") is True
+    for item in items
+):
+    raise SystemExit(1)
+PY
+            then
+                if payload="$(cd "$PROJECT_ROOT" && "$PYTHON_BIN" -m app.quick_worker health 2>/dev/null)" && "$PYTHON_BIN" -c '
+import json, sys
+from app.quick_worker import PROTOCOL_VERSION
+payload = json.loads(sys.stdin.read())
+data = payload.get("data") if payload.get("success") is True else None
+if not isinstance(data, dict) or data.get("status") != "ready" or data.get("protocol_version") != PROTOCOL_VERSION:
+    raise SystemExit(1)
+if any(data.get(name) != 0 for name in ("active_tasks", "queued_tasks", "uncertain_tasks", "corrupt_tasks")):
+    raise SystemExit(1)
+' <<<"$payload"; then
+                    supervisor_status="$(platform_action chrome-supervisor-status 2>/dev/null || true)"
+                    if [[ "$supervisor_status" == "running" || "$supervisor_status" == "not-managed" ]]; then
+                        return 0
+                    fi
+                fi
+            fi
+        fi
+        sleep 0.5
+    done
+    echo "chub-workstation-rebuild: services did not become healthy" >&2
+    return 1
+}
+
+if [[ -x "$PYTHON_BIN" ]]; then
+(
+    cd "$PROJECT_ROOT"
+    "$PYTHON_BIN" -m app.workstation_rebuild_cli start "$OPERATION_ID"
+)
+fi
+bootstrap_environment
+(
+    cd "$PROJECT_ROOT"
+    "$PYTHON_BIN" -m app.workstation_rebuild_cli start "$OPERATION_ID"
+    "$PYTHON_BIN" -m app.workstation_rebuild_cli stage "$OPERATION_ID" --message stopping_services
+)
+platform_action recovery-core-stop
+(
+    cd "$PROJECT_ROOT"
+    "$PYTHON_BIN" -m app.workstation_rebuild_cli stage "$OPERATION_ID" --message cleaning_state
+    "$PYTHON_BIN" -m app.system_recovery_cli force-reset
+    "$PYTHON_BIN" -m app.workstation_rebuild_cli stage "$OPERATION_ID" --message starting_services
+)
+platform_action core-service-definitions
+platform_action chrome-supervisor-reconcile --restart
+platform_action worker-restart
+(
+    cd "$PROJECT_ROOT"
+    "$PYTHON_BIN" -m app.workstation_rebuild_cli stage "$OPERATION_ID" --message initializing_runtime
+    "$PYTHON_BIN" -m app.workstation_rebuild_cli bootstrap-default-runtime "$OPERATION_ID"
+)
+"$PROJECT_ROOT/scripts/maintenance/chub-web-restart"
+(
+    cd "$PROJECT_ROOT"
+    "$PYTHON_BIN" -m app.workstation_rebuild_cli stage "$OPERATION_ID" --message verifying
+)
+wait_for_health
+(
+    cd "$PROJECT_ROOT"
+    "$PYTHON_BIN" -m app.workstation_rebuild_cli succeed "$OPERATION_ID"
+)
+echo "chub-workstation-rebuild: completed operation_id=$OPERATION_ID"

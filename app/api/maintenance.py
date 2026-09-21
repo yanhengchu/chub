@@ -20,6 +20,11 @@ from app.services.system_upgrade import (
     runtime_recovery_plan,
 )
 from app.services.web_restart import WebRestartLaunchError, WebRestartUnavailableError
+from app.services.workstation_rebuild import WorkstationRebuildStatusData
+from app.services.workstation_rebuild_maintenance import (
+    WorkstationRebuildLaunchError,
+    WorkstationRebuildUnavailableError,
+)
 
 
 router = APIRouter(
@@ -35,6 +40,11 @@ class _StrictModel(BaseModel):
 
 class SystemUpgradeRequest(_StrictModel):
     fingerprint: str = Field(min_length=64, max_length=64, pattern=r"^[a-f0-9]{64}$")
+
+
+class TaskOrchestrationCompactionData(_StrictModel):
+    removed_terminal_records: int = Field(ge=0)
+    active_requests: int = Field(ge=0)
 
 
 def _quick_worker_runtime_status(
@@ -256,6 +266,81 @@ async def start_system_upgrade(
             fingerprint=payload.fingerprint,
         )
     )
+
+
+@router.get(
+    "/workstation-rebuild",
+    response_model=ApiResponse[WorkstationRebuildStatusData],
+)
+async def workstation_rebuild_status(request: Request) -> ApiResponse[WorkstationRebuildStatusData]:
+    return ApiResponse(data=request.app.state.workstation_rebuild.status_data())
+
+
+@router.post(
+    "/task-orchestration/compact",
+    response_model=ApiResponse[TaskOrchestrationCompactionData],
+)
+def compact_task_orchestration(request: Request) -> ApiResponse[TaskOrchestrationCompactionData]:
+    """Explicitly release terminal request tombstones without affecting active work."""
+    operation_id = log_operation(
+        request,
+        action="compact_task_orchestration",
+        status="requested",
+        target="task-orchestration",
+    )
+    log_operation(
+        request,
+        action="compact_task_orchestration",
+        status="started",
+        target="task-orchestration",
+        operation_id=operation_id,
+    )
+    try:
+        removed, active = request.app.state.task_orchestrator.compact_terminal_records()
+    except ApiError:
+        log_operation(
+            request,
+            action="compact_task_orchestration",
+            status="failed",
+            target="task-orchestration",
+            operation_id=operation_id,
+        )
+        raise
+    log_operation(
+        request,
+        action="compact_task_orchestration",
+        status="succeeded",
+        target="task-orchestration",
+        operation_id=operation_id,
+        reason=f"removed_terminal_records={removed} active_requests={active}",
+    )
+    return ApiResponse(
+        data=TaskOrchestrationCompactionData(
+            removed_terminal_records=removed,
+            active_requests=active,
+        )
+    )
+
+
+@router.post(
+    "/workstation-rebuild",
+    response_model=ApiResponse[WorkstationRebuildStatusData],
+)
+async def start_workstation_rebuild(request: Request) -> ApiResponse[WorkstationRebuildStatusData]:
+    with request.app.state.maintenance_lock:
+        coordinator = request.app.state.workstation_rebuild
+        operation, created = coordinator.begin(
+            request.client.host if request.client else "unknown"
+        )
+        if not created:
+            return ApiResponse(data=coordinator.status_data())
+        try:
+            request.app.state.workstation_rebuild_maintenance.start(operation.operation_id)
+            coordinator.mark_executor_started(operation.operation_id)
+        except (WorkstationRebuildUnavailableError, WorkstationRebuildLaunchError) as exc:
+            coordinator.fail(operation.operation_id, str(exc))
+            raise ApiError(503, "workstation_rebuild_start_failed", str(exc)) from exc
+    return ApiResponse(data=request.app.state.workstation_rebuild.status_data())
 
 
 @router.post("/restart", response_model=ApiResponse[dict[str, str]])

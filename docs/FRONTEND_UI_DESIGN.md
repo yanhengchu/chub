@@ -16,7 +16,7 @@ Chub Web 使用 FastAPI、Jinja2、原生 JavaScript 和 CSS，同源部署且�
 3. 页面切换或 DOM 替换必须释放被替换 Feature 的请求、计时器、事件订阅和临时资源；不存在目标 DOM 时不得初始化该 Feature。
 4. 公共组件只解决稳定的 DOM 与无障碍行为，不吸收业务请求、业务状态或服务维护决策。
 5. 主题和文字大小只改变公共页面的视觉 Token 与排版比例，不改变模板语义、数据、路由、权限、状态机、键盘操作或响应式信息结构；维护终端保持独立显示。
-6. 设置页展示配置、安装和版本元数据；Gateway 等实时运行状态及其操作只属于首页工作站。具体 OpenClaw 边界以 [OpenClaw 定制设计](OPENCLAW_CUSTOMIZATION_DESIGN.md) 和[能力清单](CHUB_INTEGRATION_CAPABILITIES.md)为准。
+6. OpenClaw 设置页是 Gateway 状态、重启与恢复、微信绑定、配置/安装元数据和补丁清单的唯一 Web 入口；首页工作站不读取或展示 OpenClaw 状态。具体 OpenClaw 边界以 [OpenClaw 定制设计](OPENCLAW_CUSTOMIZATION_DESIGN.md) 和[能力清单](CHUB_INTEGRATION_CAPABILITIES.md)为准。
 
 本文记录当前可维护结构和后续主题收敛方向，不以页面的临时文案、某次故障诊断或历史实现过程作为产品契约。
 
@@ -28,11 +28,11 @@ Chub Web 使用 FastAPI、Jinja2、原生 JavaScript 和 CSS，同源部署且�
 | 工作站、自动化、项目资料 | 各自 Feature | 独立读取、会话级成功缓存、局部刷新和局部失败反馈 | 本文第 3 节 |
 | 页面级切换与共享资源 | `workspace.js` / 页面 Controller | 组装页面、切换分区、触发受影响 Feature 刷新、释放已替换 Feature | 本文第 3 节 |
 | 外观偏好 | `theme.js` | 保存、恢复和应用有效主题与文字大小；为首屏同步非敏感 Cookie | 本文第 6 节 |
-| 会话设置 | 设置页会话 Feature | 分组管理之后新建 Session 的默认 Runtime、权限、模型和推理等级，以及 Deliveryline、内部翻译和今日关注 Session 的显示偏好；专属业务仅覆盖明确指定的参数 | [Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md) |
-| 插件生命周期 | 插件管理 Feature | 从固定制品目录导入，统一管理 Runtime、任务编排与 Deliveryline 的导入、移除、启用和禁用；插件自行确认内部动作结果 | [Chub AI Runtime 插件模块设计](CHUB_RUNTIME_PLUGIN_DESIGN.md)、[Chub 任务编排插件模块架构设计](CHUB_TASK_ORCHESTRATION_PLUGIN_DESIGN.md) |
-| 任务编排设置 | 微信任务润色 Feature | 展示当前插件状态、选择已导入且可用的版本，设置润色模式，以及任务专属 Runtime、模型和推理等级；权限固定为 `Read Only` 并明确展示 | [Chub 微信任务编排插件模块设计](WEIXIN_TASK_ORCHESTRATION_PLUGIN_DESIGN.md) |
+| 会话设置 | 设置页会话 Feature | 分组管理之后新建 Session 的默认 Runtime、权限、模型和推理等级，以及 Deliveryline 和今日关注 Session 的显示偏好；专属业务仅覆盖明确指定的参数 | [Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md) |
+| 插件生命周期 | 插件管理 Feature | 从固定制品目录导入，管理当前已交付 Runtime 与 Deliveryline 的导入、移除、启用和禁用；任务编排当前没有阶段插件管理入口；插件自行确认内部动作结果 | [Chub AI Runtime 插件模块设计](CHUB_RUNTIME_PLUGIN_DESIGN.md)、[Chub 任务编排插件模块架构设计](CHUB_TASK_ORCHESTRATION_PLUGIN_DESIGN.md) |
+| 任务编排 | 统一任务编排分发器 | Web 与微信普通任务经过统一分发器的空阶段链；当前不提供旧微信专属设置页 | [Chub 任务编排插件模块架构设计](CHUB_TASK_ORCHESTRATION_PLUGIN_DESIGN.md) |
 | Runtime 用量展示 | 快速交互 Page Controller 与微信入口投影 | 工作台只消费后端 `display.long` 或不可用状态，不重新计算额度、Token 或格式 | [AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)、[集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md) |
-| 设置 OpenClaw 信息 | 设置页 Feature | 读取本机配置、安装元数据和补丁清单；不读取 Gateway 运行状态 | OpenClaw 定制设计 |
+| 设置 OpenClaw | 设置页 Feature | 读取 Gateway、微信通道、绑定流程、本机配置、安装元数据和补丁清单；仅调用固定 OpenClaw API，按最终状态展示维护结果 | OpenClaw 定制设计 |
 
 前端不得另行定义 Session owner、phase、入口权限或维护操作成功条件。Session 快照中的 `usage`、`status` 和 `activity` 含义以状态模型为准；HTTP 成功、任务受理或子进程创建都不能渲染为业务成功。
 
@@ -116,10 +116,10 @@ Quick Interaction Core -> Session View -> Timeline View -> Page Controller
 - 即时生效控件由控件自身表达当前状态。设置项中的开关只允许开关本体及其关联的无障碍标签触发，条目标题与说明保持只读；除失败或会影响判断的重要信息外，不展示常驻“已保存”反馈。关闭状态的轨道、边框和滑块在每个主题中必须可区分。
 - 同一设置分区中有两个及以上同级即时生效控件时，使用一个带外框的连续列表容器；容器与标题、说明保持统一留白，行内以横线区分，并统一行高、内边距和失败反馈位置。单项控件、单选卡片和不同职责的维护操作不强行合并。
 - 工作台、自动化和设置页使用同一展示层级：页面正文不使用大外框；页面仅有一组同职责配置时，直接展示该组内容容器，不重复展示分组标题或用途说明；页面有两组及以上并列配置时，每组必须展示标题和一句用途说明，再展示各自的单层内容容器。连续状态或设置行由该容器统一描边和分隔，不能在内部重复嵌套同类外框；流程卡片仅在确有多步骤业务语义时保留内部阶段结构。项目资料页不适用此规则。
-- 项目资料详情、周报正文与周报模板都是工作台内的阅读下钻页：保留工作台侧边栏与顶部工具栏，详情在主内容区展示，侧边栏分别高亮“项目资料”或“自动化”。它们使用自身稳定 URL 并进入浏览器历史；浏览器返回回到对应工作台分区，不增加专用返回按钮。维护终端仍是唯一的全屏独立工具页。
+- 项目资料完整列表与详情、周报正文与周报模板都是工作台内的阅读下钻页：保留工作台侧边栏与顶部工具栏，内容在主内容区展示，侧边栏分别高亮“项目资料”或“自动化”。它们使用自身稳定 URL 并进入浏览器历史；浏览器返回回到对应工作台分区，不增加专用返回按钮。维护终端仍是唯一的全屏独立工具页。
 - 日志详情是“维护与版本”下的设置壳内下钻页，使用 `/settings/logs` 进入浏览器历史；旧 `/logs` 只跳转到该地址。工作台侧边栏的 Session 是带 `?session=` 的真实工作台链接：普通点击在当前主内容区打开且不新增历史，Ctrl/⌘、Shift 或中键点击遵循浏览器默认行为，在新标签页打开同一工作台壳。
 - 首页与设置页的桌面侧栏使用同一套一级导航视觉基线：分组标题与菜单 hover 外沿左对齐，一级菜单统一图标尺寸、标题层级、行高、圆角、内边距、hover 和当前项反馈。首页当前以英文结构标题区分 `Workspace`、动态 `Business`、`<Runtime> Sessions`、`Chub` 和 `Native`：`Workspace`、`Business` 与 Runtime Sessions 为主要分组，`Business` 仅在对应业务模块已导入时显示并位于 Workspace 与 Runtime Sessions 之间；`Chub` 和 `Native` 为较小的 Session 次级分组。折叠侧栏和窄屏图标导航必须同步保留已导入业务模块的入口；这些标题只负责归类，不承担点击或业务状态。
-- 设置侧栏按能力层级组织。“通用设置”只保留“外观”；“插件管理”负责 Runtime 与任务编排 ZIP 的统一生命周期，其下以轻量树状导航固定分为“AI Runtime → 会话、Runtime 实现”和“任务编排 → 微信任务润色”。会话页分为“新会话默认配置”和“内部会话显示”：前者管理后续新建 Session 的默认 Runtime、权限、模型和推理等级，除内部翻译外所有 Session 创建时均继承该配置；后者集中展示 Deliveryline、内部翻译、今日关注和版本发布说明 Session 的可见性开关，仍由对应模块独立保存。会话入口位于具体 Runtime 实现之前，且只有至少一个 Runtime 已导入并已注册时才显示。“第三方服务”和“维护”与通用设置、插件管理并列；分类标签与引导线仅用于导航，不拥有独立业务状态或页面。设置页保留树状子级的缩进和引导线，首页保留 Session 状态、操作和分组结构；统一一级视觉不能抹平这两类真实信息层级。
+- 设置侧栏按能力层级组织。“通用设置”只保留“外观”；“插件管理”负责当前已交付 Runtime 与 Deliveryline 插件的生命周期，不提供旧微信任务编排专属设置。会话页分为“新会话默认配置”和“内部会话显示”：前者管理后续新建 Session 的默认 Runtime、权限、模型和推理等级；后者集中展示 Deliveryline、今日关注和版本发布说明等仍在使用的内部 Session 显示偏好，仍由对应模块独立保存。“第三方服务”和“维护”与通用设置、插件管理并列；分类标签与引导线仅用于导航，不拥有独立业务状态或页面。设置页保留树状子级的缩进和引导线，首页保留 Session 状态、操作和分组结构；统一一级视觉不能抹平这两类真实信息层级。
 - 桌面双列和手机单列均使用卡片自然高度；文本、按钮和状态不得遮挡或挤出容器。
 
 当前正式首页以左侧导航和右侧主工作区组织；设置页与首页共享侧栏宽度偏好。工作台在可视区内保持左右独立的纵向滚动容器，任一侧到达边界时不得驱动另一侧或页面整体滚动；窄屏打开的浮层侧栏同样独立滚动。桌面侧栏折叠时，固定操作图标仍留在主区工具栏；存在用户Chub Session时，紧随图标导航横向展示可滚动的紧凑会话按钮，只投影同一份 Session 快照并仅提供切换，不放入新建、重命名、停止、归档或删除操作。窄屏改为单列和图标导航，不显示该按钮组，不能以隐藏业务内容替代响应式布局。

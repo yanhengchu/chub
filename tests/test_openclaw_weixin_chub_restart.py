@@ -126,7 +126,7 @@ def test_weixin_fixed_runtime_restart_commands_use_targeted_starter(
     quick_interactions.submit.assert_not_called()
 
 
-def test_system_upgrade_starts_once_without_creating_a_task(settings: Settings) -> None:
+def test_removed_upgrade_alias_is_submitted_as_a_normal_task(settings: Settings) -> None:
     manager, _codex_manager, quick_interactions = configured_manager(settings)
     starter = MagicMock(
         return_value=SimpleNamespace(
@@ -153,15 +153,13 @@ def test_system_upgrade_starts_once_without_creating_a_task(settings: Settings) 
         delivery_route=delivery_route(),
     )
 
-    assert first.message == (
-        "Upgrade: Started. The final result will be sent when completed."
-    )
+    assert first.message == submitted_task_message(settings, "upgrade")
     assert duplicate == first
-    starter.assert_called_once_with("100.64.0.21")
-    quick_interactions.submit.assert_not_called()
+    starter.assert_not_called()
+    quick_interactions.submit.assert_called_once()
 
 
-def test_system_upgrade_rejected_by_shared_preconditions(settings: Settings) -> None:
+def test_removed_upgrade_alias_does_not_start_system_upgrade(settings: Settings) -> None:
     manager, _codex_manager, quick_interactions = configured_manager(settings)
     manager.system_upgrade_starter = MagicMock(
         side_effect=ApiError(
@@ -180,8 +178,9 @@ def test_system_upgrade_rejected_by_shared_preconditions(settings: Settings) -> 
         delivery_route=delivery_route(),
     )
 
-    assert result.message == "Upgrade: Not started · Quick Worker 尚未就绪。"
-    quick_interactions.submit.assert_not_called()
+    assert result.message == submitted_task_message(settings, "upgrade")
+    manager.system_upgrade_starter.assert_not_called()
+    quick_interactions.submit.assert_called_once()
 
 
 def test_chub_restart_initial_reply_does_not_list_sessions_or_usage(
@@ -563,6 +562,7 @@ def test_chub_restart_interrupted_notification_is_not_retried(
         manager.ai_session_manager,
         manager.quick_interactions,
         manager.route_validator,
+        task_orchestrator=manager.task_orchestrator,
         restart_coordinator=coordinator,
         restart_notifier=notifier,
     )

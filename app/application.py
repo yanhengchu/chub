@@ -47,6 +47,10 @@ from app.api.status import router as status_router
 from app.ai_session import AiSessionManager
 from app.ai_session.operations import archive_session, delete_session
 from app.ai_interactions.quick_interactions import QuickInteractionManager
+from app.ai_interactions.task_orchestration import (
+    TaskOrchestrationDispatcher,
+    retire_weixin_refinement_state,
+)
 from app.quick_worker_tasks import worker_restart_request_dir
 from app.ai_runtime import RuntimeOperationError
 from app.ai_runtime.usage import RuntimeUsageService
@@ -57,6 +61,7 @@ from app.api.ai import web_router as ai_web_router
 from app.automations.manager import AutomationManager
 from app.automations.models import RuntimeAccountEnvironmentState
 from app.core.config import PROJECT_ROOT, Settings, load_settings, log_local_config_fallback
+from app.core.business_modules import load_business_modules
 from app.core.logger import configure_logging
 from app.core.security import require_trusted_network
 from app.core.platform import detect_platform
@@ -89,7 +94,6 @@ from app.services.quick_worker_maintenance import (
     inspect_quick_worker,
 )
 from app.services.system_status import collect_system_status
-from app.services.weixin_translation import WeixinTranslationManager
 from app.services.weekly_report_generation import WeeklyReportGenerationService
 from app.services.system_upgrade import (
     SystemUpgradeBusy,
@@ -102,6 +106,8 @@ from app.services.system_upgrade_maintenance import (
     SystemUpgradeMaintenanceUnavailableError,
     SystemUpgradeMaintenanceUseCase,
 )
+from app.services.workstation_rebuild import WorkstationRebuildCoordinator
+from app.services.workstation_rebuild_maintenance import WorkstationRebuildMaintenanceUseCase
 from app.services.deployment_package import DeploymentPackageService
 from app.quick_worker import (
     clear_runtime_state,
@@ -111,9 +117,11 @@ from app.quick_worker import (
     resume_after_drain,
 )
 from app.notifications.feishu.service import NotificationService
-from app.web.routes import STATIC_DIR, router as web_router
-from app.api.deliveryline import router as deliveryline_router
-from app.deliveryline import DeliverylineCollaboration, DeliverylineStore
+from app.web.routes import (
+    STATIC_DIR,
+    configure_business_module_templates,
+    router as web_router,
+)
 from app.ai_search import AiSearchService
 
 
@@ -307,11 +315,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         timeout_seconds=resolved_settings.ai_runtime.shared.quick_interaction_timeout_seconds,
         worker_settings=resolved_settings,
     )
-    quick_interactions.configure_translation_worker_queue(
-        limit=resolved_settings.openclaw.weixin_chub_mode.translation_queue_limit,
-        wait_seconds=(
-            resolved_settings.openclaw.weixin_chub_mode.translation_max_wait_seconds
-        ),
+    try:
+        retire_weixin_refinement_state(
+            weixin_state_file=resolved_settings.openclaw.weixin_chub_mode.state_file,
+            translation_state_file=(
+                resolved_settings.openclaw.weixin_chub_mode.state_file.with_name(
+                    "weixin-translation.json"
+                )
+            ),
+            orchestration_modules_dir=(
+                PROJECT_ROOT / "data/local/runtime/openclaw/weixin-orchestration-modules"
+            ),
+            plugin_lifecycle_file=resolved_settings.business_modules.state_file,
+            retirement_marker_file=(
+                resolved_settings.ai_runtime.shared.state_dir
+                / "weixin-refinement-retired-v1.json"
+            ),
+        )
+    except OSError:
+        logging.getLogger("hub.startup").warning(
+            "Retired Weixin refinement state is unavailable; keeping its cleanup isolated",
+            exc_info=True,
+        )
+    task_orchestrator = TaskOrchestrationDispatcher(
+        resolved_settings.ai_runtime.shared.state_dir / "task-orchestration.json",
+        quick_interactions,
     )
     weekly_report_generation = WeeklyReportGenerationService(
         resolved_settings.ai_runtime.shared.state_dir / "weekly-report-generation.json",
@@ -339,14 +367,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         resolved_settings,
         ai_session_manager,
         quick_interactions,
-    )
-    weixin_translation = WeixinTranslationManager(
-        resolved_settings.openclaw.weixin_chub_mode,
-        ai_session_manager,
-        quick_interactions,
-    )
-    quick_interactions.set_recovery_ready_handler(
-        weixin_translation.start_worker_recovery
     )
     def reclaim_weixin_session(session_id: str):
         return ai_session_manager.stop_session(session_id)
@@ -416,7 +436,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         completion_notifier.validate_weixin_route,
         session_reclaimer=reclaim_weixin_session,
         codex_account_reader=codex_rate_limits,
-        translation_manager=weixin_translation,
+        task_orchestrator=task_orchestrator,
         session_archiver=archive_weixin_session,
         session_deleter=delete_weixin_session,
         system_status_reader=lambda: collect_system_status(
@@ -430,36 +450,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ai_usage_reader=ai_usage,
         session_stopper=stop_weixin_session,
         session_stop_notifier=completion_notifier.notify_weixin_command_result,
-        translation_result_notifier=(
-            completion_notifier.notify_weixin_optimized_task
-        ),
-        translation_confirmation_notifier=(
-            completion_notifier.notify_weixin_translation_confirmation
-        ),
         last_result_notifier=completion_notifier.resend_weixin_task_result,
     )
     plugin_lifecycle = PluginLifecycleService(
         resolved_settings,
         ai_session_manager,
-        weixin_chub_mode,
-        weixin_translation,
     )
+    business_modules = load_business_modules(resolved_settings)
+    configure_business_module_templates(resolved_settings)
     ai_session_manager.set_runtime_plugin_lifecycle_state_reader(
         plugin_lifecycle.runtime_implementation_lifecycle_state
     )
-    weixin_translation.set_completion_handler(
-        weixin_chub_mode.complete_optimized_task
-    )
-    weixin_translation.set_notification_handler(
-        weixin_chub_mode.notify_optimized_task_outcome
-    )
-    weixin_translation.set_confirmed_handler(
-        weixin_chub_mode.retry_confirmed_optimized_task
-    )
-    weixin_translation.set_confirmation_discarded_handler(
-        weixin_chub_mode.discard_optimized_task
-    )
-
     def record_quick_task_finished(task) -> None:
         try:
             deployment_package.record_release_note_task_finished(task)
@@ -468,15 +469,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "Unable to persist deployment package release-note task result",
                 exc_info=True,
             )
-        weixin_chub_mode.record_orchestration_task_finished(task)
+        task_orchestrator.record_task_finished(task)
 
     quick_interactions.set_task_finished_handler(record_quick_task_finished)
-    try:
-        weixin_chub_mode.reconcile_orchestration_requests()
-    except OSError:
-        logger.warning("Unable to reconcile persisted Weixin orchestration requests", exc_info=True)
+    task_orchestrator.reconcile()
 
     system_upgrade_maintenance = SystemUpgradeMaintenanceUseCase(detected_platform)
+    workstation_rebuild = WorkstationRebuildCoordinator()
+    workstation_rebuild_maintenance = WorkstationRebuildMaintenanceUseCase()
+    weixin_chub_mode.system_upgrade_status_reader = workstation_rebuild.status_data
 
     def restart_environment_readiness() -> str | None:
         try:
@@ -1121,11 +1122,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             recover_runtime_plugin_state_cleanup()
         )
         await asyncio.to_thread(quick_interactions.start_worker_reconciliation)
-        if quick_interactions.recovery_ready and not system_upgrade.writes_blocked():
-            await asyncio.to_thread(
-                ai_session_manager.archive_legacy_translation_sessions,
-                quick_interactions,
-            )
         weixin_chub_mode.start_status_cache()
         upgrade_operation = system_upgrade.operation()
         if (
@@ -1201,7 +1197,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 system_upgrade_recovery_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await system_upgrade_recovery_task
-            await asyncio.to_thread(weixin_translation.close)
             await quick_interactions.aclose()
             await notification_service.close()
             maintenance_terminal.close()
@@ -1226,6 +1221,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.codex_rate_limits = codex_rate_limits
     application.state.ai_usage = ai_usage
     application.state.quick_interactions = quick_interactions
+    application.state.task_orchestrator = task_orchestrator
     application.state.weekly_report_generation = weekly_report_generation
     application.state.quick_worker_maintenance = quick_worker_maintenance
     application.state.system_upgrade = system_upgrade
@@ -1234,22 +1230,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.system_upgrade_restart_readiness = (
         restart_environment_readiness
     )
+    application.state.workstation_rebuild = workstation_rebuild
+    application.state.workstation_rebuild_maintenance = workstation_rebuild_maintenance
     application.state.web_restart = web_restart
     application.state.deferred_restart = deferred_restart
     application.state.maintenance_lock = threading.RLock()
     application.state.weixin_chub_mode = weixin_chub_mode
     application.state.plugin_lifecycle = plugin_lifecycle
-    application.state.deliveryline_store = DeliverylineStore(
-        resolved_settings.business_modules.deliveryline_requirements_dir,
-        resolved_settings.business_modules.deliveryline_state_dir,
-    )
-    application.state.deliveryline_collaboration = DeliverylineCollaboration(
-        resolved_settings.business_modules.deliveryline_state_dir,
-    )
+    application.state.business_modules = business_modules
+    for module in business_modules:
+        if module.initialize is not None:
+            module.initialize(application, resolved_settings)
     application.state.ai_search = AiSearchService(
         resolved_settings.ai_runtime.shared.state_dir / "ai-search.json"
     )
-    application.state.weixin_translation = weixin_translation
     application.state.maintenance_terminal = maintenance_terminal
     def check_codex_runtime_account() -> RuntimeAccountEnvironmentState:
         try:
@@ -1364,16 +1358,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.openclaw_manager = openclaw_manager
     application.state.notification_service = notification_service
 
-    def start_weixin_system_upgrade(source_ip: str) -> object:
-        return asyncio.run(
-            start_system_upgrade_for_source(
-                application,
-                source_ip=source_ip,
-                fingerprint=None,
-            )
-        )
+    def start_weixin_workstation_rebuild(source_ip: str) -> object:
+        with application.state.maintenance_lock:
+            operation, created = workstation_rebuild.begin(source_ip)
+            if created:
+                try:
+                    workstation_rebuild_maintenance.start(operation.operation_id)
+                    workstation_rebuild.mark_executor_started(operation.operation_id)
+                except Exception as exc:
+                    workstation_rebuild.fail(operation.operation_id, str(exc))
+        return workstation_rebuild.status_data()
 
-    weixin_chub_mode.system_upgrade_starter = start_weixin_system_upgrade
+    # The existing fixed-command seam remains the compatibility dispatch path;
+    # it now starts the single workstation-rebuild executor.
+    weixin_chub_mode.system_upgrade_starter = start_weixin_workstation_rebuild
     application.add_middleware(SystemUpgradeGateMiddleware)
     application.add_middleware(SecurityHeadersMiddleware)
     application.add_exception_handler(ApiError, api_error_handler)
@@ -1393,13 +1391,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(openclaw_router)
     application.include_router(openclaw_wechat_chub_mode_router)
     application.include_router(project_documents_router)
-    application.include_router(deliveryline_router)
+    for module in business_modules:
+        if module.api_router is not None:
+            application.include_router(module.api_router)
     application.include_router(weekly_reports_router)
     application.include_router(settings_router)
     application.include_router(plugins_router)
     application.include_router(status_router)
     application.include_router(ai_session_api_router)
     application.include_router(maintenance_terminal_api_router)
+    for module in business_modules:
+        application.mount(
+            f"/static/modules/{module.module_id}",
+            StaticFiles(directory=module.static_dir),
+            name=f"{module.module_id}-static",
+        )
     application.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     application.include_router(ai_web_router)
     application.include_router(maintenance_terminal_web_router)

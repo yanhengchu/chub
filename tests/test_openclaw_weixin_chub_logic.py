@@ -24,7 +24,6 @@ from app.services.openclaw_weixin_chub_messages import (
     session_matches_configuration,
     with_task_summary,
 )
-from app.services.weixin_orchestration_plugin_dev import WeixinDevelopmentStage
 from app.services.openclaw_weixin_chub_models import (
     WeixinChubModeRuntimeConfig,
     WeixinChubModeState,
@@ -38,18 +37,9 @@ from app.services.openclaw_weixin_chub_models import (
         (" chub。 ", "status", None, None, False),
         ("check", "check", None, None, False),
         ("USAGE。", "usage", None, None, False),
-        ("text", "text_control", None, None, False),
-        ("TEXT MODE AUTO。", "text_control", None, None, False),
-        ("text list", "text_control", None, None, False),
-        ("text model", "text_control", None, None, True),
-        ("text model list", "text_control", None, None, False),
-        ("text model level M2", "text_control", None, None, False),
-        ("text model use M2 L3", "text_control", None, None, False),
-        ("text Please check the service status", "text_control", None, None, True),
-        ("text-check Please check the service status.", "text_check", None, "Please check the service status", False),
         ("help", "help", None, None, False),
+        ("chub help", "help", None, None, False),
         ("MODEL HELP。", "help", None, "model", False),
-        ("TEXT HELP", "help", None, "text", False),
         ("session help", "help", None, "session", False),
         ("request help", "help", None, "request", False),
         ("system help", "help", None, "system", False),
@@ -62,7 +52,7 @@ from app.services.openclaw_weixin_chub_models import (
         ("RESTART WORKER", "restart_worker", None, None, False),
         ("restart clawbot", "restart_clawbot", None, None, False),
         ("restart network", "restart_network", None, None, False),
-        ("upgrade", "upgrade", None, None, False),
+        ("chub rebuild", "rebuild", None, None, False),
         ("retry", "retry", None, None, False),
         ("LAST。", "last", None, None, False),
         ("stop", "stop", None, None, False),
@@ -86,7 +76,7 @@ def test_parse_weixin_chub_command_contract(
     task_prompt: str | None,
     invalid_usage: bool,
 ) -> None:
-    command = WeixinDevelopmentStage().command_parser()(prompt) or parse_weixin_chub_command(prompt)
+    command = parse_weixin_chub_command(prompt)
 
     assert command.kind == kind
     assert command.requested_index == requested_index
@@ -150,6 +140,8 @@ def test_leading_whitespace_and_trailing_punctuation_are_normalized(
         "model list extra",
         "model level extra",
         "restart later",
+        "rebuild",
+        "upgrade",
         "帮助",
         "状态",
         "模型",
@@ -190,7 +182,6 @@ def test_every_non_task_command_kind_uses_fixed_reply_contract() -> None:
     [
         (None, "Commands"),
         ("model", "Commands · Model"),
-        ("text", "Commands · Text"),
         ("session", "Commands · Sessions"),
         ("request", "Commands · Requests"),
         ("system", "Commands · System"),
@@ -214,10 +205,6 @@ def test_chub_help_topics_are_bounded_and_paragraph_separated(
         ("model use M2", 2, None),
         ("model use L3", None, 3),
         ("model use M2 L3", 2, 3),
-        ("text model level M2", 2, None),
-        ("text model use M2", 2, None),
-        ("text model use L3", None, 3),
-        ("text model use M2 L3", 2, 3),
     ],
 )
 def test_model_command_indices_are_parsed(
@@ -225,19 +212,11 @@ def test_model_command_indices_are_parsed(
     model_index: int | None,
     level_index: int | None,
 ) -> None:
-    command = WeixinDevelopmentStage().command_parser()(prompt) or parse_weixin_chub_command(prompt)
+    command = parse_weixin_chub_command(prompt)
 
     assert command.model_index == model_index
     assert command.level_index == level_index
 
-
-@pytest.mark.parametrize(
-    "prompt",
-    ("text", "text list", "text-check confirm this", "text help"),
-)
-def test_core_parser_leaves_refinement_commands_for_an_imported_module(prompt: str) -> None:
-    assert parse_weixin_chub_command(prompt).kind == "normal"
-    assert WeixinDevelopmentStage().command_parser()(prompt) is not None
 
 
 def test_fixed_reply_uses_english_labels_and_preserves_task_title() -> None:

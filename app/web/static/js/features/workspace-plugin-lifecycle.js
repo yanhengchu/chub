@@ -20,13 +20,15 @@
   const initialize = () => {
     const list = document.getElementById("plugin-lifecycle-list");
     const message = document.getElementById("plugin-lifecycle-message");
-    const statusTargets = {
-      runtime: document.getElementById("runtime-plugin-status"),
-      "weixin-orchestration": document.querySelector(".workspace-task-orchestration-list"),
-      deliveryline: document.getElementById("deliveryline-plugin-status"),
-    };
-    const deliverylineVersion = document.getElementById("deliveryline-plugin-version");
-    if (!list && !Object.values(statusTargets).some((target) => target instanceof HTMLElement)) return;
+    const statusTargets = Object.fromEntries(
+      [...document.querySelectorAll("[data-plugin-status-target]")]
+        .map((target) => [target.dataset.pluginStatusTarget, target]),
+    );
+    const versionPickers = Object.fromEntries(
+      [...document.querySelectorAll("[data-plugin-version-picker]")]
+        .map((picker) => [picker.dataset.pluginVersionPicker, picker]),
+    );
+    if (!list && !Object.keys(statusTargets).length && !Object.keys(versionPickers).length) return;
     let data = null;
     let busy = false;
     const feedback = (text, error = false) => {
@@ -52,17 +54,17 @@
         render();
       }
     };
-    if (deliverylineVersion instanceof HTMLSelectElement) {
-      deliverylineVersion.addEventListener("change", () => {
-        const artifactId = deliverylineVersion.value;
+    Object.entries(versionPickers).forEach(([pluginId, picker]) => {
+      picker.addEventListener("change", () => {
+        const artifactId = picker.value;
         if (!artifactId) return;
-        void perform(() => request("/api/plugins/deliveryline/enabled", {
+        void perform(() => request(`/api/plugins/${encodeURIComponent(pluginId)}/enabled`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ artifact_id: artifactId, enabled: true }),
         }));
       });
-    }
+    });
     const row = (plugin, artifact) => {
       const imported = plugin.imported_artifact_ids.includes(artifact.artifact_id);
       const enabled = Array.isArray(plugin.enabled_artifact_ids) && plugin.enabled_artifact_ids.includes(artifact.artifact_id);
@@ -113,7 +115,7 @@
       if (list) list.replaceChildren(...plugins.flatMap((plugin) => (plugin.artifacts || []).map((artifact) => row(plugin, artifact))));
       plugins.forEach((plugin) => {
         renderStatus(plugin, statusTargets[plugin.plugin_id]);
-        if (plugin.plugin_id === "deliveryline") renderDeliverylineVersion(plugin);
+        renderVersionPicker(plugin, versionPickers[plugin.plugin_id]);
       });
     };
     const renderStatus = (plugin, target) => {
@@ -131,47 +133,29 @@
       const detail = document.createElement("span");
       detail.className = `workstation-status-detail workstation-status-detail-${enabled.length ? "success" : "warning"}`;
       title.textContent = "当前插件状态";
-      const executionUnavailable = plugin.plugin_id === "weixin-orchestration"
-        && plugin.execution_ready === false;
-      const executionUnknown = plugin.plugin_id === "weixin-orchestration"
-        && Object.hasOwn(plugin, "execution_ready")
-        && plugin.execution_ready === null;
-      detail.textContent = `插件版本：${plugin.name} · ${source} · 导入状态：${selectedId ? "已导入" : "未导入"} · 启用状态：${enabled.length ? "已启用" : "未启用"}。${
-        executionUnavailable
-          ? "当前默认 Runtime 不可用于微信润色；插件配置会保留，导入并启用支持后台任务的 Runtime 后自动恢复。"
-          : executionUnknown
-            ? "微信润色执行状态暂时无法读取；插件管理仍可用。"
-            : ""
-      }`;
+      detail.textContent = `插件版本：${plugin.name} · ${source} · 导入状态：${selectedId ? "已导入" : "未导入"} · 启用状态：${enabled.length ? "已启用" : "未启用"}。`;
       copy.append(title, detail);
       item.append(copy);
-      if (target.classList.contains("workspace-task-orchestration-list") || target.id === "deliveryline-plugin-status") {
-        target.querySelector(".plugin-lifecycle-status-row")?.remove();
-        target.prepend(item);
-      } else {
-        target.replaceChildren(item);
-      }
+      target.querySelector(".plugin-lifecycle-status-row")?.remove();
+      target.prepend(item);
     };
-    const renderDeliverylineVersion = (plugin) => {
-      if (!(deliverylineVersion instanceof HTMLSelectElement)) return;
+    const renderVersionPicker = (plugin, picker) => {
+      if (!(picker instanceof HTMLSelectElement)) return;
       const enabled = Array.isArray(plugin.enabled_artifact_ids) ? plugin.enabled_artifact_ids : [];
       const imported = Array.isArray(plugin.imported_artifact_ids) ? plugin.imported_artifact_ids : [];
-      const artifacts = (plugin.artifacts || []).filter(
-        (artifact) => imported.includes(artifact.artifact_id) && artifact.available,
-      );
-      const selectedId = enabled[0] || "";
-      deliverylineVersion.replaceChildren();
+      const artifacts = (plugin.artifacts || []).filter((artifact) => imported.includes(artifact.artifact_id) && artifact.available);
+      picker.replaceChildren();
       artifacts.forEach((artifact) => {
         const option = document.createElement("option");
         option.value = artifact.artifact_id;
         option.textContent = `${plugin.name} · ${artifact.source === "development" ? "开发实现" : artifact.version ? `正式版 v${artifact.version}` : artifact.name}`;
         option.dataset.description = artifact.source === "development"
-          ? "使用仓库固定的开发实现；仅影响之后新建的交付线操作。"
-          : `使用正式插件包 v${artifact.version || "未知版本"}；仅影响之后新建的交付线操作。`;
-        deliverylineVersion.append(option);
+          ? "使用仓库固定的开发实现；仅影响之后新建的模块操作。"
+          : `使用正式插件包 v${artifact.version || "未知版本"}；仅影响之后新建的模块操作。`;
+        picker.append(option);
       });
-      deliverylineVersion.value = selectedId || artifacts[0]?.artifact_id || "";
-      deliverylineVersion.disabled = busy || enabled.length === 0 || artifacts.length === 0;
+      picker.value = enabled[0] || artifacts[0]?.artifact_id || "";
+      picker.disabled = busy || enabled.length === 0 || artifacts.length === 0;
     };
     async function load() {
       try { data = await request("/api/plugins"); render(); feedback(""); } catch (error) { feedback(error.message, true); }

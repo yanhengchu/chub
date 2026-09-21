@@ -26,8 +26,9 @@ CHUB_HELP_MESSAGE = "\n\n".join(
         "chub · check · usage · last · sync · new [title] · S# [task]",
         "codex auth · codex auth switch",
         "stop [S#] · retry · archive S# · del S#",
+        "chub rebuild",
         "More commands",
-        "model help · text help · session help · request help · system help",
+        "model help · session help · request help · system help",
     )
 )
 CHUB_HELP_TOPICS = {
@@ -38,19 +39,6 @@ CHUB_HELP_TOPICS = {
             "model list",
             "model level [M#]",
             "model use M# | L# | M# L#",
-        )
-    ),
-    "text": "\n\n".join(
-        (
-            "Commands · Text",
-            "text",
-            "text mode <direct|auto|confirm>",
-            "text list",
-            "text model list",
-            "text model level [M#]",
-            "text model use M#",
-            "text ok | text next | text cancel",
-            "text-check <English>",
         )
     ),
     "session": "\n\n".join(
@@ -82,7 +70,7 @@ CHUB_HELP_TOPICS = {
             "restart worker",
             "restart clawbot",
             "restart network",
-            "upgrade",
+            "chub rebuild",
         )
     ),
 }
@@ -572,9 +560,6 @@ def safe_submission_error(exc: ApiError) -> str:
         ),
         "weixin_chub_mode_in_progress": (
             "目标 Session 正在执行其他任务，本次任务已丢弃。"
-        ),
-        "weixin_translation_unavailable": (
-            "文本优化服务当前不可用，本次任务未执行。"
         ),
         "quick_worker_submission_uncertain": (
             "Quick Worker 正在核验本次提交；请勿重复发送。"

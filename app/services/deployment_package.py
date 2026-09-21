@@ -26,7 +26,6 @@ from app.core.platform import detect_platform
 from app.core.response import ApiError
 from app.quick_worker import read_health_sync
 from app.services.operation_log import write_operation
-from app.services.weixin_orchestration_plugins import WeixinOrchestrationPluginService
 
 FORMAL_CODEX_IMPLEMENTATION_ID = "codex-010000"
 FORMAL_CODEX_DESCRIPTION = "Chub Codex Runtime：提供 AI Session、Quick Worker 任务执行和模型配置能力。"
@@ -36,9 +35,6 @@ RELEASE_VERSION_SOURCE_PATHS = (
     Path("pyproject.toml"),
     Path("config/settings.yaml"),
     Path("modules/runtime/codex-runtime/chub-module.json"),
-    Path(
-        "modules/orchestration/weixin-refinement/chub-capability-orchestration.json"
-    ),
 )
 RELEASE_EXECUTABLE_SCRIPTS = frozenset(
     {
@@ -53,7 +49,6 @@ RELEASE_EXECUTABLE_SCRIPTS = frozenset(
         "scripts/build/build-codex-runtime-zip.py",
         "scripts/build/build-deliveryline-plugin-zip.py",
         "scripts/build/build-runtime-verification-zip.py",
-        "scripts/build/build-weixin-orchestration-plugin-zip.py",
         "scripts/platform/service-management.sh",
     }
 )
@@ -71,7 +66,6 @@ class DeploymentPackageConfiguration(_StrictModel):
     runtime_implementation_id: str = Field(pattern=r"^codex-[0-9]{6}$")
     runtime_release_version: str = Field(pattern=RELEASE_VERSION_PATTERN)
     runtime_description: str = Field(min_length=1, max_length=300)
-    weixin_release_version: str = Field(pattern=RELEASE_VERSION_PATTERN)
     include_development_sources: bool = False
     release_note: str = Field(default="", max_length=2000)
     release_note_generated_for_version: str | None = Field(
@@ -85,7 +79,7 @@ class DeploymentPackageConfiguration(_StrictModel):
 
 
 class DeploymentPackageBundledModule(_StrictModel):
-    kind: Literal["runtime", "weixin-orchestration"]
+    kind: Literal["runtime"]
     artifact_name: str = Field(min_length=1, max_length=255)
     module_id: str = Field(min_length=1, max_length=64)
     implementation_id: str | None = Field(default=None, min_length=1, max_length=64)
@@ -117,7 +111,6 @@ class DeploymentPackageOperation(_StrictModel):
 class DeploymentPackageSourceVersions(_StrictModel):
     chub: str = Field(pattern=RELEASE_VERSION_PATTERN)
     runtime: str = Field(pattern=RELEASE_VERSION_PATTERN)
-    weixin: str = Field(pattern=RELEASE_VERSION_PATTERN)
 
 
 class DeploymentPackageReleasePreview(_StrictModel):
@@ -234,7 +227,6 @@ class DeploymentPackageService:
             runtime_implementation_id=FORMAL_CODEX_IMPLEMENTATION_ID,
             runtime_release_version="1.0.0",
             runtime_description=FORMAL_CODEX_DESCRIPTION,
-            weixin_release_version="1.0.0",
         )
 
     def _read(self) -> _State:
@@ -357,27 +349,15 @@ class DeploymentPackageService:
             runtime_manifest = json.loads(
                 (PROJECT_ROOT / "modules" / "runtime" / "codex-runtime" / "chub-module.json").read_text("utf-8")
             )
-            weixin_manifest = json.loads(
-                (
-                    PROJECT_ROOT
-                    / "modules"
-                    / "orchestration"
-                    / "weixin-refinement"
-                    / "chub-capability-orchestration.json"
-                ).read_text("utf-8")
-            )
             runtime = runtime_manifest["version"]
-            weixin = weixin_manifest["version"]
             if (
                 not isinstance(chub, str)
                 or not isinstance(runtime, str)
-                or not isinstance(weixin, str)
                 or not re.fullmatch(RELEASE_VERSION_PATTERN, chub)
                 or not re.fullmatch(RELEASE_VERSION_PATTERN, runtime)
-                or not re.fullmatch(RELEASE_VERSION_PATTERN, weixin)
             ):
                 raise ValueError("project version declarations are invalid")
-            return DeploymentPackageSourceVersions(chub=chub, runtime=runtime, weixin=weixin)
+            return DeploymentPackageSourceVersions(chub=chub, runtime=runtime)
         except (KeyError, OSError, TypeError, ValueError, yaml.YAMLError) as exc:
             raise ApiError(503, "deployment_package_versions_unavailable", "项目版本暂时无法读取。") from exc
 
@@ -397,22 +377,11 @@ class DeploymentPackageService:
                     / "chub-module.json"
                 ).read_text("utf-8")
             )
-            weixin_manifest = json.loads(
-                (
-                    PROJECT_ROOT
-                    / "modules"
-                    / "orchestration"
-                    / "weixin-refinement"
-                    / "chub-capability-orchestration.json"
-                ).read_text("utf-8")
-            )
             values = (
                 source.chub,
                 source.runtime,
-                source.weixin,
                 settings_file["app"]["version"],
                 runtime_manifest["chub_version"],
-                weixin_manifest["chub_version"],
             )
             if not all(
                 isinstance(value, str)
@@ -429,10 +398,8 @@ class DeploymentPackageService:
         labels = (
             "Chub 项目版本",
             "Codex Runtime 版本",
-            "微信编排版本",
             "Chub 默认配置版本",
             "Codex Runtime Chub 兼容版本",
-            "微信编排 Chub 兼容版本",
         )
         return tuple(
             label
@@ -539,7 +506,6 @@ class DeploymentPackageService:
                 runtime_implementation_id=FORMAL_CODEX_IMPLEMENTATION_ID,
                 runtime_release_version=release_version,
                 runtime_description=FORMAL_CODEX_DESCRIPTION,
-                weixin_release_version=release_version,
                 include_development_sources=include_development_sources,
                 release_note="",
             )
@@ -573,6 +539,14 @@ class DeploymentPackageService:
                         source_ip=source_ip,
                     )
             except Exception:
+                self._refresh_release_note_generation(state)
+                if state.release_note_generation.task_id is not None:
+                    self._release_note_draft_task_id = state.release_note_generation.task_id
+                    self._release_note_draft_token = release_note_draft_token
+                    self._release_note_draft_expires_at = (
+                        time.monotonic() + RELEASE_NOTE_DRAFT_TTL_SECONDS
+                    )
+                    return self.status(release_note_draft_token=release_note_draft_token)
                 if created:
                     self._discard_unstarted_release_note_session(session_id)
                     state.release_note_session_id = None
@@ -623,6 +597,36 @@ class DeploymentPackageService:
         if generation.status not in {"requested", "running"}:
             return
         changed = False
+        if generation.task_id is None:
+            find_for_operation = getattr(self._quick_interactions, "find_for_operation", None)
+            task = (
+                find_for_operation(generation.operation_id)
+                if generation.operation_id is not None and callable(find_for_operation)
+                else None
+            )
+            if (
+                task is None
+                or task.session_id != generation.session_id
+                or task.kind != "standard"
+            ):
+                state.release_note_generation = generation.model_copy(
+                    update={
+                        "status": "failed",
+                        "message": "发版说明提交状态未能确认，可再次生成。",
+                        "finished_at": _now(),
+                    }
+                )
+                self._write_release_note_generation_terminal(
+                    state.release_note_generation,
+                    status="failed",
+                    reason="submission_unconfirmed",
+                )
+                changed = True
+            else:
+                state.release_note_generation = generation = generation.model_copy(
+                    update={"task_id": task.id}
+                )
+                changed = True
         if generation.status in {"requested", "running"} and generation.task_id is not None:
             if self._quick_interactions is None:
                 return
@@ -1090,7 +1094,6 @@ class DeploymentPackageService:
         if (
             source.chub != configuration.chub_release_version
             or source.runtime != configuration.runtime_release_version
-            or source.weixin != configuration.weixin_release_version
             or not self._source_declarations_match(configuration.chub_release_version)
         ):
             mismatches = self._version_declaration_mismatches(
@@ -1474,13 +1477,10 @@ class DeploymentPackageService:
                 f"{built_at.strftime('%Y%m%d%H%M%S%f')}-{source_hash}-{uuid4().hex[:8]}"
             )
             runtime_zip = modules / f"codex-runtime-release-{configuration.runtime_release_version}-{build_id}.zip"
-            weixin_zip = modules / f"weixin-refinement-release-{configuration.weixin_release_version}-{build_id}.zip"
             subprocess.run([sys.executable, str(PROJECT_ROOT / "scripts" / "build" / "build-codex-runtime-zip.py"), "--output", str(runtime_zip), "--implementation-id", configuration.runtime_implementation_id, "--version", configuration.runtime_release_version, "--description", configuration.runtime_description, "--chub-version", configuration.chub_release_version], cwd=PROJECT_ROOT, check=True, capture_output=True, text=True, timeout=60)
-            subprocess.run([sys.executable, str(PROJECT_ROOT / "scripts" / "build" / "build-weixin-orchestration-plugin-zip.py"), "--output", str(weixin_zip), "--version", configuration.weixin_release_version, "--chub-version", configuration.chub_release_version], cwd=PROJECT_ROOT, check=True, capture_output=True, text=True, timeout=60)
             bundled_modules = self._validate_bundled_modules(
                 root,
                 runtime_zip,
-                weixin_zip,
                 configuration.chub_release_version,
             )
             name = f"chub-release-{configuration.chub_release_version}-{build_id}.zip"
@@ -1509,7 +1509,7 @@ class DeploymentPackageService:
                     PROJECT_ROOT / "docs" / "DEPLOY_WITH_AI.md",
                     Path("DEPLOY_WITH_AI.md"),
                 )
-                for module in (runtime_zip, weixin_zip):
+                for module in (runtime_zip,):
                     self._add_file(archive, manifest, module, Path("bundled-modules") / module.name)
                 archive.writestr("release-manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
             self._validate_release_archive(temporary, manifest)
@@ -1548,15 +1548,11 @@ class DeploymentPackageService:
         self,
         root: Path,
         runtime_zip: Path,
-        weixin_zip: Path,
         chub_version: str,
     ) -> tuple[DeploymentPackageBundledModule, ...]:
         validation_settings = self.settings.model_copy(deep=True)
         validation_settings.app.version = chub_version
         validation_settings.ai_runtime.modules.install_dir = root / "validation-runtime-modules"
-        validation_settings.openclaw.weixin_chub_mode.orchestration_modules_dir = (
-            root / "validation-weixin-modules"
-        )
         runtime_service = RuntimePluginService(validation_settings)
         runtime_activation = runtime_service.install(
             runtime_zip.read_bytes(), source_name=runtime_zip.name
@@ -1565,9 +1561,6 @@ class DeploymentPackageService:
             runtime = runtime_activation.installed.manifest
         finally:
             runtime_service.finalize(runtime_activation)
-        weixin = WeixinOrchestrationPluginService(validation_settings).inspect_archive(
-            weixin_zip.read_bytes(), source_name=weixin_zip.name
-        )
         return (
             DeploymentPackageBundledModule(
                 kind="runtime",
@@ -1576,13 +1569,6 @@ class DeploymentPackageService:
                 implementation_id=runtime.implementation_id,
                 version=runtime.version,
                 sha256=self._digest_file(runtime_zip),
-            ),
-            DeploymentPackageBundledModule(
-                kind="weixin-orchestration",
-                artifact_name=weixin_zip.name,
-                module_id=weixin.module_id,
-                version=weixin.version,
-                sha256=self._digest_file(weixin_zip),
             ),
         )
 

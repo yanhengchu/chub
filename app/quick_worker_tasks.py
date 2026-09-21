@@ -66,7 +66,7 @@ TaskStatus = Literal[
 ]
 FinalTaskStatus = Literal["succeeded", "failed", "timed_out", "cancelled"]
 TestBehavior = Literal["succeed", "fail", "ignore_term", "orphan_child"]
-WorkerTaskKind = Literal["standard", "weixin", "translation", "test"]
+WorkerTaskKind = Literal["standard", "weixin", "test"]
 TaskErrorSource = Literal["chub", "runtime"]
 FINAL_STATUSES = {"succeeded", "failed", "timed_out", "cancelled"}
 TASK_ID_PATTERN = r"^qw-[0-9]{13}-[a-f0-9]{32}$"
@@ -138,11 +138,8 @@ class RuntimeTaskSubmission(_StrictModel):
     model: str | None = Field(default=None, min_length=1, max_length=128)
     reasoning_effort: str | None = Field(default=None, min_length=1, max_length=32)
     timeout_seconds: float = Field(gt=0.0, le=24 * 60 * 60)
-    task_kind: Literal["standard", "weixin", "translation"] = "standard"
+    task_kind: Literal["standard", "weixin"] = "standard"
     restart_sensitive: bool | None = None
-    queue_key: str | None = Field(default=None, pattern=SESSION_ID_PATTERN)
-    queue_limit: int | None = Field(default=None, ge=1, le=50)
-    queue_wait_seconds: float | None = Field(default=None, gt=0.0, le=7200.0)
 
     @field_validator("prompt")
     @classmethod
@@ -152,13 +149,7 @@ class RuntimeTaskSubmission(_StrictModel):
         return value
 
     @model_validator(mode="after")
-    def validate_queue_fields(self) -> RuntimeTaskSubmission:
-        queue_fields = (self.queue_key, self.queue_limit, self.queue_wait_seconds)
-        if self.task_kind == "translation":
-            if any(item is None for item in queue_fields):
-                raise ValueError("translation queue fields are required")
-        elif any(item is not None for item in queue_fields):
-            raise ValueError("queue fields are only valid for translation tasks")
+    def validate_runtime_fields(self) -> RuntimeTaskSubmission:
         expected_restart_sensitive = (
             self.workspace_id == "chub" and self.permission_profile != "read-only"
         )
@@ -188,12 +179,8 @@ class StoredTaskSpec(_StrictModel):
     timeout_seconds: float
     task_kind: WorkerTaskKind
     restart_sensitive: bool = False
-    queue_key: str | None = Field(default=None, pattern=SESSION_ID_PATTERN)
-    queue_limit: int | None = Field(default=None, ge=1, le=50)
-    queue_wait_seconds: float | None = Field(default=None, gt=0.0, le=7200.0)
     created_at: datetime
     deadline_at: datetime
-    queue_deadline_at: datetime | None = None
 
     @model_validator(mode="after")
     def validate_runtime_fields(self) -> StoredTaskSpec:
@@ -226,12 +213,6 @@ class StoredTaskSpec(_StrictModel):
             != (self.workspace_id == "chub" and self.permission_profile != "read-only")
         ):
             raise ValueError("restart_sensitive does not match the fixed workspace rule")
-        queue_fields = (self.queue_key, self.queue_limit, self.queue_wait_seconds)
-        if self.task_kind == "translation":
-            if any(item is None for item in queue_fields) or self.queue_deadline_at is None:
-                raise ValueError("translation queue fields are inconsistent")
-        elif any(item is not None for item in (*queue_fields, self.queue_deadline_at)):
-            raise ValueError("non-translation task has queue fields")
         return self
 
 
@@ -416,9 +397,6 @@ def _digest_stored_spec(spec: StoredTaskSpec) -> str:
             "reasoning_effort": spec.reasoning_effort,
             "timeout_seconds": spec.timeout_seconds,
             "task_kind": spec.task_kind,
-            "queue_key": spec.queue_key,
-            "queue_limit": spec.queue_limit,
-            "queue_wait_seconds": spec.queue_wait_seconds,
             "restart_sensitive": spec.restart_sensitive,
         }
     return hashlib.sha256(_canonical_json(payload)).hexdigest()
@@ -675,11 +653,7 @@ class WorkerTaskManager:
                     "Task result has been retired and cannot be submitted again",
                 )
 
-            queued_translation = (
-                isinstance(submission, RuntimeTaskSubmission)
-                and submission.task_kind == "translation"
-            )
-            if not queued_translation and len(self._running_task_ids()) >= MAX_ACTIVE_TASKS:
+            if len(self._running_task_ids()) >= MAX_ACTIVE_TASKS:
                 raise WorkerTaskError(
                     "worker_capacity_reached",
                     "Worker has reached its fixed active task limit",
@@ -690,9 +664,7 @@ class WorkerTaskManager:
                     "Worker task store has reached its fixed limit",
                 )
 
-            if queued_translation:
-                self._ensure_queue_capacity(submission)
-            elif isinstance(submission, RuntimeTaskSubmission):
+            if isinstance(submission, RuntimeTaskSubmission):
                 self._ensure_session_available(submission.session_id)
 
             task_dir = self.tasks_dir / submission.task_id
@@ -758,50 +730,21 @@ class WorkerTaskManager:
                     if isinstance(submission, RuntimeTaskSubmission)
                     else False
                 ),
-                queue_key=(
-                    submission.queue_key
-                    if isinstance(submission, RuntimeTaskSubmission)
-                    else None
-                ),
-                queue_limit=(
-                    submission.queue_limit
-                    if isinstance(submission, RuntimeTaskSubmission)
-                    else None
-                ),
-                queue_wait_seconds=(
-                    submission.queue_wait_seconds
-                    if isinstance(submission, RuntimeTaskSubmission)
-                    else None
-                ),
                 created_at=now,
-                deadline_at=now + timedelta(
-                    seconds=(
-                        submission.timeout_seconds
-                        + (
-                            (submission.queue_wait_seconds or 0)
-                            if isinstance(submission, RuntimeTaskSubmission)
-                            else 0
-                        )
-                    )
-                ),
-                queue_deadline_at=(
-                    now + timedelta(seconds=submission.queue_wait_seconds)
-                    if queued_translation and submission.queue_wait_seconds is not None
-                    else None
-                ),
+                deadline_at=now + timedelta(seconds=submission.timeout_seconds),
             )
             state = StoredTaskState(
                 task_id=submission.task_id,
                 runtime_id=runtime_id,
                 implementation_id=spec.implementation_id,
                 spec_sha256=spec_digest,
-                status="queued" if queued_translation else "accepted",
+                status="accepted",
                 worker_generation=self.generation,
                 updated_at=now,
             )
             try:
                 _write_model(task_dir / "spec.json", spec, max_bytes=MAX_SPEC_BYTES)
-                if spec.session_id is not None and spec.task_kind != "translation":
+                if spec.session_id is not None:
                     self._write_lease(
                         SessionLease(
                             session_id=spec.session_id,
@@ -1119,129 +1062,6 @@ class WorkerTaskManager:
                 running.add(task_id)
         return running
 
-    def _ensure_queue_capacity(self, submission: RuntimeTaskSubmission) -> None:
-        if submission.queue_key is None or submission.queue_limit is None:
-            raise WorkerTaskError(
-                "worker_queue_invalid", "Translation queue configuration is incomplete"
-            )
-        active = 0
-        for entry in self.tasks_dir.iterdir():
-            if entry.is_symlink() or not entry.is_dir():
-                continue
-            try:
-                spec, state, completion = self._records(entry.name)
-            except (FileNotFoundError, OSError, ValidationError, ValueError):
-                continue
-            if (
-                completion is None
-                and spec.task_kind == "translation"
-                and spec.queue_key == submission.queue_key
-                and state.status in {"queued", "accepted", "starting", "running"}
-            ):
-                active += 1
-        if active >= submission.queue_limit:
-            raise WorkerTaskError(
-                "worker_queue_capacity_reached",
-                "Translation queue has reached its fixed capacity",
-            )
-
-    async def _wait_for_queue_turn(self, task_id: str) -> bool:
-        while True:
-            should_wait = False
-            async with self._lock:
-                spec, state, completion = self._records(task_id)
-                if completion is not None:
-                    return False
-                if spec.task_kind != "translation":
-                    return True
-                if state.cancellation_requested:
-                    self._finalize(
-                        spec,
-                        state,
-                        status="cancelled",
-                        error_code="cancelled",
-                        error="Task was cancelled before execution started.",
-                    )
-                    return False
-                if spec.queue_deadline_at is None or utc_now() >= spec.queue_deadline_at:
-                    self._finalize(
-                        spec,
-                        state,
-                        status="timed_out",
-                        error_code="queue_deadline_exceeded",
-                        error="Translation task reached its absolute queue deadline.",
-                    )
-                    return False
-                earlier_active = False
-                latest_native: tuple[datetime, str] | None = None
-                for entry in self.tasks_dir.iterdir():
-                    if entry.name == task_id or entry.is_symlink() or not entry.is_dir():
-                        continue
-                    try:
-                        other_spec, other_state, other_completion = self._records(entry.name)
-                    except (FileNotFoundError, OSError, ValidationError, ValueError):
-                        continue
-                    if (
-                        other_spec.task_kind != "translation"
-                        or other_spec.queue_key != spec.queue_key
-                    ):
-                        continue
-                    if (other_spec.created_at, other_spec.task_id) < (
-                        spec.created_at,
-                        spec.task_id,
-                    ):
-                        if other_completion is None:
-                            earlier_active = True
-                        if other_spec.session_id != spec.session_id:
-                            continue
-                        native_id = (
-                            other_completion.native_session_id
-                            if other_completion is not None
-                            else other_state.native_session_id
-                        )
-                        if native_id is not None and (
-                            latest_native is None
-                            or other_spec.created_at > latest_native[0]
-                        ):
-                            latest_native = (other_spec.created_at, native_id)
-                if earlier_active or len(self._running_task_ids()) >= MAX_ACTIVE_TASKS:
-                    should_wait = True
-                else:
-                    candidate_native_session_id = (
-                        latest_native[1] if latest_native is not None else spec.native_session_id
-                    )
-                    state.expected_native_session_id = (
-                        candidate_native_session_id
-                        if candidate_native_session_id is not None
-                        and self._native_session_available(
-                            spec.implementation_id,
-                            candidate_native_session_id,
-                        )
-                        else None
-                    )
-                    try:
-                        self._write_lease(
-                            SessionLease(
-                                session_id=spec.session_id or "",
-                                task_id=spec.task_id,
-                                runtime_id=spec.runtime_id,
-                                implementation_id=spec.implementation_id,
-                                spec_sha256=spec.spec_sha256,
-                                created_at=utc_now(),
-                            )
-                        )
-                    except WorkerTaskError as exc:
-                        if exc.code != "worker_session_busy":
-                            raise
-                        should_wait = True
-                    else:
-                        state.status = "accepted"
-                        state.updated_at = utc_now()
-                        self._write_state(state)
-                        return True
-            if should_wait:
-                await asyncio.sleep(0.05)
-
     async def _recover_tasks(self) -> None:
         entries = list(self.tasks_dir.iterdir())
         if len(entries) > MAX_TASK_DIRECTORIES:
@@ -1320,8 +1140,6 @@ class WorkerTaskManager:
         native_observer: asyncio.Task[None] | None = None
         runner = None
         try:
-            if not await self._wait_for_queue_turn(task_id):
-                return
             async with self._lock:
                 spec, state, completion = self._records(task_id)
                 if completion is not None:
@@ -1387,10 +1205,7 @@ class WorkerTaskManager:
                             task_kind=spec.task_kind,
                             workspace_id=spec.workspace_id,
                             turn=turn,
-                            start_new_session=(
-                                spec.task_kind == "translation"
-                                and expected_native_id is None
-                            ),
+                            start_new_session=False,
                             restart_request_dir=self.restart_request_dir,
                             test_behavior=spec.test_behavior,
                             test_run_seconds=spec.test_run_seconds,
@@ -1429,11 +1244,7 @@ class WorkerTaskManager:
                 release_read = None
                 runner_created_at = psutil.Process(process.pid).create_time()
                 state.status = "starting"
-                state.execution_deadline_at = (
-                    utc_now() + timedelta(seconds=spec.timeout_seconds)
-                    if spec.task_kind == "translation"
-                    else spec.deadline_at
-                )
+                state.execution_deadline_at = spec.deadline_at
                 state.worker_generation = self.generation
                 state.runner_pid = process.pid
                 state.runner_created_at = runner_created_at
@@ -1925,19 +1736,9 @@ class WorkerTaskManager:
             raise ValueError("task timestamps must include a timezone")
         if spec.deadline_at <= spec.created_at:
             raise ValueError("task deadline is inconsistent")
-        expected_deadline = spec.created_at + timedelta(
-            seconds=spec.timeout_seconds + (spec.queue_wait_seconds or 0)
-        )
+        expected_deadline = spec.created_at + timedelta(seconds=spec.timeout_seconds)
         if spec.deadline_at != expected_deadline:
             raise ValueError("task deadline does not match its specification")
-        if spec.queue_deadline_at is not None:
-            if spec.queue_deadline_at.tzinfo is None:
-                raise ValueError("task queue deadline must include a timezone")
-            expected_queue_deadline = spec.created_at + timedelta(
-                seconds=spec.queue_wait_seconds or 0
-            )
-            if spec.queue_deadline_at != expected_queue_deadline:
-                raise ValueError("task queue deadline does not match its specification")
         if state.updated_at.tzinfo is None or state.updated_at < spec.created_at:
             raise ValueError("task state timestamp is inconsistent")
         if state.execution_deadline_at is not None:
@@ -2301,8 +2102,6 @@ class WorkerTaskManager:
         spec: StoredTaskSpec,
         state: StoredTaskState,
     ) -> str | None:
-        if spec.task_kind == "translation":
-            return state.expected_native_session_id
         return state.expected_native_session_id or spec.native_session_id
 
     @staticmethod

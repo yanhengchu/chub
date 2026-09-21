@@ -71,7 +71,7 @@ Commands:
   install [--force]
              Install and start the user service
   status [--verbose]
-             Show a concise Web, Worker, browser, and upgrade status summary
+             Show a concise Web, Worker, browser, and workstation status summary
              --verbose also prints the platform service-manager details
   check      Check project, services, Web, Worker, and system status
   web <start|stop|restart|logs>
@@ -82,13 +82,11 @@ Commands:
   network restart
              Restart the locally configured NetworkManager Wi-Fi and VPN
   service definitions [--core]
-             Rebuild fixed service definitions; --core limits this to Web, Worker, and upgrade executor
+             Rebuild fixed service definitions; --core limits this to Web and Worker
   runtime dependencies
              Repair Python dependencies from the repository requirements file
-  upgrade <service|logs>
-             Recover the system upgrade service or follow its log
-  recovery reset --force
-             Discard Chub AI runtime state and rebuild core services
+  workstation rebuild --force
+             Rebuild the Chub workstation from current code, configuration, and requirements
   chrome supervisor reconcile [--restart]
              Rebuild and verify the Ubuntu Debug Chrome Supervisor
   version, --version
@@ -248,13 +246,34 @@ install_runtime_dependencies() {
         --requirement "$requirements_file"
 }
 
-force_runtime_recovery() {
-    [[ "$#" -eq 2 && "$1" == "reset" && "$2" == "--force" ]] \
-        || fail "usage: chub recovery reset --force"
+rebuild_workstation() {
+    [[ "$#" -eq 2 && "$1" == "rebuild" && "$2" == "--force" ]] \
+        || fail "usage: chub workstation rebuild --force"
     [[ -z "${CHUB_QUICK_TASK_ID:-}" ]] \
-        || fail "recovery reset must be run from a local terminal, not from a Quick Worker task"
-    check_project
-    "$PROJECT_ROOT/scripts/maintenance/chub-system-recovery-reset"
+        || fail "workstation rebuild must be run from a local terminal"
+    if [[ ! -x "$PYTHON_BIN" ]]; then
+        command -v python3 >/dev/null 2>&1 || fail "Python 3 is unavailable"
+        python3 -m venv "$PROJECT_ROOT/.venv"
+    fi
+    [[ -f "$MAIN_FILE" ]] || fail "Hub entry point not found: $MAIN_FILE"
+    [[ -f "$SETTINGS_FILE" ]] || fail "configuration not found: $SETTINGS_FILE"
+    local created operation_id
+    read -r created operation_id < <(
+        cd "$PROJECT_ROOT"
+        "$PYTHON_BIN" - <<'PY'
+from app.core.config import load_settings
+from app.core.logger import configure_logging
+from app.services.workstation_rebuild import WorkstationRebuildCoordinator
+configure_logging(load_settings().logs)
+operation, created = WorkstationRebuildCoordinator().begin("local-terminal")
+print("yes" if created else "no", operation.operation_id)
+PY
+    )
+    if [[ "$created" != "yes" ]]; then
+        echo "Chub workstation rebuild is already in progress: $operation_id"
+        return 0
+    fi
+    "$PROJECT_ROOT/scripts/maintenance/chub-workstation-rebuild" "$operation_id"
 }
 
 install_command() {
@@ -700,23 +719,20 @@ status_service() {
         fail "usage: chub status [--verbose]"
     fi
 
-    local result=0 web_service web_health worker_service worker_health chrome_status upgrade_status
+    local result=0 web_service web_health worker_service worker_health chrome_status
     web_service="$(web_service_status)"
     web_health="$(web_health_status)" || result=1
     worker_service="$(worker_service_status)"
     worker_health="$(quick_worker_status_summary)" || result=1
     chrome_status="$(chrome_supervisor_status)"
-    upgrade_status="$(system_upgrade_executor_status)"
 
     printf 'Chub Web · service %s · health %s\n' "$web_service" "$web_health"
     printf 'Quick Worker · service %s · %s\n' "$worker_service" "$worker_health"
     printf 'Debug Chrome Supervisor · %s\n' "$chrome_status"
-    printf 'System upgrade executor · %s\n' "$upgrade_status"
 
     [[ "$web_service" == "running" ]] || result=1
     [[ "$worker_service" == "running" ]] || result=1
     [[ "$chrome_status" == "running" || "$chrome_status" == "not-managed" ]] || result=1
-    [[ "$upgrade_status" == "installed" ]] || result=1
 
     if [[ "$verbose" == true ]]; then
         echo
@@ -928,17 +944,9 @@ case "$command" in
         [[ $# -eq 0 ]] || fail "usage: chub runtime dependencies"
         install_runtime_dependencies
         ;;
-    upgrade)
+    workstation)
         shift
-        case "${1:-}" in
-            service) shift; [[ $# -eq 0 ]] || fail "usage: chub upgrade service"; recover_system_upgrade_service ;;
-            logs) shift; [[ $# -eq 0 ]] || fail "usage: chub upgrade logs"; show_logs upgrade ;;
-            *) usage >&2; fail "usage: chub upgrade <service|logs>" ;;
-        esac
-        ;;
-    recovery)
-        shift
-        force_runtime_recovery "$@"
+        rebuild_workstation "$@"
         ;;
     uninstall)
         shift

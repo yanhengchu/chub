@@ -24,6 +24,7 @@ DEFAULT_PAGE_CONTENT_CHARS = 64 * 1024
 MAX_PAGE_CONTENT_CHARS = 256 * 1024
 MAX_PAGE_TITLE_CHARS = 512
 MAX_PAGE_LINK_TEXT_CHARS = 512
+MAX_PAGE_LINKS = 80
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,15 @@ class DebugChromePageContent:
     title: str
     content: str
     truncated: bool
+    links: tuple["DebugChromePageLink", ...] = ()
+
+
+@dataclass(frozen=True)
+class DebugChromePageLink:
+    """A bounded visible HTTP(S) link found in a page snapshot."""
+
+    text: str
+    url: str
 
 
 @dataclass(frozen=True)
@@ -122,11 +132,20 @@ async def _page_snapshot(
     raw_content = await page.evaluate(
         """(maximum) => {
             const content = document.body?.innerText || "";
+            const links = Array.from(document.querySelectorAll("a[href]"))
+                .filter((anchor) => anchor.getClientRects().length > 0)
+                .map((anchor) => ({
+                    text: (anchor.innerText || anchor.textContent || "").trim(),
+                    url: anchor.href,
+                }))
+                .filter((link) => link.text && /^https?:\\/\\//i.test(link.url))
+                .slice(0, %LINK_LIMIT%);
             return {
                 content: content.slice(0, maximum + 1),
                 truncated: content.length > maximum,
+                links,
             };
-        }""",
+        }""".replace("%LINK_LIMIT%", str(MAX_PAGE_LINKS)),
         max_content_chars,
     )
     if not isinstance(raw_content, dict) or not isinstance(
@@ -137,12 +156,41 @@ async def _page_snapshot(
         raw_content["content"],
         max_content_chars,
     )
+    links: list[DebugChromePageLink] = []
+    raw_links = raw_content.get("links", [])
+    if isinstance(raw_links, list):
+        for raw_link in raw_links[:MAX_PAGE_LINKS]:
+            if not isinstance(raw_link, dict):
+                continue
+            text = raw_link.get("text")
+            url = raw_link.get("url")
+            if not isinstance(text, str) or not isinstance(url, str):
+                continue
+            text = text.strip()[:MAX_PAGE_LINK_TEXT_CHARS]
+            url = url.strip()
+            try:
+                parsed = urlsplit(url)
+                if (
+                    not text
+                    or len(url) > 2048
+                    or parsed.scheme not in {"http", "https"}
+                    or not parsed.hostname
+                    or parsed.username is not None
+                    or parsed.password is not None
+                ):
+                    continue
+                if parsed.port is not None and parsed.port != {"http": 80, "https": 443}[parsed.scheme]:
+                    continue
+            except ValueError:
+                continue
+            links.append(DebugChromePageLink(text=text, url=url))
     return DebugChromePageContent(
         source_url=source_url,
         final_url=final_url,
         title=title,
         content=content,
         truncated=bool(raw_content.get("truncated")) or normalized_truncated,
+        links=tuple(links),
     )
 
 

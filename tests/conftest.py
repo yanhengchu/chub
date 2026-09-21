@@ -47,9 +47,7 @@ def settings(tmp_path: Path) -> Settings:
             },
             "business_modules": {
                 "install_dir": tmp_path / "business-modules",
-                "state_file": tmp_path / "deliveryline-plugin.json",
-                "deliveryline_requirements_dir": tmp_path / "deliveryline-requirements",
-                "deliveryline_state_dir": tmp_path / "deliveryline-state",
+                "state_file": tmp_path / "plugin-lifecycle.json",
             },
             "maintenance_terminal": {"ticket_ttl_seconds": 600},
             "automations": {

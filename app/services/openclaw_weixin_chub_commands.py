@@ -12,9 +12,6 @@ CHUB_CHECK_PROMPT = "check"
 CHUB_HELP_PROMPT = "help"
 CHUB_USAGE_PROMPT = "usage"
 CHUB_LAST_PROMPT = "last"
-TEXT_PROMPT = "text"
-TEXT_CHECK_PROMPT = "text-check"
-TEXT_MODE_VALUES = frozenset({"direct", "auto", "confirm"})
 CHUB_MODEL_PROMPT = "model"
 CHUB_MODEL_LIST_PROMPT = "model list"
 CHUB_MODEL_LEVELS_PROMPT = "model level"
@@ -28,7 +25,7 @@ CHUB_RESTART_WEB_PROMPTS = frozenset({"restart", "restart web"})
 CHUB_RESTART_WORKER_PROMPT = "restart worker"
 CHUB_RESTART_CLAWBOT_PROMPT = "restart clawbot"
 CHUB_RESTART_NETWORK_PROMPT = "restart network"
-CHUB_UPGRADE_PROMPT = "upgrade"
+CHUB_REBUILD_PROMPT = "chub rebuild"
 SESSION_RENAME_PROMPT = "rename"
 SESSION_NEW_PROMPT = "new"
 SESSION_ARCHIVE_PROMPT = "archive"
@@ -47,8 +44,7 @@ WeixinChubCommandKind = Literal[
     "check",
     "usage",
     "last",
-    "text_control",
-    "text_check",
+    "retired_text",
     "help",
     "model",
     "model_list",
@@ -59,7 +55,7 @@ WeixinChubCommandKind = Literal[
     "restart_worker",
     "restart_clawbot",
     "restart_network",
-    "upgrade",
+    "rebuild",
     "codex_auth",
     "codex_auth_switch",
     "retry",
@@ -80,8 +76,7 @@ FIXED_COMMAND_KINDS = frozenset(
         "check",
         "usage",
         "last",
-        "text_control",
-        "text_check",
+        "retired_text",
         "help",
         "model",
         "model_list",
@@ -92,7 +87,7 @@ FIXED_COMMAND_KINDS = frozenset(
         "restart_worker",
         "restart_clawbot",
         "restart_network",
-        "upgrade",
+        "rebuild",
         "codex_auth",
         "codex_auth_switch",
         "retry",
@@ -123,25 +118,11 @@ _READ_ONLY_COMMAND_KINDS = frozenset(
     }
 )
 
-_READ_ONLY_TEXT_ACTIONS = frozenset({"list", "model_list", "model_levels"})
-
-
 @dataclass(frozen=True)
 class WeixinChubCommand:
     kind: WeixinChubCommandKind
     normalized_prompt: str
     task_prompt: str | None = None
-    processing_mode: Literal["direct", "auto", "confirm"] | None = None
-    text_action: Literal[
-        "mode",
-        "list",
-        "ok",
-        "next",
-        "cancel",
-        "model_list",
-        "model_levels",
-        "model_use",
-    ] | None = None
     requested_index: int | None = None
     model_index: int | None = None
     level_index: int | None = None
@@ -156,14 +137,8 @@ def is_ai_runtime_write_command(command: WeixinChubCommand) -> bool:
         return False
     if command.kind in _READ_ONLY_COMMAND_KINDS:
         return False
-    if command.kind == "text_check":
-        return not command.invalid_usage
-    if command.kind == "text_control":
-        if command.invalid_usage:
-            return False
-        if command.text_action == "mode":
-            return command.processing_mode is not None
-        return command.text_action not in _READ_ONLY_TEXT_ACTIONS
+    if command.kind == "retired_text":
+        return False
     return True
 
 
@@ -229,7 +204,7 @@ def parse_weixin_chub_command(prompt: str) -> WeixinChubCommand:
     if folded == CHUB_LAST_PROMPT:
         return WeixinChubCommand("last", normalized)
     help_parts = folded.split()
-    if help_parts == [CHUB_HELP_PROMPT]:
+    if help_parts in ([CHUB_HELP_PROMPT], [CHUB_STATUS_PROMPT, CHUB_HELP_PROMPT]):
         return WeixinChubCommand("help", normalized)
     if (
         len(help_parts) == 2
@@ -270,8 +245,8 @@ def parse_weixin_chub_command(prompt: str) -> WeixinChubCommand:
         return WeixinChubCommand("restart_clawbot", normalized)
     if folded == CHUB_RESTART_NETWORK_PROMPT:
         return WeixinChubCommand("restart_network", normalized)
-    if folded == CHUB_UPGRADE_PROMPT:
-        return WeixinChubCommand("upgrade", normalized)
+    if folded == CHUB_REBUILD_PROMPT:
+        return WeixinChubCommand("rebuild", normalized)
     if folded == "retry":
         return WeixinChubCommand("retry", normalized)
 

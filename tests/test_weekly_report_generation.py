@@ -54,6 +54,8 @@ class _QuickInteractions:
         self.prompt: str | None = None
         self.tasks = {"task-1": SimpleNamespace(status="running", error=None)}
         self.submissions: list[tuple[str, str]] = []
+        self.operation_tasks: dict[str, SimpleNamespace] = {}
+        self.raise_after_acceptance = False
 
     @contextmanager
     def session_creation_guard(self):
@@ -63,15 +65,28 @@ class _QuickInteractions:
     def session_operation_guard(self, _session_id: str):
         yield
 
-    def submit(self, session_id: str, prompt: str, **_kwargs):
+    def submit(self, session_id: str, prompt: str, **kwargs):
         self.prompt = prompt
         task_id = f"task-{len(self.submissions) + 1}"
         self.submissions.append((session_id, task_id))
-        self.tasks[task_id] = SimpleNamespace(status="running", error=None)
+        task = SimpleNamespace(
+            id=task_id,
+            session_id=session_id,
+            kind="standard",
+            status="running",
+            error=None,
+        )
+        self.tasks[task_id] = task
+        self.operation_tasks[kwargs["operation_id"]] = task
+        if self.raise_after_acceptance:
+            raise RuntimeError("response lost after acceptance")
         return SimpleNamespace(id=task_id)
 
     def get(self, task_id: str):
         return self.tasks[task_id]
+
+    def find_for_operation(self, operation_id: str):
+        return self.operation_tasks.get(operation_id)
 
 
 def test_focus_generation_creates_configured_quick_session_after_download(
@@ -282,3 +297,50 @@ def test_missing_runtime_disables_weekly_generation_even_with_existing_session(
     service._save_stage(period, "focus", session_id="session-1", task_id="task-1")
 
     assert service.configuration_ready() == (False, "Runtime is not installed")
+
+
+def test_weekly_generation_recovers_accepted_task_when_submission_response_is_lost(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    period = "2026-08-31至2026-09-06"
+    monkeypatch.setattr(generation, "reporting_period", lambda: period)
+    monkeypatch.setattr(generation, "weekly_report_inputs_available", lambda _: True)
+    quick = _QuickInteractions()
+    quick.raise_after_acceptance = True
+    service = generation.WeeklyReportGenerationService(
+        tmp_path / "weekly-report-generation.json",
+        _SessionManager(AiRuntimeGeneralSettings()),
+        quick,
+    )
+
+    step = service.start("focus", source_ip="127.0.0.1")
+
+    assert step.task_id == "task-1"
+    assert step.status == "running"
+    assert quick.submissions == [("session-1", "task-1")]
+
+
+def test_weekly_generation_marks_unlinked_submission_as_failed(tmp_path, monkeypatch) -> None:
+    period = "2026-08-31至2026-09-06"
+    monkeypatch.setattr(generation, "reporting_period", lambda: period)
+    monkeypatch.setattr(generation, "weekly_report_inputs_available", lambda _: True)
+    quick = _QuickInteractions()
+    service = generation.WeeklyReportGenerationService(
+        tmp_path / "weekly-report-generation.json",
+        _SessionManager(AiRuntimeGeneralSettings()),
+        quick,
+    )
+    service._save_stage(
+        period,
+        "focus",
+        session_id="session-1",
+        task_id=None,
+        operation_id="missing-operation",
+        status="submitting",
+    )
+
+    step = service.read_current()["focus"]
+
+    assert step.status == "failed"
+    assert step.task_id is None

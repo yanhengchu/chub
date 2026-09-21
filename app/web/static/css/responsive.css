@@ -244,6 +244,12 @@
     width: 100%;
   }
 
+  .deliveryline-version-actions {
+    flex: none;
+    min-width: 0;
+    max-width: none;
+  }
+
   .workstation-status-actions > .button-secondary,
   .automation-browser-actions > button {
     width: 100%;

@@ -87,7 +87,6 @@ run_platform_action recovery-core-stop
     "$PYTHON_BIN" -m app.system_recovery_cli force-reset
 )
 run_platform_action core-service-definitions
-run_platform_action system-upgrade-load
 run_platform_action chrome-supervisor-reconcile --restart
 run_platform_action worker-restart
 "$PROJECT_ROOT/scripts/maintenance/chub-web-restart"

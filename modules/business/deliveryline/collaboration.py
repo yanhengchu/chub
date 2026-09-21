@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.ai_session.operations import delete_session
 from app.core.response import ApiError
-from app.deliveryline.store import DeliveryLine, DeliverylineTransitionNotAllowed, DeliverylineUnavailable
+from .store import DeliveryLine, DeliverylineTransitionNotAllowed, DeliverylineUnavailable
 from app.quick_worker_tasks import FINAL_STATUSES
 from app.services.design_documents import DesignDocumentIndexError, get_design_document_source
 

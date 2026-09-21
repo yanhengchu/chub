@@ -1592,7 +1592,11 @@ def test_debug_chrome_page_reader_returns_bounded_owned_snapshot(
 
         async def evaluate(self, _script, maximum):
             assert maximum == 5
-            return {"content": "  第一段  \n\n第二段\n", "truncated": True}
+            return {
+                "content": "  第一段  \n\n第二段\n",
+                "truncated": True,
+                "links": [{"text": "详情", "url": "https://example.com/detail"}],
+            }
 
         def is_closed(self):
             return self.closed
@@ -1632,6 +1636,8 @@ def test_debug_chrome_page_reader_returns_bounded_owned_snapshot(
     assert snapshot.title == "示例页面"
     assert snapshot.content == "第一段\n第"
     assert snapshot.truncated is True
+    assert snapshot.links[0].text == "详情"
+    assert snapshot.links[0].url == "https://example.com/detail"
     assert page.closed is True
     assert session_options == {"ensure_page": False, "retry_connection": True}
 
@@ -1930,7 +1936,7 @@ def test_debug_chrome_page_interact_follows_one_public_link(
             return "Next page"
 
         async def evaluate(self, script, value):
-            if "querySelectorAll" in script:
+            if "querySelectorAll" in script and "expected" in script:
                 assert value == "Next"
                 return {"count": 1, "href": "https://example.com/next"}
             return {"content": "next page text", "truncated": False}

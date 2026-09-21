@@ -87,14 +87,6 @@ NEW_SESSION_RUNTIME_CAPABILITIES = {
 }
 
 
-@dataclass(frozen=True)
-class TranslationNativeCleanupResult:
-    pending: int = 0
-    reason: str | None = None
-    retry_required: bool = False
-
-
-
 class _UnavailableRuntimeRateLimits:
     def read(self, *, force: bool = False):
         del force
@@ -992,11 +984,7 @@ class AiSessionManager:
         sessions, _native_sessions = self.list_sessions_with_native_sessions()
         return sessions
 
-    def list_sessions_with_native_sessions(
-        self,
-        *,
-        include_internal_translation_native_sessions: bool = False,
-    ) -> tuple[list[SessionInfo], list[NativeSessionInfo]]:
+    def list_sessions_with_native_sessions(self) -> tuple[list[SessionInfo], list[NativeSessionInfo]]:
         with self._lock:
             self._require_store()
             if self._system_upgrade_writes_blocked():
@@ -1026,10 +1014,6 @@ class AiSessionManager:
                     item
                     for item in native_sessions
                     if (item.runtime_id, item.native_session_id) not in bound_sessions
-                    and (
-                        include_internal_translation_native_sessions
-                        or not self._is_translation_workspace(item.cwd)
-                    )
                 ]
             )
 
@@ -1340,123 +1324,6 @@ class AiSessionManager:
             )
             self.store.save(session)
             return self._public(session)
-
-    def create_translation_session(self) -> SessionInfo:
-        runtime_id, implementation_id = self.select_new_session_runtime(
-            required_capabilities=frozenset({"background_turn"})
-        )
-        workspace = self.settings.ai_runtime.shared.runtime_dir / "translation-workspace"
-        workspace.mkdir(mode=0o700, parents=True, exist_ok=True)
-        os.chmod(workspace, 0o700)
-        session = AiSession(
-            id=str(uuid.uuid4()),
-            runtime_id=runtime_id,
-            implementation_id=implementation_id,
-            workspace_id="weixin-translation",
-            workspace_name="微信文本优化与翻译",
-            cwd=workspace,
-            title="文本优化与翻译",
-            permission_mode="read-only",
-            activity="idle",
-        )
-        self.store.save(session)
-        return self._public(session)
-
-    def cleanup_translation_sessions_for_replacement(self) -> None:
-        """Delete idle internal translation Sessions before creating a replacement."""
-        with self._lock:
-            self._require_store()
-            translation_sessions = [
-                session
-                for session in self.store.list()
-                if session.workspace_id == "weixin-translation"
-            ]
-            for session in translation_sessions:
-                if self._quick_interaction_is_running(session.id):
-                    continue
-                try:
-                    if session.implementation_id is None:
-                        continue
-                    if session.native_session_id and self.has_active_writer(
-                        session.native_session_id,
-                        implementation_id=session.implementation_id,
-                    ):
-                        continue
-                    self.delete_session(session.id)
-                except Exception:
-                    LOGGER.warning(
-                        "Unable to delete stale internal translation Session",
-                        extra={"session_id": session.id},
-                        exc_info=True,
-                    )
-
-        self.cleanup_stale_translation_native_sessions()
-
-    def cleanup_stale_translation_native_sessions(self) -> TranslationNativeCleanupResult:
-        """Remove every idle, unbound Native Session in the translation workspace.
-
-        A translation Worker can rotate its Native Session without replacing the
-        logical Chub Session.  This reconciliation deliberately uses the
-        Runtime discovery result as the source of truth, so a prior failed
-        deletion is picked up by a later pass too.
-        """
-        with self._lock:
-            self._require_store()
-            bound_native_ids = {
-                (session.runtime_id, session.native_session_id)
-                for session in self.store.list()
-                if (
-                    session.workspace_id == "weixin-translation"
-                    and session.native_session_id is not None
-                )
-            }
-            discovery = self._sync_bound_native_sessions()
-            pending = 0
-            reason = None
-            for native in discovery:
-                key = (native.runtime_id, native.native_session_id)
-                if (
-                    key in bound_native_ids
-                    or not self._is_translation_workspace(native.cwd)
-                ):
-                    continue
-                implementation_id = self._native_discovery_implementations.get(key)
-                adapter = self.runtime_adapters.get(implementation_id)
-                if adapter is None and native.runtime_id == self.runtime_id:
-                    # Discovery normally records its implementation source.
-                    # Keep the current Runtime fallback for legacy test/state
-                    # recovery where that transient index is unavailable.
-                    adapter = self.runtime_adapter
-                if adapter is None:
-                    pending += 1
-                    reason = reason or "部分历史翻译 Session 暂时无法删除。"
-                    continue
-                try:
-                    if adapter.has_active_writer(native.native_session_id):
-                        pending += 1
-                        reason = reason or "部分历史翻译 Session 仍在执行。"
-                        continue
-                    adapter.run_native_action("delete", native.native_session_id)
-                    if adapter.native_session_deleted_state(native.native_session_id) is not True:
-                        pending += 1
-                        reason = reason or "部分历史翻译 Session 的删除结果尚未确认。"
-                        LOGGER.warning(
-                            "Stale translation native Session deletion was not confirmed",
-                            extra={"native_session_id": native.native_session_id},
-                        )
-                except RuntimeOperationError:
-                    pending += 1
-                    reason = reason or "部分历史翻译 Session 暂时无法删除。"
-                    LOGGER.warning(
-                        "Unable to delete stale translation native Session",
-                        extra={"native_session_id": native.native_session_id},
-                        exc_info=True,
-                    )
-            return TranslationNativeCleanupResult(
-                pending=pending,
-                reason=reason,
-                retry_required=pending > 0,
-            )
 
     def discard_unstarted_session(self, session_id: str) -> bool:
         with self._lock:
@@ -1817,12 +1684,6 @@ class AiSessionManager:
     def rename_session(self, session_id: str, title: str) -> SessionInfo:
         with self._lock:
             session = self.get_session(session_id)
-            if session.workspace_id == "weixin-translation":
-                raise ApiError(
-                    409,
-                    "session_rename_not_allowed",
-                    "内部翻译 Session 标题固定，不支持重命名。",
-                )
             usage = self._resolve_session_usage(session)
             if usage.owner == "external":
                 raise ApiError(
@@ -1889,31 +1750,6 @@ class AiSessionManager:
                 session.native_session_id is not None
                 and session.native_session_id != native_session_id
             ):
-                if session.workspace_id == "weixin-translation":
-                    # Translation keeps one logical Chub Session but may rotate
-                    # its internal native Session when the Worker starts a new
-                    # read-only execution. Never rotate through an active writer.
-                    if self.has_active_writer(
-                        session.native_session_id,
-                        implementation_id=implementation_id,
-                    ):
-                        raise ApiError(
-                            409,
-                            "quick_interaction_native_session_conflict",
-                            "翻译 Session 仍有原生任务占用，暂不能切换 native Session。",
-                        )
-                    session.native_session_id = native_session_id
-                    session.updated_at = utc_now()
-                    try:
-                        self.store.save(session)
-                    except AiSessionStoreUnavailable as exc:
-                        raise ApiError(
-                            409,
-                            "quick_interaction_native_session_conflict",
-                            "Chub Session identity conflict: the translation native Session is already bound to another Session",
-                        ) from exc
-                    self._clear_native_identity_conflict(session)
-                    return
                 raise ApiError(
                     409,
                     "quick_interaction_native_session_conflict",
@@ -2147,10 +1983,6 @@ class AiSessionManager:
     def archive_session(self, session_id: str) -> None:
         self.archive_native_session(session_id)
         self.finalize_archive_session(session_id)
-
-    def archive_legacy_translation_sessions(self, quick_interactions) -> int:
-        del quick_interactions
-        return 0
 
     def system_upgrade_sessions(self) -> list[AiSession]:
         with self._lock:
@@ -2403,14 +2235,6 @@ class AiSessionManager:
                 session.updated_at = utc_now()
                 self.store.save(session)
         return tuple(discovered_native_sessions.values())
-
-    def _is_translation_workspace(self, cwd: Path) -> bool:
-        try:
-            return cwd.expanduser().resolve(strict=False) == (
-                self.settings.ai_runtime.shared.runtime_dir / "translation-workspace"
-            ).expanduser().resolve(strict=False)
-        except OSError:
-            return False
 
     @staticmethod
     def _project_native_state(session: AiSession, native: RuntimeNativeSession) -> bool:

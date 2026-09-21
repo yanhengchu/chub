@@ -58,9 +58,7 @@ class LogsConfig(StrictModel):
 
 
 _WORKSPACE_ID_PATTERN = r"^[a-z][a-z0-9-]{0,63}$"
-_BUILTIN_WORKSPACE_IDS = frozenset(
-    {"chub", "home", "workspace", "weixin-translation"}
-)
+_BUILTIN_WORKSPACE_IDS = frozenset({"chub", "home", "workspace"})
 
 
 class ExtraWorkspaceConfig(StrictModel):
@@ -152,9 +150,7 @@ class DeploymentPackageConfig(StrictModel):
 
 class BusinessModulesConfig(StrictModel):
     install_dir: Path = Path("data/local/runtime/business-modules")
-    state_file: Path = Path("data/local/state/business-modules/deliveryline.json")
-    deliveryline_requirements_dir: Path = Path("data/shared/deliveryline/requirements")
-    deliveryline_state_dir: Path = Path("data/local/state/deliveryline")
+    state_file: Path = Path("data/local/state/business-modules/plugin-lifecycle.json")
     max_archive_bytes: int = Field(default=8 * 1024 * 1024, ge=1024, le=32 * 1024 * 1024)
 
 
@@ -271,26 +267,8 @@ class OpenClawWeixinChubModeConfig(StrictModel):
     enabled: bool = True
     workspace_id: Literal["home", "workspace", "chub"] = "chub"
     state_file: Path = Path("data/local/state/openclaw/weixin-chub-mode.json")
-    # Orchestration plugin ZIPs are intentionally separate from Runtime plugins. They
-    # are loaded only by the Web coordinator and never by Quick Worker.
-    orchestration_modules_dir: Path = Path(
-        "data/local/runtime/openclaw/weixin-orchestration-modules"
-    )
-    orchestration_module_max_archive_bytes: int = Field(
-        default=8 * 1024 * 1024,
-        ge=1024,
-        le=32 * 1024 * 1024,
-    )
     session_name_max_width: int = Field(default=30, ge=4, le=96)
     task_name_max_width: int = Field(default=64, ge=4, le=96)
-    # Translation runs an LLM over untrusted message text and must be opted in.
-    translation_mode: Literal["direct", "auto", "confirm"] = "direct"
-    translation_queue_limit: int = Field(default=10, ge=1, le=50)
-    translation_max_wait_seconds: int = Field(default=1800, ge=60, le=7200)
-    translation_max_input_chars: int = Field(default=8000, ge=256, le=8000)
-    # Longer task bodies submit directly so a confirmation response can remain
-    # within the fixed Weixin reply boundary.
-    translation_preprocess_max_input_chars: int = Field(default=1200, ge=1, le=8000)
 
 class OpenClawConfig(StrictModel):
     integration_config_path: Path | None = None
@@ -389,10 +367,6 @@ class Settings(StrictModel):
             self.business_modules.install_dir = PROJECT_ROOT / self.business_modules.install_dir
         if not self.business_modules.state_file.is_absolute():
             self.business_modules.state_file = PROJECT_ROOT / self.business_modules.state_file
-        if not self.business_modules.deliveryline_requirements_dir.is_absolute():
-            self.business_modules.deliveryline_requirements_dir = PROJECT_ROOT / self.business_modules.deliveryline_requirements_dir
-        if not self.business_modules.deliveryline_state_dir.is_absolute():
-            self.business_modules.deliveryline_state_dir = PROJECT_ROOT / self.business_modules.deliveryline_state_dir
         if not self.requests.state_file.is_absolute():
             self.requests.state_file = PROJECT_ROOT / self.requests.state_file
         if not self.network_recovery.lock_file.is_absolute():
@@ -402,11 +376,6 @@ class Settings(StrictModel):
         if not self.openclaw.weixin_chub_mode.state_file.is_absolute():
             self.openclaw.weixin_chub_mode.state_file = (
                 PROJECT_ROOT / self.openclaw.weixin_chub_mode.state_file
-            )
-        if not self.openclaw.weixin_chub_mode.orchestration_modules_dir.is_absolute():
-            self.openclaw.weixin_chub_mode.orchestration_modules_dir = (
-                PROJECT_ROOT
-                / self.openclaw.weixin_chub_mode.orchestration_modules_dir
             )
         if self.openclaw.integration_config_path is not None:
             self.openclaw.integration_config_path = (

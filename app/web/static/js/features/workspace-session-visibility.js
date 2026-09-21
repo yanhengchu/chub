@@ -9,9 +9,17 @@
 
     const bulkToggle = document.getElementById("internal-session-visibility-toggle");
     const bulkFeedback = document.getElementById("internal-session-visibility-feedback");
+    const businessConfigs = [...panel.querySelectorAll("[data-session-visibility-feedback]")]
+      .map((feedback) => feedback.dataset.sessionVisibilityFeedback)
+      .filter((moduleId) => moduleId && !["today-focus", "deployment-package"].includes(moduleId))
+      .map((moduleId) => ({
+        control: document.getElementById(`${moduleId}-show-collaboration-sessions`),
+        path: `/api/settings/business-modules/${encodeURIComponent(moduleId)}/session-visibility`,
+        field: "show_sessions",
+        feedback: moduleId,
+      }));
     const configs = [
-      { control: document.getElementById("deliveryline-show-collaboration-sessions"), path: "/api/deliveryline/settings", field: "show_sessions", feedback: "deliveryline" },
-      { control: document.getElementById("workspace-task-show-internal-native-session"), path: "/api/settings/weixin-translation", field: "show_internal_native_session", feedback: "translation" },
+      ...businessConfigs,
       { control: document.getElementById("today-focus-show-sessions"), path: "/api/today-focus/settings", field: "show_sessions", feedback: "today-focus" },
       { control: document.getElementById("deployment-package-show-release-note-session"), path: "/api/settings/deployment-package/release-note-session", field: "show_sessions", feedback: "deployment-package" },
     ].filter((config) => config.control instanceof HTMLInputElement);

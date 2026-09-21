@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.deliveryline.collaboration import DeliverylineCollaboration
-from app.deliveryline.store import DeliverylineStore
+from modules.business.deliveryline.collaboration import DeliverylineCollaboration
+from modules.business.deliveryline.store import DeliverylineStore
 
 
 def test_clarification_rejects_presentation_prefix_in_title() -> None:

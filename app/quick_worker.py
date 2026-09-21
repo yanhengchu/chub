@@ -43,8 +43,8 @@ from app.services.operation_log import write_operation
 
 
 HEALTH_PROTOCOL_VERSION = 1
-PROTOCOL_VERSION = 13
-WORKER_CODE_VERSION = "quick-worker-13-local-browser-capabilities"
+PROTOCOL_VERSION = 14
+WORKER_CODE_VERSION = "quick-worker-14"
 MAX_REQUEST_BYTES = 64 * 1024
 MAX_RESPONSE_BYTES = 256 * 1024
 CLIENT_TIMEOUT_SECONDS = 2.0
@@ -193,9 +193,6 @@ def production_runtime_workspaces(settings: Settings) -> dict[str, Path]:
             workspace.id: workspace.path
             for workspace in settings.ai_runtime.shared.extra_workspaces
         },
-        "weixin-translation": (
-            settings.ai_runtime.shared.runtime_dir / "translation-workspace"
-        ),
     }
 
 
@@ -1121,7 +1118,6 @@ def main() -> int:
     if args.command == "serve":
         try:
             workspaces = production_runtime_workspaces(settings)
-            _private_directory(workspaces["weixin-translation"])
             asyncio.run(
                 QuickWorkerServer(
                     settings,

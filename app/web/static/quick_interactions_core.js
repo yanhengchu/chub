@@ -322,7 +322,7 @@
   }
 
   function isQuickInteractionSession(session) {
-    return session.workspace_id !== "weixin-translation";
+    return true;
   }
 
   function sessionSwitcherLabels(sessions) {
@@ -547,16 +547,41 @@
       },
 
       submitTask({ prompt }) {
+        const requestStorageKey = `hub.quickInteractionRequest.v1.${encodedSessionId}`;
+        let requestId = "";
+        try {
+          requestId = sessionStorage.getItem(requestStorageKey) || "";
+          if (!requestId && typeof globalThis.crypto?.randomUUID === "function") {
+            requestId = globalThis.crypto.randomUUID();
+            sessionStorage.setItem(requestStorageKey, requestId);
+          }
+        } catch (_error) {
+          requestId = typeof globalThis.crypto?.randomUUID === "function" ? globalThis.crypto.randomUUID() : "";
+        }
         return request(
           `/api/ai/sessions/${encodedSessionId}/quick-interactions`,
           {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: {
+              "Content-Type": "application/json",
+              "X-Chub-Task-Request-Id": requestId,
+            },
             body: JSON.stringify({
               prompt,
             }),
           },
-        );
+        ).then((data) => {
+          try { sessionStorage.removeItem(requestStorageKey); } catch (_error) {}
+          return data;
+        }).catch((error) => {
+          if ([
+            "task_orchestration_submission_failed",
+            "task_orchestration_retained",
+          ].includes(error?.code)) {
+            try { sessionStorage.removeItem(requestStorageKey); } catch (_error) {}
+          }
+          throw error;
+        });
       },
 
     });

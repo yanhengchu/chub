@@ -16,7 +16,7 @@ Chub 按维护者授信的个人工作站运行：优先保证本地可用、局
 
 Chub 的长期定位是“个人本地工作站与统一控制面”：核心自身始终可独立运行，并可装载独立演进的插件模块。插件模块拥有自己的业务页面、设置、数据和流程，复用 Chub 的稳定能力与运行环境。核心优先保证可用性、局部恢复和最终状态确认，只在会造成直接数据破坏、安全越界或不可恢复冲突时施加最小门禁；单个插件模块未安装、停用或故障时，只影响其自身，不影响 Chub 核心和其他独立功能。
 
-“插件模块”是 Chub 的统一产品与架构术语；正式交付和安装形态统一称为“插件包”或“插件 ZIP”。Runtime、微信任务编排与 Deliveryline 共用导入、移除、启用和禁用的生命周期入口：导入决定插件管理可见性，移除后设置侧边栏插件菜单一并隐藏；具体加载、校验与后续动作仍由各插件负责。Deliveryline 的首页 Business 入口、业务页面和业务 API 只在已启用且当前可用时开放。Deliveryline 的目标模型以“交付线列表 → 交付线详情 → 交付项列表 → 交付项详情”组织：导入资料先成为待澄清交付线，AI 主动完成整体澄清并提出候选，维护者确认或修正整体目标后才拆分交付项；交付项按适用的澄清、成档、评审、设计、实现、验证和验收检查点循环推进，不使用固定六阶段生命周期。当前已实现的是旧单交付项原型，整体交付线、路线图、目标版本、影响分析和新工作循环尚未接入。
+“插件模块”是 Chub 的统一产品与架构术语；正式交付和安装形态统一称为“插件包”或“插件 ZIP”。Runtime 与 Deliveryline 共用导入、移除、启用和禁用的生命周期入口；任务编排当前由 Chub 核心提供统一空阶段分发器，尚未启用通用阶段插件或对应管理入口。导入决定插件管理可见性，移除后设置侧边栏插件菜单一并隐藏；具体加载、校验与后续动作仍由各插件负责。Deliveryline 当前确认的产品入口是启用后的首页 Business 入口和设置页插件管理入口。交付线/交付项的业务流程正在按新的产品模型重新设计；仓库中原有的交付线创建与澄清流程属于旧原型，不作为当前产品契约。
 
 ## 当前能力
 
@@ -24,15 +24,15 @@ Chub 的长期定位是“个人本地工作站与统一控制面”：核心自
 | --- | --- | --- |
 | 设备与维护 | 查看节点状态、执行白名单维护任务、查看受限日志、生成本机正式部署包 | 工作台、设置、日志页、`chub` CLI |
 | AI Runtime 与会话 | 使用 Codex Runtime 创建 Chub Session，通过 Quick Worker 连续执行任务、查看原生会话和结果 | 工作台、Session 页、微信 ClawBot |
-| 任务执行 | 通过独立 Quick Worker 执行页面、微信和翻译快速任务 | 快速交互页、微信 ClawBot |
+| 任务执行 | 通过独立 Quick Worker 执行页面和微信交互任务；页面与微信手动提交统一经过任务编排分发器 | 快速交互页、微信 ClawBot |
 | 需求储备 | 管理 R1-R9 轻量需求 | `chub` CLI、微信 ClawBot |
 | 自动化与周报 | 使用受管 Debug Chrome 运行固定自动化，准备并生成周报 | 自动化页、周报页、命令行 |
 | 今日关注 | 使用固定内部 AI Session 整理固定公开来源的 AI 动态，并展示今日计划与待办区块 | 工作台今日关注页 |
 | 外部集成与通知 | 接入 OpenClaw/微信 ClawBot；由 Chub 向预配置飞书群目标发送通知 | 微信 ClawBot（任务转发）、`chub` CLI、受信通知 API |
-| 插件模块 | 统一管理 Runtime、微信任务编排与 Deliveryline 的导入、移除、启用和禁用；Deliveryline 已提供需求提出档案与评审前校验 | 设置页、受控维护入口 |
+| 插件模块 | 管理 Runtime 与 Deliveryline；微信旧润色插件已退役，后续按通用阶段协议重建 | 设置页、受控维护入口 |
 | 项目资料与外观 | 浏览已登记的项目资料，切换主题和文字大小 | 工作台、设置页 |
 
-微信任务编排插件模块已提供直接执行、固定仓库开发实现 `weixin-orchestration-dev`，以及正式 ZIP 的导入、启用、停用和移除。旧 `internal` 阶段仅用于识别历史运行态并失败关闭，不再接受新任务。ZIP 产物按内容摘要不可变保存，已受理任务继续绑定创建时的阶段产物；通用架构见[Chub 任务编排插件模块架构设计](docs/CHUB_TASK_ORCHESTRATION_PLUGIN_DESIGN.md)，微信范围见[Chub 微信任务编排插件模块设计](docs/WEIXIN_TASK_ORCHESTRATION_PLUGIN_DESIGN.md)。
+页面与微信的手动任务提交现在都经过统一任务编排分发器，并使用空阶段链直接提交一次物理主任务；自动化、周报等内部提交保持各自入口。旧微信润色插件、配置、确认队列和专属阶段状态已直接清除，不兼容旧版本运行态；`text` / `text-check` 在新的通用阶段实现完成前明确拒绝。任务编排的长期架构唯一依据是[任务编排插件模块架构设计](docs/CHUB_TASK_ORCHESTRATION_PLUGIN_DESIGN.md)，历史收敛记录位于 `docs/archive/task-orchestration/`。
 
 ## 快速开始
 
@@ -58,9 +58,9 @@ Chub 始终提供 loopback 访问；启用默认的 Tailnet 可信访问后，�
 
 日常维护使用 `chub status`、`chub check`、`chub web restart`、`chub web logs` 和 `chub version`。完整 CLI、Worker 操作、通知命令、平台差异及影响范围以[集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md)为准。
 
-`scripts/chub` 是唯一稳定的本机 CLI 门面。当前已完成 Debug Chrome 第一阶段收敛：`chub chrome supervisor reconcile [--restart]` 只解析固定参数并转发到核心维护公开用例；Ubuntu 的 Supervisor unit 和固定 systemd 动作由内部 `scripts/platform/` 适配，不是供维护者直接调用的泛化服务脚本。Web 重启、Quick Worker 重启和系统升级 oneshot 的进程内触发分别由 `WebRestartUseCase`、`QuickWorkerMaintenanceUseCase` 和 `SystemUpgradeMaintenanceUseCase` 接管，业务代码不再重新执行 `scripts/chub`。维护脚本只编排 Chub 专属流程、清理与最终确认，不直接执行服务管理器命令；核心服务定义、安装前停机、升级执行器加载/启动/状态、Web/Worker 固定生命周期、Chrome Supervisor 定义/状态和完整卸载均只在 `scripts/platform/service-management.sh` 的已枚举动作中实现。`chub` 只做固定校验、路由、必要的 Chub 运行态处理和最终健康确认。独立维护脚本的唯一正式位置是 `scripts/maintenance/`，正式构建入口集中在 `scripts/build/`；旧根目录维护与构建路径已移除，不提供兼容调用。失败的系统升级操作记录属于 Chub 自有运行态，下一次确认升级会清除旧记录并从当前固定方案重新开始，不兼容或续跑旧方案。
+`scripts/chub` 是唯一稳定的本机 CLI 门面。日常页面/API 更新使用 Web 重启，Worker/Runner/协议更新使用 Worker 重启；只有需要丢弃并重建 Chub 自有运行基线时，才从本机终端执行 `chub workstation rebuild --force`。它依据当前代码、配置与 `requirements.txt` 建立项目 Python 环境，结束旧 Chub 任务并清理其运行态，随后导入、启用当前默认 Runtime，并确认 Web、Quick Worker、Runtime 与受管理的 Debug Chrome Supervisor 健康。它不拉取代码、不修改配置、不迁移旧运行态，也不清理 OpenClaw、原生 Runtime Session、浏览器 Profile、日志、资料或共享业务数据。维护脚本只编排固定流程、清理与最终确认，不直接执行服务管理器命令；独立维护脚本的唯一正式位置是 `scripts/maintenance/`。
 
-普通 Web 重启、Quick Worker 重启、系统升级恢复和 OpenClaw Gateway 维护是相互独立的操作，必须按各自的最终状态确认；不要用一个服务的状态推断另一服务成功。具体范围与恢复方式见[总体架构](docs/CHUB_ARCHITECTURE_DESIGN.md)、[Quick Worker 设计](docs/CHUB_QUICK_WORKER_DESIGN.md)和[OpenClaw 定制集成设计](docs/OPENCLAW_CUSTOMIZATION_DESIGN.md)。
+普通 Web 重启、Quick Worker 重启、工作站重建和 OpenClaw Gateway 维护是相互独立的操作，必须按各自的最终状态确认；不要用一个服务的状态推断另一服务成功。具体范围与恢复方式见[总体架构](docs/CHUB_ARCHITECTURE_DESIGN.md)、[Quick Worker 设计](docs/CHUB_QUICK_WORKER_DESIGN.md)和[OpenClaw 定制集成设计](docs/OPENCLAW_CUSTOMIZATION_DESIGN.md)。
 
 ## 数据与安全摘要
 
@@ -82,16 +82,16 @@ Chub 始终提供 loopback 访问；启用默认的 Tailnet 可信访问后，�
 - **当前能力契约**：当前 CLI、插件、固定 API 和微信固定指令。
 - **维护与归档资料**：插件构建部署、异常恢复和历史追溯。
 
-当前文档的登记、摘要、分类和状态以 `docs/design_documents.json` 为准。分类是固定受控元数据：`项目基线`定义项目级规则，`专项需求与设计`是可独立讨论、实施和验收的专题能力，`独立学习资料`不进入 Chub 主交付链路，`历史归档`只用于追溯。分类不等同于生命周期状态：新文档通常从“调研中”开始，`持续维护`只用于长期权威资料；`专项需求与设计`是后续关联 Deliveryline 的候选来源，项目基线、学习资料和归档资料仅作为背景、约束或追溯来源。模块设计文档顶部统一声明状态、主要读者、本文负责和本文不负责；已验收文档还须保留验证范围、未承诺范围和复检触发条件。“第一阶段已验收”只表示该文档定义的第一阶段已通过验收，不代表所有长期目标完成。
+当前文档的登记、摘要、分类和状态以 `docs/design_documents.json` 为准。分类是固定受控元数据：`项目基线`定义项目级规则，`专项需求与设计`是可独立讨论、实施和验收的专题能力，`独立学习资料`不进入 Chub 主交付链路，`历史归档`只用于追溯。分类不等同于生命周期状态：新文档通常从“调研中”开始，`持续维护`只用于长期权威资料；`专项需求与设计`是后续关联 Deliveryline 的候选来源，项目基线、学习资料和归档资料仅作为背景、约束或追溯来源。资料页与下方导航都只按受控主题组平铺展示，不显示分类层；当前主题组固定为项目核心文档、部署与界面规范、交付与自动化、AI Runtime、任务编排、外部集成与独立学习。模块设计文档顶部统一声明状态、主要读者、本文负责和本文不负责；已验收文档还须保留验证范围、未承诺范围和复检触发条件。“第一阶段已验收”只表示该文档定义的第一阶段已通过验收，不代表所有长期目标完成。
 
-### 三份核心文档
+### 项目核心文档
 
 理解、设计或调整 Chub 能力时，依次阅读以下三份文档：
 
 | 文档 | 唯一职责 |
 | --- | --- |
 | 本项目说明 | 说明产品定位、当前能力概览、使用入口与文档导航。 |
-| [Chub 总体架构设计](docs/CHUB_ARCHITECTURE_DESIGN.md) | 定义分层、状态所有权、依赖方向，以及能力由谁实际执行和确认。 |
+| [Chub 总体架构设计](docs/CHUB_ARCHITECTURE_DESIGN.md) | 定义分层、状态所有权、依赖方向，以及所有插件模块共用的宿主能力和由谁实际执行、确认。 |
 | [Chub 集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md) | 按使用场景登记当前可用能力、入口映射与微信固定指令契约。 |
 
 ### AI Agent 默认阅读顺序
@@ -113,52 +113,48 @@ Chub 始终提供 loopback 访问；启用默认的 Tailnet 可信访问后，�
 
 按改动范围执行相关测试；页面、主题和响应式浏览器回归要求见[Chub 前端 UI 模块化设计](docs/FRONTEND_UI_DESIGN.md)。
 
-## 模块设计文档
+## 项目资料分组
 
-除前述三份核心说明文档外，以下文档均按对应模块维护，不构成新的项目级说明。
+以下导航与项目资料页使用相同的单层主题组；每份资料只出现在一个主题组中。
 
-### 部署与工作台
+### 部署与界面规范
 
 | 文档 | 唯一职责 |
 | --- | --- |
 | [Chub 正式部署包与安装设计](docs/CHUB_DEPLOYMENT_PACKAGE_DESIGN.md) | 正式部署包、随包插件 ZIP、新设备安装与可选 OpenClaw 接入边界 |
 | [Chub 前端 UI 模块化设计](docs/FRONTEND_UI_DESIGN.md) | 工作台与设置页的前端分层、公共交互、主题、文字大小与视觉 Token 契约 |
 
+### 交付与自动化
+
+| 文档 | 唯一职责 |
+| --- | --- |
+| [本期工作周报自动化与生成设计](docs/WEEKLY_REPORT_AUTOMATION_DESIGN.md) | 飞书资料准备、确认门禁、周报生成和复核 |
+| [Deliveryline 需求交付管理平台设计](docs/DELIVERYLINE_PLATFORM_DESIGN.md) | 定义 Deliveryline 的产品模型、领域规则方向、插件入口基线与 Chub 的职责边界。 |
+
 ### AI Runtime
 
 | 文档 | 唯一职责 |
 | --- | --- |
 | [Chub AI Runtime 架构设计](docs/CHUB_AI_RUNTIME_DESIGN.md) | Runtime 共享契约、能力矩阵、Adapter/Runner 边界与多 Runtime 接入判定 |
-| [Chub AI Runtime 插件模块设计](docs/CHUB_RUNTIME_PLUGIN_DESIGN.md) | Runtime 插件 ZIP 协议、安装/替换/移除、双端注册确认和模块状态清理边界 |
+| [Chub AI Runtime 插件模块设计](docs/CHUB_RUNTIME_PLUGIN_DESIGN.md) | Runtime 专属 Manifest、Adapter/Runner 装配、双端注册确认和实现槽位边界；通用宿主能力以总体架构为准 |
 | [Chub Codex Runtime 设计](docs/CHUB_CODEX_RUNTIME_DESIGN.md) | 当前 Codex Runtime 的专属边界、Codex/OpenAI 用量来源、接口、缓存和展示口径 |
 
-### 任务执行
+### 任务编排
 
 | 文档 | 唯一职责 |
 | --- | --- |
-| [Chub 任务编排插件模块架构设计](docs/CHUB_TASK_ORCHESTRATION_PLUGIN_DESIGN.md) | 任务编排插件模块的通用执行面、检查点、版本绑定和生命周期边界 |
-| [Chub 微信任务编排插件模块设计](docs/WEIXIN_TASK_ORCHESTRATION_PLUGIN_DESIGN.md) | 微信已验证任务正文的内置/插件分流、首个插件范围、阶段目标和验收 |
+| [Chub 任务编排插件模块架构设计](docs/CHUB_TASK_ORCHESTRATION_PLUGIN_DESIGN.md) | 当前统一任务编排分发架构，以及未来插件阶段的执行面、检查点和版本绑定；通用宿主能力以总体架构为准 |
+| [Chub 任务提示词优化插件设计](docs/CHUB_TASK_PROMPT_OPTIMIZER_PLUGIN_DESIGN.md) | 定义独立任务编排插件的任务来源、提示词优化目标、处理结果、恢复和接入验收边界 |
 | [Chub Session 状态模型设计](docs/AI_SESSION_STATE_DESIGN.md) | Chub Session、Native Session 数据消费与映射、Activity、usage 投影、入口、操作、槽位和单 writer 语义 |
 | [Chub Quick Worker 独立服务设计](docs/CHUB_QUICK_WORKER_DESIGN.md) | Quick Worker 独立服务、非实时任务、恢复、通知终态和重启协调 |
 
-### 工作台业务模块
-
-| 文档 | 唯一职责 |
-| --- | --- |
-| [Deliveryline 需求交付管理平台设计](docs/DELIVERYLINE_PLATFORM_DESIGN.md) | 定义 Deliveryline 的需求交付阶段、领域规则方向与 Chub 的职责边界。 |
-
-### 外部集成与专项能力
+### 外部集成与独立学习
 
 | 文档 | 唯一职责 |
 | --- | --- |
 | [OpenClaw 定制集成设计](docs/OPENCLAW_CUSTOMIZATION_DESIGN.md) | OpenClaw/微信端到端业务、插件定制、Context Token、身份、路由和通知边界 |
-| [本期工作周报自动化与生成设计](docs/WEEKLY_REPORT_AUTOMATION_DESIGN.md) | 飞书资料准备、确认门禁、周报生成和复核 |
-| [Chub OpenClaw 插件说明](integrations/openclaw/chub/README.md) | 仓库内维护的 Chub 插件协议、源码、构建、部署和协议验收 |
+| [本机大模型部署设计](docs/LOCAL_LLM_LEARNING_DEPLOYMENT_DESIGN.md) | 独立于 Chub 的 Ollama 本机模型学习环境；不代表已接入 Chub Runtime 或任务执行能力 |
 
 日常了解项目先阅读本文和总体架构；确认当前可用能力时阅读能力清单；实现、排障或验收时进入对应模块设计文档。历史资料仅用于追溯，位于 `docs/archive/`。
 
-## 独立学习资料
-
-| 文档 | 职责 |
-| --- | --- |
-| [本机大模型部署设计](docs/LOCAL_LLM_LEARNING_DEPLOYMENT_DESIGN.md) | 独立于 Chub 的 Ollama 本机模型学习环境；不代表已接入 Chub Runtime 或任务执行能力 |
+Chub OpenClaw 插件的源码、构建、部署和协议验收说明维护在 [插件目录 README](integrations/openclaw/chub/README.md)；它是模块维护资料，不属于项目资料页的登记文档。

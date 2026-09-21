@@ -4,9 +4,10 @@ from urllib.parse import urlencode, urlsplit, urlunsplit
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
+from jinja2 import ChoiceLoader, FileSystemLoader
 
 from app.services.design_documents import (
-    DOCUMENT_CATEGORIES,
+    DOCUMENT_GROUPS,
     DOCUMENT_CORE_STATUSES,
     DesignDocumentIndexError,
     get_design_document,
@@ -14,6 +15,11 @@ from app.services.design_documents import (
     select_home_design_documents,
 )
 from app.core.response import ApiError
+from app.core.business_modules import (
+    business_module_template_dirs,
+    loaded_business_module,
+    loaded_business_modules,
+)
 from app.ai_runtime import RuntimeOperationError
 from app.services.weekly_reports import (
     get_weekly_report,
@@ -23,11 +29,19 @@ from app.services.weekly_reports import (
     weekly_report_focus_confirmed,
 )
 from app.web.themes import configure_theme_templates
-
-
 WEB_DIR = Path(__file__).resolve().parent
 STATIC_DIR = WEB_DIR / "static"
 templates = Jinja2Templates(directory=WEB_DIR / "templates")
+
+
+def configure_business_module_templates(settings=None) -> None:
+    templates.env.loader = ChoiceLoader(
+        [FileSystemLoader(str(WEB_DIR / "templates"))]
+        + [FileSystemLoader(str(path)) for path in business_module_template_dirs(settings)]
+    )
+
+
+configure_business_module_templates()
 configure_theme_templates(templates)
 
 router = APIRouter(tags=["web"])
@@ -55,59 +69,15 @@ def _imported_runtime_navigation(request: Request) -> tuple:
         return ()
 
 
-def _deliveryline_workspace_state(request: Request) -> dict[str, str] | None:
+def _imported_business_modules(request: Request) -> tuple:
     try:
-        lifecycle = request.app.state.plugin_lifecycle.list(request)
-    except (ApiError, OSError):
-        return None
-    plugins = lifecycle.get("plugins")
-    if not isinstance(plugins, list):
-        return None
-    plugin = next(
-        (
-            item
-            for item in plugins
-            if isinstance(item, dict) and item.get("plugin_id") == "deliveryline"
-        ),
-        None,
+        imported = request.app.state.plugin_lifecycle.imported_plugin_ids()
+    except (ApiError, OSError, RuntimeOperationError):
+        return ()
+    return tuple(
+        module for module in loaded_business_modules(request)
+        if module.module_id in imported
     )
-    if plugin is None:
-        return None
-    imported_ids = plugin.get("imported_artifact_ids")
-    enabled_ids = plugin.get("enabled_artifact_ids")
-    artifacts = plugin.get("artifacts")
-    if not isinstance(imported_ids, list) or not imported_ids:
-        return None
-    if not isinstance(enabled_ids, list):
-        enabled_ids = []
-    if not isinstance(artifacts, list):
-        artifacts = []
-    imported = next(
-        (
-            item
-            for item in artifacts
-            if isinstance(item, dict) and item.get("artifact_id") in imported_ids
-        ),
-        {},
-    )
-    enabled = next(
-        (
-            item
-            for item in artifacts
-            if isinstance(item, dict) and item.get("artifact_id") in enabled_ids
-        ),
-        None,
-    )
-    if enabled is None or not enabled.get("available"):
-        return None
-    return {
-        "status": "enabled",
-        "label": "已启用",
-        "description": str(
-            imported.get("description") or "需求交付管理业务模块；业务流程将在后续阶段接入。"
-        ),
-        "detail": "需求提出档案已可创建、编辑、归档并提交评审；后续阶段尚未接入。",
-    }
 
 
 @router.get("/", response_class=HTMLResponse, include_in_schema=False)
@@ -176,12 +146,8 @@ def render_settings_page(
 ) -> HTMLResponse:
     settings = request.app.state.settings
     runtime_navigation = ()
-    orchestration_navigation = False
-    deliveryline_navigation = False
+    business_module_navigation = _imported_business_modules(request)
     try:
-        imported_plugins = request.app.state.plugin_lifecycle.imported_plugin_ids()
-        orchestration_navigation = "weixin-orchestration" in imported_plugins
-        deliveryline_navigation = "deliveryline" in imported_plugins
         runtime_navigation = _imported_runtime_navigation(request)
     except (ApiError, OSError, RuntimeOperationError):
         # The plugin manager remains reachable when lifecycle state cannot be read.
@@ -198,8 +164,12 @@ def render_settings_page(
             "settings_return_url": _settings_return_url(request),
             "settings_runtime_id": runtime_id,
             "runtime_navigation": runtime_navigation,
-            "orchestration_navigation": orchestration_navigation,
-            "deliveryline_navigation": deliveryline_navigation,
+            "business_module_navigation": business_module_navigation,
+            "settings_module": (
+                loaded_business_module(request, page)
+                if page in {module.module_id for module in business_module_navigation}
+                else None
+            ),
         },
     )
 
@@ -285,32 +255,9 @@ def runtime_detail_settings(request: Request, runtime_id: str) -> HTMLResponse:
     )
 
 
-@router.get("/settings/task-orchestration", response_class=HTMLResponse, include_in_schema=False)
-def task_orchestration_settings(request: Request) -> HTMLResponse:
-    return render_settings_page(
-        request,
-        page="task-orchestration",
-        title="微信任务润色",
-        description="配置微信 ClawBot 普通文本任务的处理方式和 AI Runtime 参数。",
-    )
-
-@router.get("/settings/deliveryline", response_class=HTMLResponse, include_in_schema=False)
-def deliveryline_settings(request: Request) -> HTMLResponse:
-    return render_settings_page(request, page="deliveryline", title="Deliveryline", description="管理 Deliveryline 业务插件的导入与启用状态；业务流程将在后续阶段接入。")
-
-
-@router.get("/settings/weixin-text", include_in_schema=False)
-def legacy_weixin_text_settings(request: Request) -> RedirectResponse:
-    return_url = _settings_return_url(request)
-    target = "/settings/task-orchestration"
-    if return_url != "/":
-        target = f"{target}?{urlencode({'return_to': return_url})}"
-    return RedirectResponse(target, status_code=307)
-
-
 @router.get("/settings/openclaw", response_class=HTMLResponse, include_in_schema=False)
 def openclaw_settings(request: Request) -> HTMLResponse:
-    return render_settings_page(request, page="openclaw", title="OpenClaw", description="查看 OpenClaw 集成基线与补丁状态。")
+    return render_settings_page(request, page="openclaw", title="OpenClaw", description="管理 Gateway、微信 ClawBot 与集成基线。")
 
 
 @router.get("/settings/openclaw/gateway", include_in_schema=False)
@@ -342,12 +289,28 @@ def workspace_preview(
     section: str = "workbench",
 ) -> RedirectResponse:
     sections = {"workbench", "project-docs", "automations", "today-focus"}
-    if _deliveryline_workspace_state(request) is not None:
-        sections.add("deliveryline")
+    for module in loaded_business_modules(request):
+        if module.workspace_state is not None and module.workspace_state(request) is not None:
+            sections.add(module.module_id)
     if section not in sections:
         raise HTTPException(status_code=404, detail="Workspace section not found")
     destination = "/" if section == "workbench" else f"/?section={section}"
     return RedirectResponse(destination, status_code=307)
+
+
+@router.get("/settings/{module_id}", response_class=HTMLResponse, include_in_schema=False)
+def business_module_settings(request: Request, module_id: str) -> HTMLResponse:
+    module = loaded_business_module(request, module_id)
+    if module is None or module.settings_template is None:
+        raise HTTPException(status_code=404, detail="Settings page not found")
+    if module_id not in {module.module_id for module in _imported_business_modules(request)}:
+        raise HTTPException(status_code=404, detail="Settings page not found")
+    return render_settings_page(
+        request,
+        page=module_id,
+        title=module.name,
+        description=module.description,
+    )
 
 
 def render_workspace(
@@ -358,14 +321,19 @@ def render_workspace(
     reading_detail: dict[str, object] | None = None,
 ) -> HTMLResponse:
     settings = request.app.state.settings
-    third_party_environment_available = request.app.state.openclaw_manager.is_installed()
-    deliveryline = _deliveryline_workspace_state(request)
+    workspace_module = loaded_business_module(request, section)
+    workspace_module_state = (
+        workspace_module.workspace_state(request)
+        if workspace_module is not None and workspace_module.workspace_state is not None
+        else None
+    )
     today_focus_ai_available, _today_focus_ai_unavailable_reason = (
         request.app.state.ai_session_manager.submission_available()
     )
     sections = {"workbench", "project-docs", "automations", "today-focus"}
-    if deliveryline is not None:
-        sections.add("deliveryline")
+    for module in loaded_business_modules(request):
+        if module.workspace_state is not None and module.workspace_state(request) is not None:
+            sections.add(module.module_id)
     if section not in sections:
         raise HTTPException(status_code=404, detail="Workspace section not found")
     documents_error = None
@@ -380,9 +348,9 @@ def render_workspace(
     weekly_report_generation = {}
     weekly_report_generation_ready = False
     weekly_report_generation_unavailable_reason = None
-    deliveryline_requirements = []
-    deliveryline_archived_requirements = []
-    deliveryline_error = None
+    workspace_module_records = []
+    workspace_module_archived_records = []
+    workspace_module_error = None
     if reading_detail is None and section == "project-docs":
         try:
             all_documents = list_design_documents(
@@ -391,6 +359,16 @@ def render_workspace(
             )
             documents = select_home_design_documents(all_documents)
             document_count = len(all_documents)
+        except DesignDocumentIndexError:
+            documents_error = "项目资料暂时无法加载，请检查资料索引。"
+    elif (
+        section == "project-docs"
+        and reading_detail is not None
+        and reading_detail.get("kind") == "project-document-library"
+    ):
+        try:
+            documents = list_design_documents(settings.project_documents.state_file)
+            document_count = len(documents)
         except DesignDocumentIndexError:
             documents_error = "项目资料暂时无法加载，请检查资料索引。"
     elif reading_detail is None and section == "automations":
@@ -420,21 +398,18 @@ def render_workspace(
             ) = request.app.state.weekly_report_generation.configuration_ready()
         except ApiError as exc:
             automations_error = exc.message
-    elif section == "deliveryline" and deliveryline is not None and deliveryline["status"] == "enabled":
+    elif (
+        workspace_module is not None
+        and workspace_module_state is not None
+        and workspace_module_state.get("status") == "enabled"
+        and workspace_module.workspace_records is not None
+    ):
         try:
-            records = request.app.state.deliveryline_store.list(include_archived=True)
-            deliveryline_requirements = [
-                record
-                for record in records
-                if record.status != "已结束"
-            ]
-            deliveryline_archived_requirements = [
-                record
-                for record in records
-                if record.status == "已结束"
-            ]
+            workspace_module_records, workspace_module_archived_records = (
+                workspace_module.workspace_records(request)
+            )
         except (OSError, RuntimeError):
-            deliveryline_error = "需求档案暂时无法加载。"
+            workspace_module_error = "模块业务数据暂时无法加载。"
     return templates.TemplateResponse(
         request=request,
         name="workspace_preview.html",
@@ -444,13 +419,20 @@ def render_workspace(
             "workspace_section": section,
             "workspace_session_id": workspace_session_id,
             "workspace_reading_detail": reading_detail,
-            "deliveryline": deliveryline,
-            "deliveryline_navigation": deliveryline is not None,
+            "workspace_module": workspace_module,
+            "workspace_module_state": workspace_module_state,
+            "workspace_module_navigation": tuple(
+                module
+                for module in loaded_business_modules(request)
+                if module.workspace_state is not None
+                and module.workspace_state(request) is not None
+            ),
             "today_focus_ai_available": today_focus_ai_available,
-            "document_categories": DOCUMENT_CATEGORIES,
-            "deliveryline_requirements": deliveryline_requirements,
-            "deliveryline_archived_requirements": deliveryline_archived_requirements,
-            "deliveryline_error": deliveryline_error,
+            "document_groups": DOCUMENT_GROUPS,
+            "document_core_statuses": DOCUMENT_CORE_STATUSES,
+            "workspace_module_records": workspace_module_records,
+            "workspace_module_archived_records": workspace_module_archived_records,
+            "workspace_module_error": workspace_module_error,
             "documents": documents,
             "document_count": document_count,
             "documents_error": documents_error,
@@ -463,32 +445,16 @@ def render_workspace(
             "weekly_report_generation": weekly_report_generation,
             "weekly_report_generation_ready": weekly_report_generation_ready,
             "weekly_report_generation_unavailable_reason": weekly_report_generation_unavailable_reason,
-            "third_party_environment_available": third_party_environment_available,
         },
     )
 
 
 @router.get("/project-docs", response_class=HTMLResponse, include_in_schema=False)
 def design_documents(request: Request) -> HTMLResponse:
-    settings = request.app.state.settings
-    documents_error = None
-    try:
-        documents = list_design_documents(
-            settings.project_documents.state_file,
-        )
-    except DesignDocumentIndexError:
-        documents = []
-        documents_error = "项目资料暂时无法加载，请检查资料索引。"
-    return templates.TemplateResponse(
-        request=request,
-        name="design_documents.html",
-        context={
-            "app_name": settings.app.name,
-            "documents": documents,
-            "document_categories": DOCUMENT_CATEGORIES,
-            "document_core_statuses": DOCUMENT_CORE_STATUSES,
-            "documents_error": documents_error,
-        },
+    return render_workspace(
+        request,
+        "project-docs",
+        reading_detail={"kind": "project-document-library"},
     )
 
 

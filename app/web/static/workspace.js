@@ -34,13 +34,11 @@
     automations: "正在读取自动化状态…",
     "today-focus": "今日关注已就绪",
     "project-docs": "正在读取项目资料…",
-    deliveryline: "正在读取 Deliveryline 状态…",
   };
   const sectionToolbarLoadedStatus = {
     automations: "自动化已加载",
     "project-docs": "项目资料已加载",
     "today-focus": "今日关注已就绪",
-    deliveryline: "Deliveryline 已加载",
   };
   const toolbarLoadingMinimumMs = 220;
   let toolbarTransitionId = 0;
@@ -150,7 +148,7 @@
 
   const showSectionToolbarLoading = (section) => {
     toolbarTransitionId += 1;
-    setToolbarStatus(sectionToolbarLoadingStatus[section] || sectionToolbarLoadingStatus.workbench);
+    setToolbarStatus(sectionToolbarLoadingStatus[section] || "正在读取业务模块状态…");
   };
 
   const finishSectionToolbarLoading = (section) => {
@@ -158,7 +156,7 @@
     const transitionId = toolbarTransitionId;
     window.setTimeout(() => {
       if (transitionId === toolbarTransitionId) {
-        setToolbarStatus(sectionToolbarLoadedStatus[section] || "工作台已加载");
+        setToolbarStatus(sectionToolbarLoadedStatus[section] || "业务模块已加载");
       }
     }, toolbarLoadingMinimumMs);
   };
@@ -236,7 +234,7 @@
       });
       window.initializeWorkspaceAutomationControls?.();
       window.initializeWorkspaceWorkstation?.();
-      window.initializeWorkspaceDeliveryline?.();
+      window.initializeWorkspaceBusinessModule?.();
       window.initializeWorkspaceSearch?.();
       finishSectionToolbarLoading(targetSection);
       if (compactViewport.matches) closeMobileSidebar({ restoreHistory: false });
@@ -1175,7 +1173,7 @@
 
   };
   window.initializeWorkspaceAutomationControls();
-  window.initializeWorkspaceDeliveryline?.();
+  window.initializeWorkspaceBusinessModule?.();
 
   const clampSidebarWidth = (value) => Math.min(
     maximumSidebarWidth,

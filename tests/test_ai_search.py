@@ -14,6 +14,7 @@ from app.ai_search.service import AiSearchService
 from app.application import create_app
 from app.automations.browser import (
     DebugChromePageContent,
+    DebugChromePageLink,
     DebugChromePageReadError,
 )
 from app.core.response import ApiError
@@ -78,6 +79,7 @@ class _QuickInteractions:
         )
         self.prompt = ""
         self.operation_tasks: dict[str, SimpleNamespace] = {}
+        self.raise_after_acceptance = False
 
     def session_creation_guard(self):
         return nullcontext()
@@ -92,6 +94,8 @@ class _QuickInteractions:
         self.prompt = prompt
         self.task.session_id = session_id
         self.operation_tasks[kwargs["operation_id"]] = self.task
+        if self.raise_after_acceptance:
+            raise RuntimeError("response lost after acceptance")
         return self.task
 
     def get(self, _task_id: str):
@@ -108,12 +112,14 @@ class _QuickInteractions:
 
 
 async def _read_page(url: str, *, max_content_chars: int) -> DebugChromePageContent:
+    path = url.rstrip("/")
     return DebugChromePageContent(
         source_url=url,
         final_url=url,
         title="Official AI news",
         content="A bounded official update.",
         truncated=False,
+        links=(DebugChromePageLink("Example update", f"{path}/update"),),
     )
 
 
@@ -271,6 +277,18 @@ def test_today_focus_visibility_defaults_to_hidden_and_persists(tmp_path: Path) 
     assert _service(tmp_path / "ai-search.json").show_sessions() is True
 
 
+def test_today_focus_recovers_accepted_task_when_submission_response_is_lost(tmp_path: Path) -> None:
+    service = _service(tmp_path / "ai-search.json")
+    manager = _Manager()
+    quick = _QuickInteractions()
+    quick.raise_after_acceptance = True
+
+    data = service.refresh(manager, quick, source_ip="127.0.0.1")
+
+    assert data.current is not None
+    assert data.current.task_id == "task-1"
+
+
 def test_today_focus_discards_legacy_state_without_touching_its_bound_session(tmp_path: Path) -> None:
     path = tmp_path / "ai-search.json"
     legacy = SearchRun(
@@ -286,7 +304,7 @@ def test_today_focus_discards_legacy_state_without_touching_its_bound_session(tm
         updated_at=datetime.now(UTC),
     )
     path.write_text(json.dumps({
-        "version": 6,
+        "version": 8,
         "show_sessions": True,
         "session_id": "session-1",
         "runs": [legacy.model_dump(mode="json")],
@@ -300,7 +318,7 @@ def test_today_focus_discards_legacy_state_without_touching_its_bound_session(tm
     assert data.latest is None
     assert manager.native_deleted == []
     assert json.loads(path.read_text(encoding="utf-8")) == {
-        "version": 7,
+        "version": 9,
         "show_sessions": False,
         "session_id": None,
         "pending_run": None,
@@ -321,6 +339,73 @@ def test_today_focus_rejects_result_links_outside_fixed_sources(tmp_path: Path) 
                 "source": "Example",
             }],
         }))
+
+
+def test_today_focus_rejects_detail_links_not_found_in_source_snapshot(tmp_path: Path) -> None:
+    service = _service(tmp_path / "ai-search.json")
+
+    with pytest.raises(ValueError, match="未在来源快照中出现"):
+        service._parse_result(
+            json.dumps({
+                "summary": "摘要",
+                "results": [{
+                    "title": "Anthropic update",
+                    "url": "https://www.anthropic.com/news/not-found",
+                    "description": "An update.",
+                    "source": "Anthropic",
+                }],
+            }),
+            detail_links={"Anthropic": ["https://www.anthropic.com/news/detail"]},
+        )
+
+
+def test_today_focus_prompt_includes_source_detail_links(tmp_path: Path) -> None:
+    service = _service(tmp_path / "ai-search.json")
+    snapshots = (
+        DebugChromePageContent(
+            source_url=url,
+            final_url=url,
+            title="Official AI news",
+            content="A bounded official update.",
+            truncated=False,
+            links=(
+                (DebugChromePageLink("Anthropic detail", "https://www.anthropic.com/news/detail"),)
+                if name == "Anthropic" else ()
+            ),
+        )
+        for name, url in (
+            ("OpenAI", "https://openai.com/news/"),
+            ("Anthropic", "https://www.anthropic.com/news"),
+            ("Google AI", "https://blog.google/technology/ai/"),
+            ("Hugging Face", "https://huggingface.co/blog"),
+        )
+    )
+
+    prompt = service._prompt(snapshots)
+
+    assert "详情链接候选" in prompt
+    assert "Anthropic detail -> https://www.anthropic.com/news/detail" in prompt
+    assert "不能使用来源首页或编造链接" in prompt
+
+
+def test_today_focus_rejects_source_home_result_link(tmp_path: Path) -> None:
+    service = _service(tmp_path / "ai-search.json")
+
+    for url in (
+        "https://anthropic.com/news",
+        "https://www.anthropic.com/news?utm_source=test",
+        "https://www.anthropic.com/news/#latest",
+    ):
+        with pytest.raises(ValueError, match="来源首页链接"):
+            service._parse_result(json.dumps({
+                "summary": "摘要",
+                "results": [{
+                    "title": "Anthropic update",
+                    "url": url,
+                    "description": "An update.",
+                    "source": "Anthropic",
+                }],
+            }))
 
 
 @pytest.mark.anyio

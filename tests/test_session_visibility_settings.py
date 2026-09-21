@@ -5,7 +5,7 @@ import httpx
 import pytest
 
 from app.application import create_app
-from app.deliveryline.store import DeliverylineUnavailable
+from modules.business.deliveryline.store import DeliverylineUnavailable
 
 
 @pytest.mark.anyio
@@ -16,10 +16,6 @@ async def test_session_settings_groups_defaults_and_internal_visibility_for_impo
         await client.post(
             "/api/plugins/runtime/imports",
             json={"artifact_id": "development:codex-runtime-dev"},
-        )
-        await client.post(
-            "/api/plugins/weixin-orchestration/imports",
-            json={"artifact_id": "development:weixin-orchestration"},
         )
         await client.post(
             "/api/plugins/deliveryline/imports",
@@ -41,22 +37,18 @@ async def test_session_settings_groups_defaults_and_internal_visibility_for_impo
     assert 'class="internal-session-visibility-copy"><h3 id="internal-session-visibility-title">内部会话显示</h3><p class="settings-subsection-description">选择是否在工作台中显示模块专用的内部会话；不会影响正在执行的任务。</p></div><button id="internal-session-visibility-toggle" class="button-secondary" type="button" disabled>展示</button>' in response.text
     assert 'id="internal-session-visibility-feedback" class="message"' in response.text
     assert 'id="deliveryline-show-collaboration-sessions"' in response.text
-    assert 'id="workspace-task-show-internal-native-session"' in response.text
     assert 'id="today-focus-show-sessions"' in response.text
     assert 'data-session-visibility-feedback="deliveryline"' in response.text
-    assert 'data-session-visibility-feedback="translation"' in response.text
     assert 'data-session-visibility-feedback="today-focus"' in response.text
     assert 'id="internal-session-visibility-message"' not in response.text
     assert 'src="/static/js/features/workspace-session-visibility.js"' in response.text
     assert shown.json()["data"] == {
         "deliveryline": True,
-        "translation": True,
         "today_focus": True,
         "deployment_package": True,
     }
     assert hidden.json()["data"] == {
         "deliveryline": False,
-        "translation": False,
         "today_focus": False,
         "deployment_package": False,
     }
@@ -70,7 +62,7 @@ async def test_internal_session_visibility_restores_prior_values_when_a_write_fa
     app = create_app(settings)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        for plugin_id in ("weixin-orchestration", "deliveryline"):
+        for plugin_id in ("deliveryline",):
             imported = await client.post(
                 f"/api/plugins/{plugin_id}/imports",
                 json={"artifact_id": f"development:{plugin_id}"},
@@ -98,7 +90,6 @@ async def test_internal_session_visibility_restores_prior_values_when_a_write_fa
     assert failed.status_code == 503
     assert failed.json()["error"]["code"] == "internal_session_visibility_update_failed"
     assert app.state.deliveryline_collaboration.show_sessions() is False
-    assert app.state.weixin_translation.status().show_internal_native_session is False
     assert app.state.deployment_package.show_release_note_session() is False
 
 

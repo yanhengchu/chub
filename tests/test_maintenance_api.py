@@ -1,15 +1,82 @@
 import threading
+from datetime import timedelta
 from unittest.mock import ANY, MagicMock, patch
 
 import httpx
 import pytest
 
 from app.application import create_app
-from app.ai_interactions.models import QuickInteractionTask
-from app.ai_session.models import utc_now
 from app.core.config import Settings
 from app.services.deferred_restart import DeferredRestartCoordinator
 from app.services.web_restart import WebRestartUnavailableError
+from app.services.workstation_rebuild import WorkstationRebuildCoordinator
+
+
+def test_workstation_rebuild_records_requested_and_terminal_operation_statuses(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    logged: list[dict[str, str]] = []
+    monkeypatch.setattr(
+        "app.services.workstation_rebuild.write_operation",
+        lambda **payload: logged.append(payload),
+    )
+    coordinator = WorkstationRebuildCoordinator(tmp_path / "workstation-rebuild.json")
+
+    operation, created = coordinator.begin("127.0.0.1")
+    coordinator.succeed(operation.operation_id)
+
+    assert created is True
+    assert [(item["status"], item["action"], item["target"]) for item in logged] == [
+        ("requested", "workstation_rebuild", "chub"),
+        ("succeeded", "workstation_rebuild", "chub"),
+    ]
+
+
+def test_workstation_rebuild_fails_a_request_never_accepted_by_its_executor(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    coordinator = WorkstationRebuildCoordinator(tmp_path / "workstation-rebuild.json")
+    operation, _created = coordinator.begin("127.0.0.1")
+    monkeypatch.setattr(
+        "app.services.workstation_rebuild.utc_now",
+        lambda: operation.updated_at + timedelta(minutes=16),
+    )
+
+    status = coordinator.status_data()
+
+    assert status.state == "failed"
+    assert status.can_start is True
+    assert status.operation is not None
+    assert status.operation.stage == "failed"
+    assert "未在 15 分钟内接手" in status.message
+
+
+def test_workstation_rebuild_marks_a_launched_executor_as_started(tmp_path) -> None:
+    coordinator = WorkstationRebuildCoordinator(tmp_path / "workstation-rebuild.json")
+    operation, _created = coordinator.begin("127.0.0.1")
+
+    started = coordinator.mark_executor_started(operation.operation_id)
+
+    assert started.status == "started"
+    assert started.stage == "preparing_environment"
+
+
+def test_workstation_rebuild_persists_default_runtime_initialization_stage(tmp_path) -> None:
+    state_path = tmp_path / "workstation-rebuild.json"
+    coordinator = WorkstationRebuildCoordinator(state_path)
+    operation, _created = coordinator.begin("127.0.0.1")
+
+    coordinator.update(
+        operation.operation_id,
+        stage="initializing_runtime",
+        message="正在导入并启用当前默认 Runtime。",
+    )
+
+    restored = WorkstationRebuildCoordinator(state_path).operation()
+    assert restored is not None
+    assert restored.stage == "initializing_runtime"
 
 
 @pytest.mark.anyio
@@ -115,35 +182,21 @@ async def test_restart_allows_active_quick_interaction(settings: Settings) -> No
 
 
 @pytest.mark.anyio
-async def test_restart_allows_active_translation(settings: Settings) -> None:
+async def test_task_orchestration_compaction_is_trusted_and_reports_terminal_cleanup(
+    settings: Settings,
+) -> None:
     app = create_app(settings)
-    task = QuickInteractionTask(
-        id="translation-1",
-        session_id="translation-session",
-        prompt="translate",
-        kind="translation",
-        status="running",
-        created_at=utc_now(),
-        updated_at=utc_now(),
-    )
-    app.state.quick_interactions._tasks[task.id] = task
-    app.state.quick_interactions._active_task_ids.add(task.id)
+    app.state.task_orchestrator.compact_terminal_records = MagicMock(return_value=(7, 1))
     transport = httpx.ASGITransport(app=app)
 
-    with (
-        patch("app.services.web_restart.launch_restart_process") as launch_restart,
-        patch("app.api.maintenance.monitor_restart_process"),
-    ):
-        async with httpx.AsyncClient(
-            transport=transport,
-            base_url="http://test",
-            headers={"Authorization": "Bearer test-token-that-is-long-enough-for-tests"},
-        ) as client:
-            response = await client.post("/api/maintenance/restart")
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/api/maintenance/task-orchestration/compact")
 
     assert response.status_code == 200
-    assert response.json()["data"] == {"status": "restarting"}
-    launch_restart.assert_called_once()
+    assert response.json()["data"] == {
+        "removed_terminal_records": 7,
+        "active_requests": 1,
+    }
 
 
 @pytest.mark.anyio

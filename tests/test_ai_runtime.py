@@ -1045,34 +1045,6 @@ def test_saved_runtime_default_survives_transient_unavailability(
     ] == "test-runtime-dev"
 
 
-def test_translation_session_uses_live_default_runtime_with_background_turn(
-    settings: Settings,
-) -> None:
-    manager = AiSessionManager(settings)
-    settings_store = AiRuntimeSettingsStore(
-        settings.ai_runtime.shared.state_dir / "ai-runtimes.local.yaml"
-    )
-    test_adapter = SessionRuntime(
-        "test",
-        "test-runtime-dev",
-        settings_store,
-        supports_background_turn=True,
-    )
-    modules = RuntimePluginRegistry(
-        [manager.runtime_plugins.require("codex"), SessionRuntimePlugin(test_adapter)]
-    )
-    manager.runtime_plugin_service.build_registry = MagicMock(return_value=(modules, ()))
-    manager.runtime_settings_store = settings_store
-    settings_store.save_general(
-        settings_store.read_general().model_copy(update={"default_runtime_id": "test"})
-    )
-    manager.refresh_runtime_plugins()
-    manager.runtime_settings_store = settings_store
-
-    session = manager.create_translation_session()
-
-    assert session.runtime_id == "test"
-    assert manager.get_session(session.id).implementation_id == "test-runtime-dev"
 
 
 def test_session_implementation_compatibility_requires_enabled_plugin_lifecycle(
@@ -2187,110 +2159,10 @@ def test_native_list_restores_unbound_items_after_initial_claim_finishes(
     assert [item.cwd for item in native_sessions] == ["/workspace/unbound"]
 
 
-def test_native_list_hides_internal_translation_session_unless_requested(
-    settings: Settings,
-) -> None:
-    manager = AiSessionManager(settings)
-    now = datetime(2026, 9, 8, 10, tzinfo=UTC)
-    translation_cwd = settings.ai_runtime.shared.runtime_dir / "translation-workspace"
-    manager.store.list = MagicMock(return_value=[])
-    manager._sync_bound_native_sessions = MagicMock(
-        return_value=(
-            RuntimeNativeSession(
-                runtime_id="codex",
-                native_session_id="22222222-2222-4222-8222-222222222222",
-                cwd=translation_cwd,
-                created_at=now,
-                updated_at=now,
-            ),
-        )
-    )
-    manager._refresh_status = MagicMock()
-    manager._reconcile_quick_activity = MagicMock()
-    manager.runtime_adapter = MagicMock()
-    manager.runtime_adapter.has_active_writer.return_value = False
-
-    _sessions, hidden = manager.list_sessions_with_native_sessions()
-    _sessions, visible = manager.list_sessions_with_native_sessions(
-        include_internal_translation_native_sessions=True,
-    )
-
-    assert hidden == []
-    assert [item.cwd for item in visible] == [str(translation_cwd)]
 
 
-def test_translation_native_cleanup_removes_all_unbound_idle_sessions(
-    settings: Settings,
-) -> None:
-    manager = AiSessionManager(settings)
-    now = datetime(2026, 9, 8, 10, tzinfo=UTC)
-    translation_cwd = settings.ai_runtime.shared.runtime_dir / "translation-workspace"
-    current_native_id = "11111111-1111-4111-8111-111111111111"
-    stale_native_id = "22222222-2222-4222-8222-222222222222"
-    manager.store.list = MagicMock(return_value=[
-        AiSession(
-            id="33333333-3333-4333-8333-333333333333",
-            runtime_id="codex",
-            workspace_id="weixin-translation",
-            workspace_name="微信文本优化与翻译",
-            cwd=translation_cwd,
-            native_session_id=current_native_id,
-        )
-    ])
-    manager.runtime_adapter = MagicMock()
-    manager._sync_bound_native_sessions = MagicMock(return_value=(
-        RuntimeNativeSession(
-            runtime_id="codex",
-            native_session_id=current_native_id,
-            cwd=translation_cwd,
-            created_at=now,
-            updated_at=now,
-        ),
-        RuntimeNativeSession(
-            runtime_id="codex",
-            native_session_id=stale_native_id,
-            cwd=translation_cwd,
-            created_at=now,
-            updated_at=now,
-        ),
-    ))
-    manager.runtime_adapter.has_active_writer.return_value = False
-    manager.runtime_adapter.native_session_deleted_state.return_value = True
-
-    result = manager.cleanup_stale_translation_native_sessions()
-
-    assert result.pending == 0
-    assert result.reason is None
-    manager.runtime_adapter.run_native_action.assert_called_once_with(
-        "delete", stale_native_id
-    )
 
 
-def test_translation_native_cleanup_keeps_a_session_with_an_active_writer(
-    settings: Settings,
-) -> None:
-    manager = AiSessionManager(settings)
-    now = datetime(2026, 9, 8, 10, tzinfo=UTC)
-    translation_cwd = settings.ai_runtime.shared.runtime_dir / "translation-workspace"
-    stale_native_id = "22222222-2222-4222-8222-222222222222"
-    manager.store.list = MagicMock(return_value=[])
-    manager.runtime_adapter = MagicMock()
-    manager._sync_bound_native_sessions = MagicMock(return_value=(
-        RuntimeNativeSession(
-            runtime_id="codex",
-            native_session_id=stale_native_id,
-            cwd=translation_cwd,
-            created_at=now,
-            updated_at=now,
-        ),
-    ))
-    manager.runtime_adapter.has_active_writer.return_value = True
-
-    result = manager.cleanup_stale_translation_native_sessions()
-
-    assert result.pending == 1
-    assert result.retry_required is True
-    manager.runtime_adapter.run_native_action.assert_not_called()
 
 
 @pytest.mark.parametrize(

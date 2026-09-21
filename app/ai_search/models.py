@@ -39,7 +39,8 @@ class SearchRun(_StrictModel):
     operation_id: str | None = Field(default=None, min_length=1, max_length=64)
     task_id: str | None = Field(default=None, min_length=1, max_length=64)
     query: str = Field(min_length=2, max_length=2000)
-    prompt: str = Field(min_length=1, max_length=6000)
+    prompt: str = Field(min_length=1, max_length=12000)
+    detail_links: dict[str, list[str]] = Field(default_factory=dict, max_length=4)
     status: SearchStatus
     summary: str | None = Field(default=None, max_length=2000)
     results: list[SearchResultItem] = Field(default_factory=list, max_length=10)
@@ -49,7 +50,7 @@ class SearchRun(_StrictModel):
 
 
 class AiSearchState(_StrictModel):
-    version: Literal[7] = 7
+    version: Literal[9] = 9
     show_sessions: bool = False
     session_id: str | None = Field(default=None, min_length=1, max_length=64)
     pending_run: SearchRun | None = None

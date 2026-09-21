@@ -5,5 +5,6 @@
   "display_name": "Deliveryline",
   "description": "需求交付管理业务插件；当前仅提供插件生命周期与状态入口。",
   "version": "dev",
-  "chub_version": "0.1.0"
+  "chub_version": "dev",
+  "entry": "modules.business.deliveryline:create_business_module"
 }

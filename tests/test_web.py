@@ -316,15 +316,14 @@ async def settings_page_removes_quick_interaction_page_size_preference(
     assert "window.initializeSettingsPage = () =>" in script.text
     assert "window.disposeSettingsPage = () =>" in script.text
     assert 'if (settingsPage === "openclaw") {' in script.text
-    assert "openclaw-weixin-dialog" not in script.text
-    assert 'fetchSettingsApi("/api/openclaw/status")' not in script.text
-    assert 'fetchSettingsApi("/api/openclaw/weixin/login")' not in script.text
+    assert "settings-openclaw-weixin-dialog" in script.text
+    assert 'fetchSettingsApi("/api/openclaw/status")' in script.text
+    assert 'fetchSettingsApi("/api/openclaw/weixin/login")' in script.text
     assert "快速交互" in response.text
     assert '<h3 id="core-settings-title" class="settings-layer-title">Chub 核心</h3>' in response.text
     assert "调整会话历史记录的加载方式。" in response.text
     assert "按 Chub 核心、AI Runtime 与第三方服务查看现有配置。" in response.text
     assert "界面风格" in response.text
-    assert "微信任务文本优化" in response.text
     assert '<h3 id="runtime-settings-title">Runtime 管理</h3>' in response.text
     assert 'id="runtime-management-list"' not in response.text
     assert 'id="runtime-management-description"' in response.text
@@ -361,12 +360,10 @@ async def settings_page_removes_quick_interaction_page_size_preference(
     assert 'id="weixin-processing-mode"' in response.text
     assert 'class="settings-choice-list"' in response.text
     assert '<h4 id="weixin-processing-mode-title">正文处理方式</h4>' in response.text
-    assert '<h4 id="weixin-translation-model-title">文本优化运行参数</h4>' in response.text
     assert 'aria-labelledby="weixin-processing-mode-title"' in response.text
     assert 'value="direct"' in response.text
     assert 'value="auto"' in response.text
     assert 'value="confirm"' in response.text
-    assert "自动润色后执行" in response.text
     assert "查看处理规则" not in response.text
     assert "Standard" in response.text
     assert "Code Dark" in response.text
@@ -396,14 +393,6 @@ async def settings_page_removes_quick_interaction_page_size_preference(
     assert 'id="codex-show-translation-session"' not in response.text
     assert 'id="codex-default-model"' not in response.text
     assert 'id="codex-default-reasoning-effort"' not in response.text
-    assert 'id="weixin-translation-model-field"' in response.text
-    assert 'id="weixin-translation-reasoning-effort-field"' in response.text
-    assert 'id="weixin-translation-model-description"' in response.text
-    assert 'id="weixin-translation-reasoning-effort-description"' in response.text
-    assert 'id="weixin-translation-model-field"' in response.text
-    assert 'id="weixin-translation-reasoning-effort-field"' in response.text
-    assert response.text.count('id="weixin-translation-model-field"') == 1
-    assert response.text.count('id="weixin-translation-reasoning-effort-field"') == 1
     assert "默认使用 Full access" in response.text
     assert "关闭后使用 Read Only" in response.text
     assert "尚未开放" not in response.text
@@ -456,20 +445,12 @@ async def settings_page_removes_quick_interaction_page_size_preference(
     assert "hub.codexDefaultPermission.v1" not in script.text
     assert "hub.codexDefaultModel.v1" not in script.text
     assert "hub.codexDefaultReasoningEffort.v1" not in script.text
-    assert "hub.weixinTranslationSettingsCache" in script.text
     assert "hub.openclawWeixinSettingsCache.v1" in script.text
     assert "hub.codexShowTranslationSession.v1" not in script.text
     assert "/api/ai/models" in script.text
     assert "/api/ai/session-defaults" not in script.text
-    assert "/api/settings/weixin-translation" in script.text
-    assert "翻译权限" in response.text
-    assert "翻译权限：Read Only" in response.text
-    assert "翻译 Runtime" in response.text
     assert "推理等级：正在读取" in response.text
     assert "使用“会话”中设置的默认推理等级。" not in response.text
-    assert response.text.index("翻译 Runtime") < response.text.index("翻译权限")
-    assert response.text.index("翻译权限") < response.text.index("文本优化模型")
-    assert response.text.index("文本优化模型") < response.text.index("推理等级")
     assert 'apiRequest("/api/ai/settings", { cache: "no-store" })' in workspace_script.text
     assert "session-default-reasoning" in workspace_script.text
     assert "quickSessionReasoningLabels" in workspace_script.text
@@ -491,14 +472,10 @@ async def settings_page_removes_quick_interaction_page_size_preference(
     assert '"重新绑定微信"' in script.text
     assert 'idle: ["未绑定"' not in script.text
     assert "当前展示上次检测结果" in script.text
-    assert "WEIXIN_TRANSLATION_SETTINGS_CACHE_KEY" in script.text
-    assert "项文本优化仍在处理中" in script.text
     assert "已开启，将从下一条微信普通任务开始处理" not in script.text
     assert "已关闭，新任务不再翻译" not in script.text
     assert "设置结果未知，请稍后刷新页面重试" in script.text
-    assert "暂时无法刷新文本优化任务状态，正在重试" in script.text
     assert "window.setTimeout" in script.text
-    assert 'id="weixin-translation-status"' not in response.text
     assert "之后新建的 Session 将使用该权限" not in script.text
     assert "之后新建的 Session 将使用该模型与等级" not in script.text
     assert "localStorage.setItem" in script.text
@@ -529,12 +506,6 @@ async def test_settings_navigation_hides_unimported_orchestration_plugin(
     settings: Settings,
 ) -> None:
     app = create_app(settings)
-    app.state.weixin_chub_mode.orchestration_settings = MagicMock(
-        return_value=SimpleNamespace(implementation="disabled")
-    )
-    app.state.weixin_chub_mode.orchestration_plugin_service.list_artifacts = MagicMock(
-        return_value=(SimpleNamespace(available=False),)
-    )
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -638,7 +609,6 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
         "diagnostics": "/settings/diagnostics",
         "runtime": "/settings/runtime",
         "runtime-detail": "/settings/runtime/codex",
-        "task-orchestration": "/settings/task-orchestration",
         "openclaw": "/settings/openclaw",
     }
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -646,6 +616,7 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
         removed_quick_interaction = await client.get("/settings/quick-interaction")
         session_settings = await client.get("/settings/session", follow_redirects=False)
         legacy_weixin_text = await client.get("/settings/weixin-text", follow_redirects=False)
+        removed_task_orchestration = await client.get("/settings/task-orchestration")
         legacy_gateway = await client.get("/settings/openclaw/gateway", follow_redirects=False)
         legacy_clawbot = await client.get("/settings/openclaw/clawbot", follow_redirects=False)
         unknown_runtime = await client.get("/settings/runtime/unknown")
@@ -677,8 +648,8 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert session_settings.headers["location"] == "/settings/runtime"
     assert "通用设置" in pages["appearance"].text
     assert "会话与偏好" not in pages["appearance"].text
-    assert legacy_weixin_text.status_code == 307
-    assert legacy_weixin_text.headers["location"] == "/settings/task-orchestration"
+    assert legacy_weixin_text.status_code == 404
+    assert removed_task_orchestration.status_code == 404
     assert legacy_gateway.status_code == 307
     assert legacy_gateway.headers["location"] == "/settings/openclaw"
     assert legacy_clawbot.status_code == 307
@@ -844,28 +815,13 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert '新建 Session 默认项由 Chub 安全保存。' not in pages["openclaw"].text
     assert '浏览器拒绝保存时，主题和文字大小仅在当前页临时应用。' in pages["openclaw"].text
     assert 'href="/settings/task-orchestration"' not in pages["runtime"].text
-    assert 'href="/settings/task-orchestration" aria-current="page"' not in pages["task-orchestration"].text
-    assert 'id="workspace-task-processing-trigger"' in pages["task-orchestration"].text
-    assert 'id="workspace-task-processing-title">润色模式</strong>' in pages["task-orchestration"].text
-    assert 'aria-label="润色模式" hidden' in pages["task-orchestration"].text
-    assert 'aria-label="微信任务润色"><section class="workstation-group workspace-task-orchestration-group"' in pages["task-orchestration"].text
-    assert 'id="workspace-task-show-internal-native-session"' not in pages["task-orchestration"].text
-    assert 'id="workspace-task-module-file"' not in pages["task-orchestration"].text
-    assert 'id="workspace-task-module-list"' not in pages["task-orchestration"].text
-    assert 'processingTitle.textContent = "润色模式";' in workspace_script.text
-    assert 'implementationTitle.textContent = "当前使用版本";' in workspace_script.text
-    assert '|| !orchestration.enabled' in workspace_script.text
-    assert 'processingMenu.setAttribute("aria-label", "润色模式");' in workspace_script.text
-    assert 'showInternalNativeSession' not in workspace_script.text
     assert '"/api/deliveryline/settings"' in session_visibility_script.text
-    assert '"/api/settings/weixin-translation"' in session_visibility_script.text
+    assert '"/api/settings/weixin-translation"' not in session_visibility_script.text
     assert '"/api/today-focus/settings"' in session_visibility_script.text
-    assert 'show_internal_native_session' in session_visibility_script.text
     assert 'data-session-visibility-feedback' in session_visibility_script.text
     assert 'internal-session-visibility-message' not in session_visibility_script.text
     assert '"/api/today-focus/refresh"' in workspace_search_script.text
     assert '"/api/today-focus/open-pages"' not in workspace_search_script.text
-    assert 'id="workspace-task-orchestration-title"' not in pages["task-orchestration"].text
     assert 'window.initializeWorkspacePluginLifecycle?.();' in script.text
     assert 'workstation-status-detail-${enabled.length ? "success" : "warning"}' in lifecycle_script.text
     assert 'deliverylineVersion.disabled = busy || enabled.length === 0 || artifacts.length === 0;' in lifecycle_script.text
@@ -909,10 +865,16 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert "核对微信 ClawBot 适配器与 Chub 插件的本机安装元数据。" in pages["openclaw"].text
     assert "查看当前已登记的兼容补丁基线。" in pages["openclaw"].text
     assert 'id="settings-openclaw-open"' not in pages["openclaw"].text
-    assert 'id="settings-openclaw-bind-weixin"' not in pages["openclaw"].text
+    assert 'id="settings-openclaw-refresh"' not in pages["openclaw"].text
+    assert '<h3 id="openclaw-runtime-settings-title">运行与绑定</h3><p class="settings-subsection-description">查看 Gateway 和微信消息通道的实时状态，按需重启与恢复或重新绑定微信。</p>' in pages["openclaw"].text
+    assert 'class="workstation-status-list settings-divided-list settings-openclaw-runtime-list"' in pages["openclaw"].text
+    assert 'id="settings-openclaw-start"' in pages["openclaw"].text
+    assert 'id="settings-openclaw-restart"' in pages["openclaw"].text
+    assert 'id="settings-openclaw-bind-weixin"' in pages["openclaw"].text
+    assert 'id="settings-openclaw-weixin-dialog"' in pages["openclaw"].text
     assert 'id="weixin-processing-mode"' not in pages["openclaw"].text
     assert 'id="weixin-translation-model-field"' not in pages["openclaw"].text
-    assert pages["openclaw"].text.index('id="openclaw-integration-settings-title"') < pages["openclaw"].text.index('id="openclaw-patch-settings-title"')
+    assert pages["openclaw"].text.index('id="openclaw-runtime-settings-title"') < pages["openclaw"].text.index('id="openclaw-integration-settings-title"') < pages["openclaw"].text.index('id="openclaw-patch-settings-title"')
     assert pages["openclaw"].text.index('id="openclaw-integration-settings-title"') < pages["openclaw"].text.index('id="settings-openclaw-integration-message"') < pages["openclaw"].text.index('id="settings-openclaw-integration-list"')
     assert "第三方服务配置由 Chub 安全保存" not in pages["openclaw"].text
     assert 'href="/settings/openclaw" aria-current="page"' in pages["openclaw"].text
@@ -924,7 +886,7 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert 'OPENCLAW_INTEGRATION_CACHE_KEY' not in script.text
     assert '"当前展示上次检查结果，正在重新核验。"' not in script.text
     assert 'data.message?.includes("均已确认")' not in script.text
-    assert 'settingsPage === "task-orchestration"' in script.text
+    assert 'settingsPage === "task-orchestration"' not in script.text
     assert 'row.classList.toggle("is-selected", selected);' in script.text
     assert 'input.addEventListener("change", () => {' in script.text
     assert 'const THEME_DETAILS_EXPANDED_KEY = "hub.themeDetailsExpanded.v1";' in script.text
@@ -981,16 +943,7 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert 'id="workspace-task-orchestration-dialog"' not in home.text
     assert 'workspace-preview-task-orchestration' not in home.text
     assert 'src="/static/js/features/workspace-task-orchestration.js"' not in home.text
-    assert 'src="/static/js/features/workspace-task-orchestration.js"' in pages["task-orchestration"].text
-    assert workspace_script.status_code == 200
-    assert '"/api/settings/weixin-translation"' in workspace_script.text
-    assert 'show_internal_native_session' not in workspace_script.text
-    assert '"/api/ai/models"' in workspace_script.text
-    assert '"/api/ai/settings"' not in workspace_script.text
-    assert 'workspace-task-runtime-trigger' not in workspace_script.text
-    assert 'runtimeStaticDisplay.setAttribute("aria-label"' in workspace_script.text
-    assert 'window.initializeWorkspaceTaskOrchestration' in workspace_script.text
-    assert 'window.disposeWorkspaceTaskOrchestration' in workspace_script.text
+    assert workspace_script.status_code == 404
     assert '.workspace-preview-session-group + .workspace-preview-session-group' in stylesheet.text
     session_group_rules = stylesheet.text[
         stylesheet.text.index('.workspace-preview-session-group + .workspace-preview-session-group'):stylesheet.text.index('.workspace-preview-session-group-title')
@@ -1300,100 +1253,49 @@ async def test_deliveryline_api_rejects_an_enabled_but_unavailable_plugin(
 
 
 @pytest.mark.anyio
-async def test_home_workstation_third_party_controls_are_state_driven(
+async def test_openclaw_controls_are_owned_by_settings(
     settings: Settings,
 ) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get("/")
-        script = await client.get("/static/js/features/workspace-workstation.js")
+        home = await client.get("/")
+        response = await client.get("/settings/openclaw")
+        script = await client.get("/static/settings.js")
+        workstation_script = await client.get("/static/js/features/workspace-workstation.js")
         ui_script = await client.get("/static/js/components/ui.js")
+        stylesheet = await client.get("/static/css/components.css")
 
     assert response.status_code == 200
-    assert "插件状态" in response.text
-    assert "展示各插件的导入状态、启用状态和启用版本。" in response.text
-    assert ">微信任务润色</strong>" in response.text
-    assert "微信任务编排</strong>" not in response.text
-    assert response.text.index("工作站环境") < response.text.index("插件状态") < response.text.index("第三方服务环境")
-    assert 'id="workspace-development-refresh"' in response.text
-    assert 'id="workspace-development-environment"' in response.text
-    assert 'id="workspace-development-runtime-list" class="workspace-development-runtime-list"' in response.text
-    assert 'id="workspace-development-weixin-row"' in response.text
-    assert 'const renderRuntimeArtifacts = (plugin) =>' in script.text
-    assert 'request("/api/plugins", { cache: "no-store" })' in script.text
-    assert 'title.textContent = artifactTitle(plugin, artifact, true);' in script.text
-    assert 'const isEnabled = enabled.includes(artifact.artifact_id);' in script.text
-    assert "插件版本：${deliverylineVersion} · 导入状态：已导入 · 启用状态：" in script.text
-    assert "renderRuntimeArtifacts(runtimePlugin)" in script.text
-    assert "renderLifecyclePlugin(weixin" in script.text
-    assert 'workspace-development-codex-row' not in response.text
-    assert 'workspace-development-codex-refresh' not in response.text
-    assert 'workspace-development-weixin-refresh' not in response.text
-    assert "第三方服务环境" in response.text
-    assert 'id="workspace-third-party-refresh"' in response.text
-    assert 'id="workspace-openclaw-start"' in response.text
-    assert 'id="workspace-openclaw-restart"' in response.text
-    assert '>重启</button></div>' in response.text
-    assert 'id="workspace-openclaw-stop"' not in response.text
-    assert 'id="workspace-openclaw-bind-weixin"' in response.text
-    assert 'id="workspace-openclaw-weixin-dialog"' in response.text
+    assert home.status_code == 200
+    assert "第三方服务环境" not in home.text
+    assert "workspace-openclaw" not in home.text
+    assert 'id="settings-openclaw-refresh"' not in response.text
+    assert 'id="settings-openclaw-start"' in response.text
+    assert 'id="settings-openclaw-restart"' in response.text
+    assert 'id="settings-openclaw-bind-weixin"' in response.text
+    assert 'id="settings-openclaw-weixin-dialog"' in response.text
     assert 'class="confirmation-dialog-body openclaw-weixin-lead"' in response.text
     assert 'id="confirmation-dialog-body" class="confirmation-dialog-body" hidden' in response.text
-    assert 'id="workspace-chub-message"' not in response.text
-    assert 'id="workspace-worker-message"' not in response.text
-    assert 'id="workspace-openclaw-message"' not in response.text
-    assert 'id="workspace-openclaw-weixin-feedback"' not in response.text
     assert script.status_code == 200
-    assert 'elements.openclawStart.hidden = !gatewayStopped;' in script.text
-    assert 'elements.openclawRestart.hidden = !gatewayRestartable;' in script.text
+    assert workstation_script.status_code == 200
+    assert stylesheet.status_code == 200
+    assert 'elements.start.hidden = !gatewayStopped;' in script.text
+    assert 'elements.restart.hidden = !gatewayRestartable;' in script.text
     assert "openclawStop" not in script.text
     assert '"正在重启与恢复 OpenClaw Gateway，并确认 Gateway 与消息通道最终状态。"' in script.text
     assert 'closeOnConfirm: true,' in script.text
-    assert 'onConfirm: () => controlOpenClaw("restart"),' in script.text
+    assert 'onConfirm: () => controlGateway("restart"),' in script.text
     assert 'confirmationDialogDescription.hidden = !description.trim();' in ui_script.text
     assert 'body: "Gateway 和微信消息通道会短暂中断。' in script.text
-    assert 'body: "只重启 Chub Web 控制面；' in script.text
-    assert 'body: "排队任务会取消，执行中的快速任务会停止并标记为未完成，且不会自动重试。' in script.text
-    assert 'body: "此操作会清理 Chub 自有 AI 运行状态并重启 Chub Web 与 Quick Worker；' in script.text
-    assert "OpenClaw Gateway 已完成重启与恢复检查。" not in script.text
-    assert "正在检查固定插件、补丁和运行状态。" not in script.text
     assert '? `OpenClaw / Gateway v${status.version} · `' in script.text
     assert '? "Gateway 运行正常并已通过连接探测。"' in script.text
     assert '? `微信 ClawBot v${integration.weixin_adapter.version} · `' in script.text
-    assert 'request("/api/openclaw/integration", { cache: "no-store" }).catch(() => undefined)' in script.text
-    status_request = 'const status = await request("/api/openclaw/status", { cache: "no-store" });'
-    login_request = 'request("/api/openclaw/weixin/login", { cache: "no-store" })'
-    assert status_request in script.text
-    assert login_request in script.text
-    assert script.text.index(status_request) < script.text.index(login_request)
+    assert 'fetchSettingsApi("/api/openclaw/status", { cache: "no-store" })' in script.text
+    assert 'fetchSettingsApi("/api/openclaw/weixin/login", { cache: "no-store" })' in script.text
+    assert 'fetchSettingsApi("/api/openclaw/integration", { cache: "no-store" })' in script.text
     assert 'if (status?.installed !== true) {' in script.text
-    assert 'window.sessionStorage.removeItem(thirdPartySnapshotCacheKey);' in script.text
-    assert 'const thirdPartySnapshotCacheKey = "chub.workspace.thirdParty.v1";' in script.text
-    assert 'const developmentSnapshotCacheKey = "chub.workspace.development.v1";' in script.text
-    assert 'const refreshDevelopment = async () =>' in script.text
-    assert 'void loadDevelopment();' in script.text
-    assert 'request("/api/runtime-modules/codex-runtime-dev/refresh", { method: "POST" })' not in script.text
-    assert 'body: JSON.stringify({ implementation: "weixin-orchestration-dev" }),' not in script.text
-    assert 'window.sessionStorage.getItem(thirdPartySnapshotCacheKey)' in script.text
-    assert 'window.sessionStorage.setItem(' in script.text
-    assert script.text.count('cacheThirdPartySnapshot(status, login, openclawIntegration);') == 2
-    assert 'let thirdPartyLoading = false;' in script.text
-    assert 'elements.thirdPartyRefresh.disabled = thirdPartyLoading;' in script.text
-    assert 'elements.openclawBindWeixin.disabled = thirdPartyLoading ||' in script.text
-    assert 'const showToolbarFeedback = (text, kind = "error") =>' in script.text
-    assert 'window.showWorkspaceToolbarFeedback?.(text, kind);' in script.text
-    assert "chubMessage" not in script.text
-    assert "workerMessage" not in script.text
-    assert "openclawMessage" not in script.text
-    assert "openclawWeixinFeedback" not in script.text
-    assert 'if (!await loadThirdParty()) return;' not in script.text
-    assert 'return `${platform === "macos" ? "macOS" : platform} · Chub 可用`;' in script.text
-    assert 'const workbenchStatusLoadingMinimumMs = 220;' in script.text
-    assert 'workbenchStatusLoadingMinimumMs - (window.performance.now() - refreshStartedAt)' in script.text
-    assert "const requestAbortController = new AbortController();" in script.text
-    assert "const cancelPendingWaits = () =>" in script.text
-    assert "requestAbortController.abort();" in script.text
-    assert "cancelPendingWaits();" in script.text
+    assert "workspace-openclaw" not in workstation_script.text
+    assert "thirdPartySnapshotCacheKey" not in workstation_script.text
 
 
 @pytest.mark.anyio
@@ -2041,7 +1943,7 @@ async def test_quick_interaction_conversation_page_is_available(
     assert ': "/";' in script.text
     assert "const archiveReady = Boolean(session.can_archive)" in session_script.text
     assert "elements.archive.disabled = !state.archiveReady || state.archiveBusy" in session_script.text
-    assert 'session?.workspace_id !== "weixin-translation"' in session_script.text
+    assert "const renameAllowed = Boolean(session);" in session_script.text
     assert "elements.rename.disabled = !state.renameAllowed" in session_script.text
     assert "core.sessionNavigationMode" in session_script.text
     assert 'button.setAttribute("aria-current", "page")' in session_script.text
@@ -2216,30 +2118,26 @@ async def test_design_document_pages_render_markdown(settings: Settings) -> None
         missing = await client.get("/project-docs/not-registered")
 
     assert listing.status_code == 200
-    assert '<h1 id="document-list-title">项目资料</h1>' in listing.text
-    assert "查看项目基线、专项需求与设计，以及独立学习资料。" in listing.text
-    assert 'data-document-category-filter="project_baseline"' in listing.text
-    assert 'data-document-category-filter="delivery_requirement"' in listing.text
-    assert 'data-document-status-filter="持续维护"' in listing.text
-    assert 'data-document-status-filter="other"' in listing.text
+    assert 'class="workspace-preview-shell"' in listing.text
+    assert 'id="workspace-section-content" class="workspace-project-document-library-content"' in listing.text
+    assert '<h2 id="document-list-title">项目资料</h2>' in listing.text
+    assert "按主题组查看项目资料。" in listing.text
+    assert 'data-document-category-filter=' not in listing.text
+    assert 'data-document-status-filter=' not in listing.text
     assert 'data-document-display-filter="hidden"' in listing.text
     assert 'id="document-filter-empty"' in listing.text
-    assert 'data-document-category-filter="all">全部</button>' in listing.text
+    assert listing.text.count('data-document-display-filter=') == 3
     assert 'id="confirmation-dialog"' in listing.text
-    assert listing.text.index('/static/js/components/ui.js') < listing.text.index(
-        '/static/design_documents.js'
-    )
+    assert listing.text.index('/static/workspace.js') < listing.text.index('/static/design_documents.js')
     assert "Chub 项目说明" in listing.text
     assert 'href="/project-docs/project-readme"' in listing.text
     assert home.text.index('href="/project-docs/project-readme"') < home.text.index(
         'href="/project-docs/chub-architecture"'
     )
-    assert home.text.index("项目基线") < home.text.index("专项需求与设计")
-    assert 'data-project-document-category="project_baseline"' in home.text
-    assert 'data-project-document-category="delivery_requirement"' in home.text
-    assert 'data-project-document-category="independent_learning"' in home.text
-    assert home.text.count('class="workspace-project-document"') == 7
-    assert '<span class="badge badge-muted">项目基线</span>' not in home.text
+    assert home.text.index("项目核心文档") < home.text.index("AI Runtime")
+    assert 'data-project-document-category=' not in home.text
+    assert home.text.count('class="workspace-project-document"') == 15
+    assert '<span class="badge badge-muted">项目核心文档</span>' not in home.text
     assert listing.text.index('href="/project-docs/project-readme"') < listing.text.index(
         'href="/project-docs/chub-architecture"'
     )
@@ -2247,8 +2145,10 @@ async def test_design_document_pages_render_markdown(settings: Settings) -> None
         'href="/project-docs/chub-integration-capabilities"'
     )
     assert '<span class="badge badge-success">持续维护</span>' in listing.text
-    assert "独立学习资料" in listing.text
-    assert listing.text.index("项目基线") < listing.text.index("专项需求与设计")
+    assert "外部集成与独立学习" in listing.text
+    assert "专项需求与设计" not in listing.text
+    for group in ("项目核心文档", "部署与界面规范", "交付与自动化", "AI Runtime", "任务编排", "外部集成与独立学习"):
+        assert group in listing.text
     assert project_readme.status_code == 200
     assert "面向个人设备、本地优先的轻量 AI 工作站控制面" in project_readme.text
     assert 'href="/project-docs/chub-architecture"' in project_readme.text
@@ -2260,12 +2160,14 @@ async def test_design_document_pages_render_markdown(settings: Settings) -> None
     assert "Deliveryline 需求交付管理平台设计" in listing.text
     assert deliveryline.status_code == 200
     assert "Deliveryline 是 Chub 中独立的需求交付业务模块" in deliveryline.text
-    assert "专项需求与设计" in deliveryline.text
-    assert "Deliveryline 是交付意图、业务决策、证据记录和验收结论的权威来源" in deliveryline.text
+    assert "交付与自动化" in deliveryline.text
+    assert "专项需求与设计" not in deliveryline.text
+    assert "Deliveryline 负责交付意图、业务决策、证据记录和验收结论" in deliveryline.text
     assert "Chub 工作台业务模块设计" not in listing.text
     assert removed_business_module.status_code == 404
     assert "返回首页" not in listing.text
-    assert 'class="project-documents-page"' in listing.text
+    assert "workspace-project-document-library" in listing.text
+    assert 'class="project-documents-page"' not in listing.text
     assert "standalone-list-card" not in listing.text
     assert 'target="_blank"' not in listing.text
     assert detail.status_code == 200
@@ -2340,7 +2242,7 @@ async def test_project_document_card_and_weekly_report_apis_allow_loopback(
     ]
     assert weekly_reports[0]["available"] is True
     assert weekly_reports[1]["available"] is False
-    assert len(data["documents"]) == 7
+    assert len(data["documents"]) == 15
     assert any(document["status"] == "持续维护" for document in data["documents"])
     assert any(document["category"] == "project_baseline" for document in data["documents"])
     assert any(document["category_label"] == "专项需求与设计" for document in data["documents"])
@@ -2452,7 +2354,7 @@ async def test_workspace_chub_restart_refreshes_after_new_instance_is_confirmed(
 
     assert response.status_code == 200
     assert 'await waitForRestart(previous.instance_id);' in response.text
-    assert '"Chub 已重启并恢复。浏览器将在稍后自动刷新页面。"' in response.text
+    assert '"Web 控制面已重启并恢复。浏览器将在稍后自动刷新页面。"' in response.text
     assert "elements.chubRestart.disabled = hubRestarting || upgradeRunning;" in response.text
     assert 'await waitForWorkerRestart(operationId);' in response.text
     assert '"Quick Worker 已重启并恢复。浏览器将在稍后自动刷新页面。"' in response.text
@@ -2461,13 +2363,14 @@ async def test_workspace_chub_restart_refreshes_after_new_instance_is_confirmed(
     assert 'request("/api/maintenance/quick-worker", { timeoutMs: 12000 })' in response.text
     assert "workerRetryDelay = Math.min(workerRetryDelay * 2, 10000);" in response.text
     assert "window.setTimeout(() => window.location.reload(), 2000);" in response.text
-    assert 'unavailable: ["不可用", "远程访问", "warning"]' in response.text
-    assert 'unknown: ["状态未知", "远程访问", "muted"]' in response.text
+    assert 'unavailable: ["未启用", "仅本机访问", "muted"]' in response.text
+    assert 'unknown: ["未检查", "远程访问", "muted"]' in response.text
     assert "tailnetDetail" not in response.text
     assert "const setSummaryStatus = (target, text, kind = \"muted\") =>" in response.text
     assert "taskSummary" not in response.text
     assert "runtimeKind(data)," in response.text
-    assert "setStatus(elements.upgradeDetail, `状态：${upgradeLabel(data)}。${data.message}`" in response.text
+    assert "状态：重建已启动。当前页面将短暂断开，无法实时显示进度；请稍后手动刷新本页查看最终结果。" in response.text
+    assert "else if ([\"preparing\", \"rebuilding\"].includes(data.state))" in response.text
 
 
 @pytest.mark.anyio

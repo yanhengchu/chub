@@ -101,6 +101,29 @@ def test_runtime_task_stored_digest_includes_implementation_id() -> None:
     assert _digest_stored_spec(spec) == spec.spec_sha256
 
 
+def test_worker_protocol_v14_discards_retired_task_state_namespaces(settings) -> None:
+    """The retired translation protocol must never be reopened by a new Worker."""
+    assert PROTOCOL_VERSION == 14
+    assert worker_tasks_dir(settings, PROTOCOL_VERSION).name == "tasks-v14"
+    assert worker_tombstones_dir(settings, PROTOCOL_VERSION).name == "tombstones-v14"
+    assert worker_leases_dir(settings, PROTOCOL_VERSION).name == "session-leases-v14"
+
+
+def test_runtime_submission_rejects_retired_translation_task_kind() -> None:
+    with pytest.raises(ValidationError, match="task_kind"):
+        RuntimeTaskSubmission(
+            task_id=new_worker_task_id(),
+            runtime_id="codex",
+            implementation_id="codex-runtime-dev",
+            session_id="quick-session",
+            workspace_id="chub",
+            prompt="hello",
+            permission_profile="full-access",
+            timeout_seconds=60,
+            task_kind="translation",
+        )
+
+
 async def _wait_for_status(
     settings,
     task_id: str,
@@ -150,9 +173,6 @@ async def _submit_codex(
     prompt: str = "isolated Codex task",
     timeout_seconds: float = 5.0,
     task_kind: str = "standard",
-    queue_key: str | None = None,
-    queue_limit: int | None = None,
-    queue_wait_seconds: float | None = None,
 ) -> dict[str, object]:
     return await _request(
         settings,
@@ -170,9 +190,6 @@ async def _submit_codex(
             "reasoning_effort": None,
             "timeout_seconds": timeout_seconds,
             "task_kind": task_kind,
-            "queue_key": queue_key,
-            "queue_limit": queue_limit,
-            "queue_wait_seconds": queue_wait_seconds,
         },
     )
 
@@ -1006,9 +1023,6 @@ async def test_worker_persists_restart_sensitive_through_final_state(
                 "timeout_seconds": 5,
                 "task_kind": "standard",
                 "restart_sensitive": True,
-                "queue_key": None,
-                "queue_limit": None,
-                "queue_wait_seconds": None,
             },
         )
         assert submitted["success"] is True
@@ -2030,414 +2044,6 @@ async def test_codex_first_turn_persists_native_id_and_resume_uses_it(
             assert state["native_session_id"] == native_id
             assert completion["native_session_id"] == native_id
         assert list((worker_leases_dir(settings, PROTOCOL_VERSION)).iterdir()) == []
-    finally:
-        await server.close()
-
-
-@pytest.mark.anyio
-async def test_translation_queue_is_fifo_and_uses_latest_native_session(
-    settings,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    native_id = "019ffb1c-b704-72e1-9a12-ae38aa6e572a"
-    monkeypatch.setenv("FAKE_CODEX_SESSION_ID", native_id)
-    monkeypatch.setenv("FAKE_CODEX_DELAY", "0.15")
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    codex_home = tmp_path / "codex-home"
-    _set_native_archive_state(codex_home, native_id, archived=False)
-    server = QuickWorkerServer(
-        settings,
-        allow_test_tasks=True,
-        codex_workspaces={"isolated": workspace},
-        codex_executable=_fake_codex(tmp_path),
-        codex_home=codex_home,
-    )
-    await server.start()
-    first_id = new_worker_task_id()
-    second_id = new_worker_task_id()
-    try:
-        first = await _submit_codex(
-            settings,
-            task_id=first_id,
-            session_id="translation-session",
-            prompt="first",
-            task_kind="translation",
-            queue_key="translation-queue",
-            queue_limit=2,
-            queue_wait_seconds=5,
-        )
-        second = await _submit_codex(
-            settings,
-            task_id=second_id,
-            session_id="translation-session",
-            prompt="second",
-            task_kind="translation",
-            queue_key="translation-queue",
-            queue_limit=2,
-            queue_wait_seconds=5,
-        )
-        assert first["success"] is True
-        assert second["success"] is True
-        queued = await _request(settings, "task_get", task_id=second_id)
-        assert queued["data"]["task"]["status"] == "queued"
-
-        created = await _wait_for_status(settings, first_id, {"succeeded"})
-        resumed = await _wait_for_status(settings, second_id, {"succeeded"})
-
-        assert created["result"] == f"created:{native_id}:first"
-        assert resumed["result"] == f"resumed:{native_id}:second"
-        assert resumed["native_session_id"] == native_id
-    finally:
-        await server.close()
-
-
-@pytest.mark.anyio
-async def test_runtime_maintenance_rejects_a_queued_target_task(
-    settings,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    codex_home = tmp_path / "codex-home"
-    server = QuickWorkerServer(
-        settings,
-        codex_workspaces={"isolated": workspace},
-        codex_executable=_fake_codex(tmp_path),
-        codex_home=codex_home,
-    )
-    release_supervisor = asyncio.Event()
-
-    async def keep_task_queued(_task_id: str) -> None:
-        await release_supervisor.wait()
-
-    monkeypatch.setattr(server.task_manager, "_launch_and_monitor", keep_task_queued)
-    await server.start()
-    task_id = new_worker_task_id()
-    try:
-        submitted = await _submit_codex(
-            settings,
-            task_id=task_id,
-            session_id="maintenance-translation-session",
-            prompt="queued",
-            task_kind="translation",
-            queue_key="maintenance-translation-queue",
-            queue_limit=1,
-            queue_wait_seconds=5,
-        )
-        assert submitted["success"] is True
-        queued = await _request(settings, "task_get", task_id=task_id)
-        assert queued["data"]["task"]["status"] == "queued"
-
-        refreshed = await _request(
-            settings,
-            "runtime_registry_refresh",
-            implementation_id="codex-runtime-dev",
-            expected_present=True,
-        )
-
-        assert refreshed["success"] is False
-        assert refreshed["error"]["code"] == "runtime_implementation_busy"
-        still_queued = await _request(settings, "task_get", task_id=task_id)
-        assert still_queued["data"]["task"]["status"] == "queued"
-    finally:
-        release_supervisor.set()
-        await server.close()
-
-
-@pytest.mark.anyio
-async def test_worker_drain_waits_for_accepted_translation_queue(
-    settings,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    native_id = "13131313-1313-4313-8313-131313131313"
-    monkeypatch.setenv("FAKE_CODEX_SESSION_ID", native_id)
-    monkeypatch.setenv("FAKE_CODEX_DELAY", "0.15")
-    monkeypatch.setattr(quick_worker, "write_operation", lambda **_fields: None)
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    codex_home = tmp_path / "codex-home"
-    _set_native_archive_state(codex_home, native_id, archived=False)
-    server = QuickWorkerServer(
-        settings,
-        codex_workspaces={"isolated": workspace},
-        codex_executable=_fake_codex(tmp_path),
-        codex_home=codex_home,
-    )
-    await server.start()
-    first_id = new_worker_task_id()
-    second_id = new_worker_task_id()
-    operation_id = f"worker-drain:{uuid.uuid4().hex}"
-    try:
-        for task_id, prompt in ((first_id, "first"), (second_id, "second")):
-            submitted = await _submit_codex(
-                settings,
-                task_id=task_id,
-                session_id="drain-translation-session",
-                prompt=prompt,
-                task_kind="translation",
-                queue_key="drain-translation-queue",
-                queue_limit=2,
-                queue_wait_seconds=5,
-            )
-            assert submitted["success"] is True
-        queued = await _request(settings, "task_get", task_id=second_id)
-        assert queued["data"]["task"]["status"] == "queued"
-        assert queued["data"]["task"]["execution_id"] is None
-
-        drain = await _request(
-            settings,
-            "drain",
-            operation_id=operation_id,
-        )
-        health = await read_health(settings)
-        assert drain["success"] is True
-        assert health["data"]["queued_tasks"] == 1
-        assert health["data"]["drain_complete"] is False
-
-        await _wait_for_status(settings, first_id, {"succeeded"})
-        second = await _wait_for_status(settings, second_id, {"succeeded"})
-        assert second["execution_id"] is not None
-
-        deadline = asyncio.get_running_loop().time() + 2.0
-        while asyncio.get_running_loop().time() < deadline:
-            health = await read_health(settings)
-            if health["data"]["drain_complete"] is True:
-                break
-            await asyncio.sleep(0.02)
-        else:
-            raise AssertionError("Worker did not drain its translation queue")
-        assert health["data"]["active_tasks"] == 0
-        assert health["data"]["queued_tasks"] == 0
-    finally:
-        await server.close()
-
-
-@pytest.mark.anyio
-async def test_worker_reload_cancels_queued_and_stops_running_tasks(
-    settings,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    native_id = "14141414-1414-4414-8414-141414141414"
-    monkeypatch.setenv("FAKE_CODEX_SESSION_ID", native_id)
-    monkeypatch.setenv("FAKE_CODEX_DELAY", "0.5")
-    monkeypatch.setattr(quick_worker, "write_operation", lambda **_fields: None)
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    codex_home = tmp_path / "codex-home"
-    _set_native_archive_state(codex_home, native_id, archived=False)
-    server = QuickWorkerServer(
-        settings,
-        codex_workspaces={"isolated": workspace},
-        codex_executable=_fake_codex(tmp_path),
-        codex_home=codex_home,
-    )
-    await server.start()
-    first_id = new_worker_task_id()
-    second_id = new_worker_task_id()
-    operation_id = f"worker-reload:{uuid.uuid4().hex}"
-    try:
-        for task_id, prompt in ((first_id, "first"), (second_id, "second")):
-            submitted = await _submit_codex(
-                settings,
-                task_id=task_id,
-                session_id="reload-translation-session",
-                prompt=prompt,
-                task_kind="translation",
-                queue_key="reload-translation-queue",
-                queue_limit=2,
-                queue_wait_seconds=5,
-            )
-            assert submitted["success"] is True
-        queued = await _request(settings, "task_get", task_id=second_id)
-        assert queued["data"]["task"]["status"] == "queued"
-
-        drained = await quick_worker.request_drain(
-            settings,
-            operation_id=operation_id,
-            wait_seconds=2,
-        )
-        assert drained["success"] is True
-        first = await _request(settings, "task_get", task_id=first_id)
-        second = await _request(settings, "task_get", task_id=second_id)
-        health = await read_health(settings)
-
-        assert first["data"]["task"]["status"] == "failed"
-        assert first["data"]["task"]["error_code"] == "worker_restarted"
-        assert second["data"]["task"]["status"] == "cancelled"
-        assert second["data"]["task"]["error_code"] == "worker_restarted"
-        assert health["data"]["active_tasks"] == 0
-        assert health["data"]["queued_tasks"] == 0
-    finally:
-        await server.close()
-
-
-@pytest.mark.anyio
-async def test_translation_queue_replaces_archived_native_session(
-    settings,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    archived_id = "019ffb1c-b704-72e1-9a12-ae38aa6e572a"
-    replacement_id = "019ffb1c-b704-72e1-9a12-ae38aa6e572b"
-    monkeypatch.setenv("FAKE_CODEX_SESSION_ID", replacement_id)
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    codex_home = tmp_path / "codex-home"
-    _set_native_archive_state(codex_home, archived_id, archived=True)
-    server = QuickWorkerServer(
-        settings,
-        allow_test_tasks=True,
-        codex_workspaces={"isolated": workspace},
-        codex_executable=_fake_codex(tmp_path),
-        codex_home=codex_home,
-    )
-    await server.start()
-    task_id = new_worker_task_id()
-    try:
-        submitted = await _submit_codex(
-            settings,
-            task_id=task_id,
-            session_id="translation-session",
-            native_session_id=archived_id,
-            prompt="replace archived",
-            task_kind="translation",
-            queue_key="translation-queue",
-            queue_limit=2,
-            queue_wait_seconds=5,
-        )
-        assert submitted["success"] is True
-
-        completed = await _wait_for_status(settings, task_id, {"succeeded"})
-
-        assert completed["native_session_id"] == replacement_id
-        assert completed["result"] == f"created:{replacement_id}:replace archived"
-        state = json.loads(
-            (worker_tasks_dir(settings, PROTOCOL_VERSION) / task_id / "state.json").read_text(
-                encoding="utf-8"
-            )
-        )
-        assert state["expected_native_session_id"] is None
-    finally:
-        await server.close()
-
-
-@pytest.mark.anyio
-async def test_translation_queue_new_session_starts_new_native_session(
-    settings,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    native_id = "019ffb1c-b704-72e1-9a12-ae38aa6e572a"
-    monkeypatch.setenv("FAKE_CODEX_SESSION_ID", native_id)
-    monkeypatch.setenv("FAKE_CODEX_DELAY", "0.15")
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    server = QuickWorkerServer(
-        settings,
-        allow_test_tasks=True,
-        codex_workspaces={"isolated": workspace},
-        codex_executable=_fake_codex(tmp_path),
-        codex_home=tmp_path / "codex-home",
-    )
-    await server.start()
-    old_id = new_worker_task_id()
-    new_id = new_worker_task_id()
-    try:
-        old_submission = await _submit_codex(
-            settings,
-            task_id=old_id,
-            session_id="old-translation-session",
-            prompt="old generation",
-            task_kind="translation",
-            queue_key="translation-queue",
-            queue_limit=2,
-            queue_wait_seconds=5,
-        )
-        assert old_submission["success"] is True
-        new_submission = await _submit_codex(
-            settings,
-            task_id=new_id,
-            session_id="new-translation-session",
-            prompt="new generation",
-            task_kind="translation",
-            queue_key="translation-queue",
-            queue_limit=2,
-            queue_wait_seconds=5,
-        )
-        assert new_submission["success"] is True
-        queued = await _request(settings, "task_get", task_id=new_id)
-        assert queued["data"]["task"]["status"] == "queued"
-
-        old_task = await _wait_for_status(settings, old_id, {"succeeded"})
-        new_task = await _wait_for_status(settings, new_id, {"succeeded"})
-
-        assert old_task["result"] == f"created:{native_id}:old generation"
-        assert new_task["result"] == f"created:{native_id}:new generation"
-        state = json.loads(
-            (
-                worker_tasks_dir(settings, PROTOCOL_VERSION) / new_id / "state.json"
-            ).read_text(encoding="utf-8")
-        )
-        assert state["expected_native_session_id"] is None
-    finally:
-        await server.close()
-
-
-@pytest.mark.anyio
-async def test_translation_queue_capacity_and_wait_deadline_fail_closed(
-    settings,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv(
-        "FAKE_CODEX_SESSION_ID", "019ffb1c-b704-72e1-9a12-ae38aa6e572a"
-    )
-    monkeypatch.setenv("FAKE_CODEX_DELAY", "0.3")
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    server = QuickWorkerServer(
-        settings,
-        allow_test_tasks=True,
-        codex_workspaces={"isolated": workspace},
-        codex_executable=_fake_codex(tmp_path),
-        codex_home=tmp_path / "codex-home",
-    )
-    await server.start()
-    first_id = new_worker_task_id()
-    timed_id = new_worker_task_id()
-    rejected_id = new_worker_task_id()
-    try:
-        for task_id, wait_seconds in ((first_id, 5), (timed_id, 0.1)):
-            response = await _submit_codex(
-                settings,
-                task_id=task_id,
-                session_id="translation-session",
-                task_kind="translation",
-                queue_key="translation-queue",
-                queue_limit=2,
-                queue_wait_seconds=wait_seconds,
-            )
-            assert response["success"] is True
-        rejected = await _submit_codex(
-            settings,
-            task_id=rejected_id,
-            session_id="translation-session",
-            task_kind="translation",
-            queue_key="translation-queue",
-            queue_limit=2,
-            queue_wait_seconds=5,
-        )
-        assert rejected["success"] is False
-        assert rejected["error"]["code"] == "worker_queue_capacity_reached"
-
-        timed = await _wait_for_status(settings, timed_id, {"timed_out"})
-        assert timed["error_code"] == "queue_deadline_exceeded"
-        await _wait_for_status(settings, first_id, {"succeeded"})
     finally:
         await server.close()
 

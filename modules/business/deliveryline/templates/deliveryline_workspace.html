@@ -1,0 +1,60 @@
+          <section class="workspace-preview-work-surface workspace-deliveryline" aria-labelledby="workspace-deliveryline-title">
+            <header class="workspace-project-documents-heading workspace-preview-work-section">
+              <div>
+                <p class="section-kicker">Business</p>
+                <h2 id="workspace-deliveryline-title">Deliveryline</h2>
+                <p>从原始资料澄清整体目标，拆分并推进当前交付项。</p>
+              </div>
+            </header>
+            <section class="deliveryline-preview workspace-preview-work-section deliveryline-workbench-preview" aria-label="Deliveryline 工作台" data-deliveryline-enabled="{{ 'true' if workspace_module_state.status == 'enabled' else 'false' }}">
+              <section class="workspace-preview-summary deliveryline-workbench-summary" aria-label="交付线概览">
+                <article class="is-action"><span>待澄清</span><strong>0</strong><small>等待 AI 与维护者完成整体澄清</small></article>
+                <article class="is-active"><span>规划中</span><strong>0</strong><small>整体目标已确认，等待交付项规划</small></article>
+                <article class="is-risk"><span>变更评估中</span><strong>0</strong><small>需要评估整体目标变化的影响</small></article>
+                <article class="is-complete"><span>已结束</span><strong>0</strong><small>已完成或停止的交付线</small></article>
+              </section>
+              <section class="deliveryline-workbench-section" aria-labelledby="deliveryline-preview-queue-title">
+                <header class="deliveryline-preview-section-heading"><div><h3 id="deliveryline-preview-queue-title">交付线列表</h3><p>每条导入资料先形成待澄清的交付线；确认整体目标后再拆分交付项。</p></div><button id="deliveryline-create" class="button-secondary" type="button"{% if workspace_module_state.status != 'enabled' %} disabled{% endif %}>新建交付线</button></header>
+                {% if workspace_module_error %}<p class="message message-error">{{ workspace_module_error }}</p>{% else %}
+                <div id="deliveryline-active-list" class="deliveryline-workbench-list"{% if not workspace_module_records %} hidden{% endif %}>{% for item in workspace_module_records %}<button class="deliveryline-requirement-row{% if loop.first %} is-selected{% endif %}" type="button" data-deliveryline-select="{{ item.id }}"><span><strong>{% if item.title %}{{ item.title }} · {{ item.id }}{% else %}未命名交付线 · {{ item.id }}{% endif %}</strong><small>{% if item.status == '待澄清' %}等待整体澄清{% else %}整体目标已确认{% endif %}</small></span><span class="badge badge-timeout">{{ item.status }}</span></button>{% endfor %}</div>
+                <p id="deliveryline-active-empty" class="empty-state"{% if workspace_module_records %} hidden{% endif %}>尚无交付线。输入原始资料后先进行整体需求澄清。</p>{% endif %}
+              </section>
+              <section id="deliveryline-ended-section" class="deliveryline-workbench-section" aria-labelledby="deliveryline-archived-title"{% if not workspace_module_archived_records %} hidden{% endif %}>
+                <header class="deliveryline-preview-section-heading"><div><h3 id="deliveryline-archived-title">已结束交付线</h3><p>保留的资料与活动记录</p></div></header>
+                <div id="deliveryline-ended-list" class="deliveryline-workbench-list">{% for item in workspace_module_archived_records %}<button class="deliveryline-requirement-row" type="button" data-deliveryline-select="{{ item.id }}"><span><strong>{% if item.title %}{{ item.title }} · {{ item.id }}{% else %}未命名交付线 · {{ item.id }}{% endif %}</strong><small>已结束</small></span><span class="badge badge-success">已结束</span></button>{% endfor %}</div>
+              </section>
+              <section class="deliveryline-detail-preview" aria-labelledby="deliveryline-preview-detail-title">
+                <header class="deliveryline-preview-section-heading"><div><h3 id="deliveryline-preview-detail-title">交付线详情</h3><p>先澄清并确认整体目标；确认后才出现交付项。</p></div><div class="deliveryline-detail-actions"><button id="deliveryline-ai-clarify" class="button-secondary" type="button" disabled>AI 整体澄清</button><button id="deliveryline-end" class="button-danger" type="button" disabled>结束交付线</button><button id="deliveryline-delete" class="button-danger" type="button" disabled>删除</button></div></header>
+                <div id="deliveryline-detail" class="deliveryline-detail-preview-content"{% if not workspace_module_records %} hidden{% endif %}></div>
+              </section>
+              {% if workspace_module_state.status != 'enabled' %}<p class="workstation-status-detail workstation-status-detail-warning">{{ workspace_module_state.detail }}</p>{% endif %}
+              <dialog id="deliveryline-editor" class="codex-workspace-dialog deliveryline-editor-dialog" aria-labelledby="deliveryline-editor-title" aria-describedby="deliveryline-editor-description">
+                <form id="deliveryline-editor-form" class="codex-workspace-dialog-surface deliveryline-editor-form">
+                  <div class="codex-workspace-dialog-header">
+                    <h3 id="deliveryline-editor-title">新建交付线</h3>
+                    <button class="button-link codex-workspace-dialog-close" type="button" data-deliveryline-close>关闭</button>
+                  </div>
+                  <p id="deliveryline-editor-description" class="deliveryline-editor-description">将原始资料作为一条待澄清交付线入库；可输入一句话、链接或混合内容。</p>
+                  <div class="deliveryline-editor-field deliveryline-editor-create-field" data-deliveryline-create-field>
+                    <label for="deliveryline-create-description">原始资料</label>
+                    <textarea id="deliveryline-create-description" aria-label="原始资料" maxlength="4000" placeholder="输入一句需求描述、链接或其他原始资料"></textarea>
+                  </div>
+                  <p id="deliveryline-editor-feedback" class="message" aria-live="polite" hidden></p>
+                  <div class="dialog-actions"><button class="button-link" type="button" data-deliveryline-close>取消</button><button id="deliveryline-editor-submit" class="button-secondary" type="submit">创建</button></div>
+                </form>
+              </dialog>
+              <dialog id="deliveryline-goal-confirmation" class="codex-workspace-dialog deliveryline-editor-dialog" aria-labelledby="deliveryline-goal-confirmation-title">
+                <form id="deliveryline-goal-confirmation-form" class="codex-workspace-dialog-surface deliveryline-editor-form">
+                  <div class="codex-workspace-dialog-header"><h3 id="deliveryline-goal-confirmation-title">确认整体目标</h3><button class="button-link codex-workspace-dialog-close" type="button" data-deliveryline-goal-close>关闭</button></div>
+                  <label class="deliveryline-editor-field deliveryline-editor-field-wide"><span>交付线标题</span><input name="title" maxlength="120" required></label>
+                  <label class="deliveryline-editor-field deliveryline-editor-field-wide"><span>资料定位</span><select name="source_role"><option>相对完整需求</option><option>持续演进需求</option><option>设计提案</option><option>现状说明</option><option>混合资料</option></select></label>
+                  <label class="deliveryline-editor-field deliveryline-editor-field-wide"><span>整体目标</span><textarea name="overall_goal" maxlength="4000" required></textarea></label>
+                  <label class="deliveryline-editor-field deliveryline-editor-field-wide"><span>已确认事实（每行一项）</span><textarea name="confirmed_facts" maxlength="12000"></textarea></label>
+                  <label class="deliveryline-editor-field deliveryline-editor-field-wide"><span>范围与边界</span><textarea name="scope_boundary" maxlength="4000"></textarea></label>
+                  <label class="deliveryline-editor-field deliveryline-editor-field-wide"><span>仍待确认事项（每行一项）</span><textarea name="open_questions" maxlength="12000"></textarea></label>
+                  <p id="deliveryline-goal-confirmation-feedback" class="message" aria-live="polite" hidden></p>
+                  <div class="dialog-actions"><button class="button-link" type="button" data-deliveryline-goal-close>取消</button><button class="button-secondary" type="submit">确认整体目标</button></div>
+                </form>
+              </dialog>
+            </section>
+          </section>

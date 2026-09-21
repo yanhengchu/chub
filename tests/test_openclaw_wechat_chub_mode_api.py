@@ -253,7 +253,7 @@ async def test_upgrade_allows_weixin_read_only_commands(
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("content", ["new", "model use M1", "text mode auto", "codex auth switch", "run tests"])
+@pytest.mark.parametrize("content", ["new", "model use M1", "codex auth switch", "run tests"])
 async def test_upgrade_blocks_weixin_runtime_writes(
     settings: Settings,
     content: str,

@@ -81,7 +81,7 @@ def test_codex_retry_submits_latest_busy_task_to_current_session(
     assert manager._state.pending_retry is None
 
 
-def test_busy_direct_task_marks_orchestration_request_rejected(
+def test_busy_direct_task_records_retry_without_retired_orchestration_state(
     settings: Settings,
 ) -> None:
     manager, _codex_manager, quick_interactions = configured_manager(settings)
@@ -97,15 +97,9 @@ def test_busy_direct_task_marks_orchestration_request_rejected(
         delivery_route=delivery_route(),
     )
 
-    request = next(
-        item
-        for item in manager._state.orchestration_requests
-        if item.message_id == "busy-orchestration-state"
-    )
-    assert request.status == "rejected"
-    assert request.checkpoint == "dispatch.rejected_busy"
-    assert request.task_id is None
     assert manager._state.pending_retry is not None
+    assert manager._state.pending_retry.prompt == "等待重试的直接任务"
+    quick_interactions.submit.assert_not_called()
 
 
 @pytest.mark.parametrize(

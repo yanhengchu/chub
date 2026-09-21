@@ -1,20 +1,10 @@
 "use strict";
 
-const CATEGORY_FILTER_KEY = "hub.projectDocumentCategoryFilter";
-const STATUS_FILTER_KEY = "hub.projectDocumentStatusFilter";
 const DISPLAY_FILTER_KEY = "hub.projectDocumentDisplayFilter";
 const list = document.querySelector("#document-list");
 const message = document.querySelector("#document-list-message");
 const filterEmpty = document.querySelector("#document-filter-empty");
-const categoryFilters = document.querySelectorAll("[data-document-category-filter]");
-const statusFilters = document.querySelectorAll("[data-document-status-filter]");
 const displayFilters = document.querySelectorAll("[data-document-display-filter]");
-const coreDocumentStatuses = new Set(
-  Array.from(statusFilters, (button) => button.dataset.documentStatusFilter)
-    .filter((status) => !["all", "other"].includes(status)),
-);
-let activeCategoryFilter = sessionStorage.getItem(CATEGORY_FILTER_KEY) || "all";
-let activeStatusFilter = sessionStorage.getItem(STATUS_FILTER_KEY) || "all";
 let activeDisplayFilter = sessionStorage.getItem(DISPLAY_FILTER_KEY) || "all";
 
 function showMessage(text, kind = "") {
@@ -26,12 +16,6 @@ function showMessage(text, kind = "") {
 }
 
 function applyFilters() {
-  categoryFilters.forEach((button) => {
-    button.classList.toggle("is-active", button.dataset.documentCategoryFilter === activeCategoryFilter);
-  });
-  statusFilters.forEach((button) => {
-    button.classList.toggle("is-active", button.dataset.documentStatusFilter === activeStatusFilter);
-  });
   displayFilters.forEach((button) => {
     button.classList.toggle("is-active", button.dataset.documentDisplayFilter === activeDisplayFilter);
   });
@@ -39,23 +23,15 @@ function applyFilters() {
   let visibleCount = 0;
   cards.forEach((card) => {
     const archived = card.dataset.archived === "true";
-    const categoryMatches = activeCategoryFilter === "all" || card.dataset.category === activeCategoryFilter;
-    const statusMatches = activeStatusFilter === "all"
-      ? true
-      : activeStatusFilter === "hidden"
-        ? archived
-        : activeStatusFilter === "other"
-          ? !coreDocumentStatuses.has(card.dataset.status)
-          : card.dataset.status === activeStatusFilter;
     const displayMatches = activeDisplayFilter === "all"
       ? true
       : activeDisplayFilter === "visible"
         ? !archived
         : archived;
-    card.hidden = !categoryMatches || !statusMatches || !displayMatches;
+    card.hidden = !displayMatches;
     if (!card.hidden) visibleCount += 1;
   });
-  list.querySelectorAll("[data-document-category-group]").forEach((group) => {
+  list.querySelectorAll("[data-document-topic-group]").forEach((group) => {
     group.hidden = !Array.from(group.querySelectorAll(".design-document-item"))
       .some((card) => !card.hidden);
   });
@@ -121,22 +97,6 @@ async function updateArchiveState(button) {
   });
 }
 
-categoryFilters.forEach((button) => {
-  button.addEventListener("click", () => {
-    activeCategoryFilter = button.dataset.documentCategoryFilter;
-    sessionStorage.setItem(CATEGORY_FILTER_KEY, activeCategoryFilter);
-    applyFilters();
-  });
-});
-
-statusFilters.forEach((button) => {
-  button.addEventListener("click", () => {
-    activeStatusFilter = button.dataset.documentStatusFilter;
-    sessionStorage.setItem(STATUS_FILTER_KEY, activeStatusFilter);
-    applyFilters();
-  });
-});
-
 displayFilters.forEach((button) => {
   button.addEventListener("click", () => {
     activeDisplayFilter = button.dataset.documentDisplayFilter;
@@ -152,12 +112,6 @@ list.addEventListener("click", (event) => {
   }
 });
 
-if (!Array.from(categoryFilters).some((button) => button.dataset.documentCategoryFilter === activeCategoryFilter)) {
-  activeCategoryFilter = "all";
-}
-if (!Array.from(statusFilters).some((button) => button.dataset.documentStatusFilter === activeStatusFilter)) {
-  activeStatusFilter = "all";
-}
 if (!Array.from(displayFilters).some((button) => button.dataset.documentDisplayFilter === activeDisplayFilter)) {
   activeDisplayFilter = "all";
 }

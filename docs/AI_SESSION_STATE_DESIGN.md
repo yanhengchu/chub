@@ -31,7 +31,7 @@ Session Manager 是上述 Session Store、Native 映射和认领记录的唯一 
 4. 绑定成功后写入 Native ID 与兼容组。后续任务使用同一 Native ID 调用 Runtime 的 `resume`；默认实现、模型或其他 Session 的变化不得改投已绑定 Session。
 5. Native ID 冲突、过期结果、无法确认的结果或 Store 写入失败均不得改写映射。任务终态会释放未完成的认领。
 
-内部翻译使用独立工作区和固定用途的 Session。它不进入用户 Session 列表或微信槽位；只有确认旧 Native writer 已释放时，才允许其在同一逻辑 Session 内轮换 Native ID。
+固定用途的内部能力可以使用独立工作区和专用 Session。它不进入用户 Session 列表或微信槽位；其 Native writer 和轮换规则必须由对应专项设计定义。
 
 ## 状态与使用投影
 
@@ -63,7 +63,7 @@ Runtime discovery 返回独立的只读 Native Session 列表。已绑定 Chub S
 
 对于未关联项，页面只可持有后端签发的短期不透明引用执行归档或删除。同一原生项在有效期内复用引用，服务端只保留固定数量的未过期引用。执行时服务端必须重新发现该项，确认仍未关联并复核 writer；任一条件不满足时失败关闭，页面在成功或失败后刷新列表。Native 操作成功只代表 Runtime 原生状态，Chub 不会因此创建、删除或改写其他 Session。
 
-每次实际读取 Native Session 列表都直接调用 Runtime discovery；页面不将 Native 列表写入会话缓存，因为列表反映当前原生来源和短期操作引用。发现到的未关联项只提供标题、工作目录、创建/更新时间和可操作状态。发现不创建或认领 Chub Session，也不覆盖已绑定 Chub Session 的权限、模型或推理等级；这些字段即使存在于 Runtime 通用元数据，也只有明确的产品用途才能被消费。翻译工作目录中的内部 Native Session 默认不进入工作台列表；维护者可在“微信任务润色”中开启显示，仅改变列表投影，不改变任务、Session 或原生状态。
+每次实际读取 Native Session 列表都直接调用 Runtime discovery；页面不将 Native 列表写入会话缓存，因为列表反映当前原生来源和短期操作引用。发现到的未关联项只提供标题、工作目录、创建/更新时间和可操作状态。发现不创建或认领 Chub Session，也不覆盖已绑定 Chub Session 的权限、模型或推理等级；这些字段即使存在于 Runtime 通用元数据，也只有明确的产品用途才能被消费。内部 Native Session 默认不进入工作台列表；是否展示由对应内部能力的当前专项设计决定，仅改变列表投影，不改变任务、Session 或原生状态。
 
 Native discovery 采用逐项尽力读取：一个原生项或标题辅助信息不可读时，其他可读项继续返回，下一次刷新直接重试原生来源。发现刷新不清空 Chub Session、不阻塞 Quick Worker 或无关能力。已绑定 Chub Session 的 Native 项本次缺席或不可读只表示未知：保留映射、已保存工作目录和任务历史，后续提交仍由 Runtime 直接尝试 `resume` 并按 writer/执行终态收敛。只有原生状态库明确归档，或完整发现与可用状态库共同确认该 ID 已删除时，发现才同步清理 Chub Session；清理先移除已结束的 Quick Worker 任务记录并释放已关联微信槽位，任一环节无法确认则保留 Session。不完整发现绝不从“未发现”推断删除。
 

@@ -7,11 +7,6 @@
       "path": "runtime/codex-runtime"
     },
     {
-      "module_id": "weixin-refinement",
-      "module_type": "orchestration",
-      "path": "orchestration/weixin-refinement"
-    },
-    {
       "module_id": "deliveryline",
       "module_type": "business",
       "path": "business/deliveryline"

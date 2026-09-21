@@ -40,6 +40,7 @@ from app.ai_session.operations import (
 )
 from app.ai_runtime.development_plugins import development_runtime_artifact_id
 from app.core.response import ApiError, ApiResponse
+from app.core.business_modules import loaded_business_modules
 from app.core.security import require_trusted_network
 from app.services.operation_log import log_operation, write_operation
 from app.web.routes import WEB_DIR
@@ -87,6 +88,24 @@ def _session_creation_request_id(value: str | None) -> str | None:
     return value
 
 
+def _task_request_id(value: str | None) -> str:
+    try:
+        parsed = UUID(value or "")
+    except (ValueError, AttributeError) as exc:
+        raise ApiError(
+            422,
+            "quick_interaction_request_id_invalid",
+            "任务请求标识无效，请关闭当前页面后重新提交。",
+        ) from exc
+    if str(parsed) != value:
+        raise ApiError(
+            422,
+            "quick_interaction_request_id_invalid",
+            "任务请求标识无效，请关闭当前页面后重新提交。",
+        )
+    return value
+
+
 def _session_creation_request_fingerprint(payload: SessionCreateRequest) -> str:
     request_data = {
         "workspace_id": payload.workspace_id,
@@ -124,15 +143,7 @@ def list_sessions(
     native_sessions: list[NativeSessionInfo] = []
     default_runtime_id: str | None = None
     if runtime_registered:
-        try:
-            show_internal_native_session = (
-                request.app.state.weixin_translation.status().show_internal_native_session
-            )
-        except OSError:
-            show_internal_native_session = False
-        combined_sessions = manager.list_sessions_with_native_sessions(
-            include_internal_translation_native_sessions=show_internal_native_session,
-        )
+        combined_sessions = manager.list_sessions_with_native_sessions()
         if (
             isinstance(combined_sessions, tuple)
             and len(combined_sessions) == 2
@@ -143,16 +154,10 @@ def list_sessions(
             listed_sessions, native_sessions = combined_sessions
         else:
             listed_sessions = manager.list_sessions()
-    deliveryline_collaboration = getattr(
-        request.app.state,
-        "deliveryline_collaboration",
-        None,
-    )
-    hidden_deliveryline_session_ids = (
-        deliveryline_collaboration.hidden_session_ids()
-        if deliveryline_collaboration is not None
-        else set()
-    )
+    hidden_business_session_ids: set[str] = set()
+    for module in loaded_business_modules(request):
+        if module.hidden_session_ids is not None:
+            hidden_business_session_ids.update(module.hidden_session_ids(request))
     ai_search = getattr(request.app.state, "ai_search", None)
     hidden_search_session_ids = (
         ai_search.hidden_session_ids()
@@ -181,8 +186,7 @@ def list_sessions(
             }
         )
         for session in listed_sessions
-        if session.workspace_id != "weixin-translation"
-        and session.id not in hidden_deliveryline_session_ids
+        if session.id not in hidden_business_session_ids
         and session.id not in hidden_search_session_ids
         and session.id not in hidden_release_note_session_ids
     ]
@@ -281,7 +285,6 @@ def update_default_runtime_implementation(
         payload.implementation_id,
         runtime_id=runtime_id,
     )
-    request.app.state.weixin_translation.reconcile_execution_settings()
     return ApiResponse(
         data=data
     )
@@ -301,8 +304,6 @@ def update_runtime_enablement(
             runtime_id,
             payload.enabled,
         )
-        if payload.enabled:
-            request.app.state.weixin_translation.reconcile_execution_settings()
     except Exception:
         log_operation(
             request,
@@ -524,24 +525,23 @@ async def submit_quick_interaction(
     session_id: str,
     payload: QuickInteractionRequest,
     request: Request,
+    request_id_header: str | None = Header(default=None, alias="X-Chub-Task-Request-Id"),
 ) -> ApiResponse[QuickInteractionData]:
     operation_id = uuid4().hex
     source_ip = request.client.host if request.client else "unknown"
+    request_id = _task_request_id(request_id_header)
     try:
-        quick_interactions = request.app.state.quick_interactions
         manager = request.app.state.ai_session_manager
         manager.require_session_access(session_id)
 
         def submit_interaction():
-            with quick_interactions.session_operation_guard(session_id):
-                session = manager.get_session(session_id)
-
-                return quick_interactions.submit(
-                    session_id,
-                    payload.prompt,
-                    operation_id=operation_id,
-                    source_ip=source_ip,
-                )
+            return request.app.state.task_orchestrator.submit_web(
+                session_id=session_id,
+                prompt=payload.prompt,
+                request_id=request_id,
+                operation_id=operation_id,
+                source_ip=source_ip,
+            )
 
         task = await asyncio.to_thread(submit_interaction)
     except ApiError:

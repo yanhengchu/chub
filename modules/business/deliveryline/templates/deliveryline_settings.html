@@ -1,0 +1,16 @@
+<section class="workspace-preview-panel workspace-workstation" aria-label="{{ settings_module.name }}">
+  <section class="workstation-group">
+    <div data-plugin-status-target="{{ settings_module.module_id }}" class="workstation-status-list" aria-live="polite">
+      <section class="workstation-status-row">
+        <div class="workstation-status-copy">
+          <strong>当前使用版本</strong>
+          <span class="workstation-status-detail">用于之后新建的交付线操作；仅显示已导入且可用的版本。</span>
+        </div>
+        <div class="workstation-status-actions deliveryline-version-actions">
+          <select data-plugin-version-picker="{{ settings_module.module_id }}" data-settings-picker aria-label="当前使用版本" disabled></select>
+        </div>
+      </section>
+    </div>
+    <p id="{{ settings_module.module_id }}-settings-message" class="message" role="status" aria-live="polite"></p>
+  </section>
+</section>

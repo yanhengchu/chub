@@ -136,7 +136,12 @@ def test_retired_or_non_exact_status_prompt_is_submitted_as_normal_task(
 def test_dispatch_persists_pass_decision_across_mode_change(
     settings: Settings,
 ) -> None:
-    manager = WeixinChubModeManager(settings, MagicMock(), MagicMock())
+    manager = WeixinChubModeManager(
+        settings,
+        MagicMock(),
+        MagicMock(),
+        task_orchestrator=MagicMock(),
+    )
 
     first = manager.dispatch(
         message_id="dispatch-pass-1",

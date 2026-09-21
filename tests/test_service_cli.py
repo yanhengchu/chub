@@ -10,14 +10,12 @@ import socket
 import stat
 import subprocess
 import threading
-from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
 
 from app.quick_worker import PROTOCOL_VERSION
-from app.services.system_upgrade import SystemUpgradeOperation, runtime_recovery_plan
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +25,7 @@ WORKER_RELOAD = PROJECT_ROOT / "scripts" / "maintenance" / "chub-worker-reload"
 SYSTEM_RECOVERY = (
     PROJECT_ROOT / "scripts" / "maintenance" / "chub-system-recovery-reset"
 )
+WORKSTATION_REBUILD = PROJECT_ROOT / "scripts" / "maintenance" / "chub-workstation-rebuild"
 
 
 @pytest.fixture
@@ -224,42 +223,15 @@ def test_web_restart_uses_atomic_service_manager_restart(
     assert "quick-worker" not in manager_calls
 
 
-@pytest.mark.parametrize("platform", ["Darwin", "Linux"])
-def test_upgrade_logs_uses_the_platform_log_source(
+def test_legacy_upgrade_command_is_not_available(
     service_env: tuple[dict[str, str], Path],
-    platform: str,
 ) -> None:
     env, calls = service_env
-    env["CHUB_TEST_PLATFORM"] = platform
-    if platform == "Darwin":
-        log_dir = Path(env["CHUB_SERVICE_LOG_DIR"])
-        log_dir.mkdir()
-        (log_dir / "system-upgrade.out.log").write_text(
-            "upgrade log entry\n", encoding="utf-8"
-        )
-        process = subprocess.Popen(
-            ["bash", env["CHUB_TEST_SCRIPT"], "upgrade", "logs"],
-            cwd=Path(env["CHUB_TEST_ROOT"]),
-            env=env,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
-        )
-        try:
-            assert process.stdout is not None
-            assert process.stdout.readline().strip() == "upgrade log entry"
-        finally:
-            os.killpg(process.pid, signal.SIGTERM)
-            process.wait(timeout=5)
-        assert not calls.exists() or "journalctl" not in calls.read_text(encoding="utf-8")
-        return
-
     result = run_chub("upgrade", env, "logs")
-    assert result.returncode == 0, result.stderr
-    assert "journalctl --user -u chub-system-upgrade.service -n 100 -f" in (
-        calls.read_text(encoding="utf-8")
-    )
+
+    assert result.returncode == 1
+    assert "chub: unknown command: upgrade" in result.stderr
+    assert not calls.exists()
 
 
 def test_web_restart_is_deferred_inside_quick_interaction(
@@ -963,7 +935,7 @@ def test_help_and_unknown_command(service_env: tuple[dict[str, str], Path]) -> N
     assert "check" in help_result.stdout
     assert "worker <health|drain|reload|recover|start|stop|status|logs>" in help_result.stdout
     assert "reload cancels queued and running Worker tasks" in help_result.stdout
-    assert "upgrade <service|logs>" in help_result.stdout
+    assert "upgrade <service|logs>" not in help_result.stdout
     assert "version, --version" in help_result.stdout
     assert "chrome supervisor reconcile [--restart]" in help_result.stdout
     assert "capability <page-read|page-interact> ..." in help_result.stdout
@@ -1045,7 +1017,7 @@ def test_version_reports_configured_version_and_platform(
     result = run_chub("--version", env)
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "Chub v0.1.0 · macos"
+    assert result.stdout.strip() == "Chub v1.0.1 · macos"
 
 
 def test_status_accepts_only_verbose_option(
@@ -1071,7 +1043,7 @@ def test_status_reports_concise_component_summary(
     assert "Chub Web · service unknown · health " in result.stdout
     assert "Quick Worker · service unknown · unavailable" in result.stdout
     assert "Debug Chrome Supervisor · not-managed" in result.stdout
-    assert "System upgrade executor · missing" in result.stdout
+    assert "System upgrade executor" not in result.stdout
 
 
 def test_check_is_read_only_and_returns_failure_when_system_is_unhealthy(
@@ -1157,15 +1129,15 @@ def test_maintenance_service_adapters_delegate_platform_manager() -> None:
         assert "systemctl" not in content
 
 
-def test_recovery_reset_requires_explicit_force_without_touching_services(
+def test_workstation_rebuild_requires_explicit_force_without_touching_services(
     service_env: tuple[dict[str, str], Path],
 ) -> None:
     env, calls = service_env
 
-    result = run_chub("recovery", env, "reset")
+    result = run_chub("workstation", env, "rebuild")
 
     assert result.returncode == 1
-    assert "usage: chub recovery reset --force" in result.stderr
+    assert "usage: chub workstation rebuild --force" in result.stderr
     assert not calls.exists()
 
 
@@ -1227,28 +1199,30 @@ def test_macos_recovery_reset_stops_fixed_jobs_without_definitions(
     assert "com.chub.quick-worker" in manager_calls
 
 
-def test_recovery_reset_bypasses_upgrade_state_but_keeps_fixed_boundaries() -> None:
+def test_workstation_rebuild_uses_the_fixed_rebuild_executor() -> None:
     cli = CHUB.read_text(encoding="utf-8")
-    start = cli.index("force_runtime_recovery() {")
+    start = cli.index("rebuild_workstation() {")
     end = cli.index("install_command()", start)
     recovery_body = cli[start:end]
-    script = SYSTEM_RECOVERY.read_text(encoding="utf-8")
+    script = WORKSTATION_REBUILD.read_text(encoding="utf-8")
 
     assert "require_system_upgrade_idle" not in recovery_body
-    assert "require_worker_idle_for_maintenance" not in recovery_body
-    assert "check_project" in recovery_body
-    assert "check_recovery_project" not in recovery_body
-    assert "recovery reset must be run from a local terminal" in recovery_body
+    assert "workstation rebuild must be run from a local terminal" in recovery_body
+    assert "app.services.workstation_rebuild" in recovery_body
+    assert "configure_logging(load_settings().logs)" in recovery_body
     assert "recovery-core-stop" in script
     assert "app.system_recovery_cli force-reset" in script
+    assert "bootstrap-default-runtime" in script
+    assert "runtime-implementations" in script
     assert "chrome-supervisor-reconcile --restart" in script
     assert "chub-web-restart" in script
     assert "launchctl" not in script
     assert "systemctl" not in script
+    assert "mark_executor_started" in (PROJECT_ROOT / "app" / "workstation_rebuild_cli.py").read_text(encoding="utf-8")
 
 
-def test_recovery_reset_builds_a_valid_health_url() -> None:
-    script = SYSTEM_RECOVERY.read_text(encoding="utf-8")
+def test_workstation_rebuild_builds_a_valid_health_url() -> None:
+    script = WORKSTATION_REBUILD.read_text(encoding="utf-8")
 
     assert 'PY\n    )"' in script
     assert 'PY\n    ))"' not in script
@@ -1269,50 +1243,6 @@ def test_system_upgrade_start_reconciles_the_current_oneshot_definition() -> Non
     assert "launchctl bootout" in start_body
     assert "launchctl bootstrap" in start_body
     assert "systemctl --user daemon-reload" in start_body
-
-
-def test_macos_upgrade_recovery_does_not_reload_an_active_executor(
-    service_env: tuple[dict[str, str], Path],
-) -> None:
-    env, calls = service_env
-    env["CHUB_TEST_PLATFORM"] = "Darwin"
-    env["CHUB_TEST_LAUNCHCTL_PRINT"] = "running"
-    state_dir = Path(env["CHUB_TEST_ROOT"]).parent / "state"
-    state_dir.mkdir(mode=0o700)
-    loaded = runtime_recovery_plan()
-    now = datetime.now(UTC)
-    operation = SystemUpgradeOperation(
-        operation_id="a" * 32,
-        plan=loaded.plan,
-        fingerprint=loaded.fingerprint,
-        status="started",
-        stage="restarting_services",
-        source_ip="127.0.0.1",
-        old_instance_id="old-instance",
-        destructive_started=True,
-        restart_launch_state="launched",
-        message="正在重启 Chub Web 和 Quick Worker。",
-        requested_at=now,
-        updated_at=now,
-    )
-    state_path = state_dir / "system-upgrade.json"
-    state_path.write_text(operation.model_dump_json(), encoding="utf-8")
-    state_path.chmod(0o600)
-    launch_agents = Path(env["CHUB_LAUNCH_AGENTS_DIR"])
-    launch_agents.mkdir(mode=0o700)
-    (launch_agents / "com.chub.system-upgrade.plist").write_text(
-        "placeholder", encoding="utf-8"
-    )
-
-    result = run_chub("upgrade", env, "service")
-
-    assert result.returncode == 0, result.stderr
-    assert "already running" in result.stdout
-    manager_calls = calls.read_text(encoding="utf-8")
-    assert "launchctl print gui/" in manager_calls
-    assert "launchctl bootout" not in manager_calls
-    assert "launchctl bootstrap" not in manager_calls
-    assert "launchctl kickstart" not in manager_calls
 
 
 def test_macos_upgrade_start_reloads_an_inactive_oneshot_definition(

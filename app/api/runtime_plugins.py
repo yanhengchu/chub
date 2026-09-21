@@ -384,7 +384,6 @@ async def install_runtime_plugin_archive(
         _require_runtime_refresh_confirmation(refreshed, expected_present=True)
         generation = await _confirm_worker_runtime(request, implementation_id, expected_present=True)
         manager.runtime_plugin_service.finalize(activation)
-        request.app.state.weixin_translation.reconcile_execution_settings()
         log_operation(request, action="install_runtime_plugin", status="succeeded", target=implementation_id, operation_id=operation_id)
         return RuntimePluginInstallData(module_id=implementation_id, worker_generation=generation)
     except RuntimePluginInstallError as exc:
@@ -470,7 +469,6 @@ async def refresh_development_runtime_plugin(
             implementation_id,
             expected_present=True,
         )
-        request.app.state.weixin_translation.reconcile_execution_settings()
         log_operation(
             request,
             action="refresh_development_runtime_plugin",

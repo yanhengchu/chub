@@ -172,76 +172,6 @@ class OpenClawCompletionNotifier:
             message_factory=lambda: self._messages_for(task),
         )
 
-    def notify_weixin_optimized_task(
-        self,
-        route: QuickInteractionWeixinRoute,
-        *,
-        outcome: Literal["started", "not_submitted", "failed"],
-        target_session_id: str | None,
-        task: str | None = None,
-        english: str | None = None,
-        error: str | None = None,
-    ) -> CompletionNotificationResult:
-        if not self.config.enabled:
-            return CompletionNotificationResult("skipped", "微信完成通知未启用。")
-
-        target = self._weixin_target_session_line(target_session_id)
-        if outcome == "started":
-            heading = "Started"
-            paragraphs = [target]
-            if task:
-                paragraphs.append(f"Submitted:\n{task.strip()}")
-            if english:
-                paragraphs.append(f"English:\n{english.strip()}")
-        elif outcome == "not_submitted":
-            heading = "Not submitted"
-            paragraphs = [target, error or "The task was not executed."]
-            if task:
-                paragraphs.append(f"Task:\n{task.strip()}")
-        else:
-            heading = "Optimization failed"
-            paragraphs = [target, "The original task was not executed."]
-            if error:
-                paragraphs.append(f"Reason:\n{error.strip()}")
-        return self._send_messages(
-            required_account_id=route.account_id,
-            recipient=route.recipient,
-            messages=[],
-            require_unique=True,
-            unavailable_status="failed",
-            message_factory=lambda: self._bounded_messages(
-                heading,
-                "\n\n".join(paragraphs),
-            ),
-        )
-
-    def notify_weixin_translation_confirmation(
-        self,
-        route: QuickInteractionWeixinRoute,
-        *,
-        target_session_id: str | None,
-        task: str,
-        english: str,
-    ) -> CompletionNotificationResult:
-        if not self.config.enabled:
-            return CompletionNotificationResult("skipped", "微信完成通知未启用。")
-        body = "\n\n".join(
-            (
-                self._weixin_target_session_line(target_session_id),
-                f"Polished:\n{task.strip()}",
-                f"English:\n{english.strip()}",
-                "Please confirm.",
-            )
-        )
-        return self._send_messages(
-            required_account_id=route.account_id,
-            recipient=route.recipient,
-            messages=[],
-            require_unique=True,
-            unavailable_status="failed",
-            message_factory=lambda: self._bounded_messages("Translation ready", body),
-        )
-
     def _weixin_target_session_line(
         self,
         session_id: str | None,
@@ -421,17 +351,6 @@ class OpenClawCompletionNotifier:
         *,
         footer: str | None = None,
     ) -> list[str]:
-        if task.kind == "translation":
-            content = task.result if task.status == "succeeded" else task.error
-            result = (content or "未返回结果。").strip()
-            if task.status == "succeeded":
-                original = (task.translation_original or "").strip()
-                content = f"原文：\n{original}\n\n{result}"
-                return self._bounded_messages("文本优化与翻译", content)
-            return self._bounded_messages(
-                "文本优化与翻译失败",
-                result,
-            )
         heading = {
             "succeeded": "Done",
             "failed": "Failed",
@@ -486,7 +405,7 @@ class OpenClawCompletionNotifier:
         return messages
 
     def _completion_usage_footer(self, task: QuickInteractionTask) -> str | None:
-        if task.kind == "translation" or task.status != "succeeded":
+        if task.status != "succeeded":
             return None
         if self.completion_usage_reader is None:
             return COMPLETION_USAGE_UNAVAILABLE

@@ -172,8 +172,6 @@ class QuickInteractionManager:
         self.deferred_restart = deferred_restart
         self.timeout_seconds = timeout_seconds
         self.worker_settings = worker_settings
-        self._translation_queue_limit = 10
-        self._translation_queue_wait_seconds = 1800
         self._lock = threading.RLock()
         self._deferred_restart_transition_lock = threading.RLock()
         self._tasks: dict[str, QuickInteractionTask] = {}
@@ -392,12 +390,6 @@ class QuickInteractionManager:
                 continue
             if task.worker_task_id is None:
                 continue
-            if task.kind == "translation":
-                # Translation tasks are serialized by the Worker queue and
-                # bind their internal Native Session without this one-task
-                # claim. Restoring a claim for every queued translation would
-                # incorrectly reject the later FIFO entries.
-                continue
             try:
                 # The Chub Session state is reloaded independently from the
                 # Web task list. Restore the durable claimant before worker
@@ -455,20 +447,15 @@ class QuickInteractionManager:
         operation_id: str,
         source_ip: str,
         notification_route: QuickInteractionWeixinRoute | None = None,
-        kind: str = "standard",
-        translation_original: str | None = None,
-        model: str | None = None,
-        reasoning_effort: str | None = None,
         implementation_id: str | None = None,
         suppress_completion_notification: bool = False,
         summary_max_chars: int = TASK_SUMMARY_MAX_LENGTH,
         summary_max_width: int | None = None,
     ) -> QuickInteractionTask:
         self._require_worker_recovery()
-        queued_translation = kind == "translation"
         with self._session_lock(session_id):
             session = self.ai_session_manager.get_session(session_id)
-            if session.status == "error" and not queued_translation:
+            if session.status == "error":
                 raise ApiError(
                     409,
                     "quick_interaction_session_error",
@@ -481,7 +468,7 @@ class QuickInteractionManager:
                     "快速交互不支持 Ask for approval，请选择只读、自动审核或完全访问权限。",
                 )
             with self._lock:
-                if self._any_running(session_id) and not queued_translation:
+                if self._any_running(session_id):
                     raise ApiError(
                         409,
                         "quick_interaction_in_progress",
@@ -497,8 +484,7 @@ class QuickInteractionManager:
                     "该 Chub Session 已绑定其他 Runtime 版本，请新建 Session 后再使用该版本。",
                 )
             if (
-                not queued_translation
-                and self.ai_session_manager.has_active_writer(
+                self.ai_session_manager.has_active_writer(
                     session.native_session_id,
                     implementation_id=selected_implementation_id,
                 )
@@ -525,13 +511,9 @@ class QuickInteractionManager:
                 and session.permission_mode != "read-only"
             )
             with self._lock:
-                if self._any_running(session_id) and not queued_translation:
+                if self._any_running(session_id):
                     raise ApiError(409, "quick_interaction_in_progress", "该会话已有快速交互任务正在执行。")
-                persisted_prompt = (
-                    translation_original
-                    if kind == "translation" and translation_original is not None
-                    else prompt
-                )
+                persisted_prompt = prompt
                 task = QuickInteractionTask(
                     id=str(uuid.uuid4()),
                     worker_task_id=new_worker_task_id(),
@@ -543,17 +525,10 @@ class QuickInteractionManager:
                         max_chars=summary_max_chars,
                         max_width=summary_max_width,
                     ),
-                    kind=kind,
-                    translation_original=translation_original,
-                    permission_mode=(
-                        "read-only" if kind == "translation" else session.permission_mode
-                    ),
-                    model=model if kind == "translation" else session.model,
-                    reasoning_effort=(
-                        reasoning_effort
-                        if kind == "translation"
-                        else session.reasoning_effort
-                    ),
+                    kind="standard",
+                    permission_mode=session.permission_mode,
+                    model=session.model,
+                    reasoning_effort=session.reasoning_effort,
                     restart_sensitive=restart_sensitive,
                     status="requested",
                     notification_status=(
@@ -563,9 +538,7 @@ class QuickInteractionManager:
                         else None
                     ),
                     notification_error=(
-                        "Completion is handled by the translation workflow."
-                        if suppress_completion_notification
-                        else (
+                        (
                             "页面任务结果仅在 Chub 快速交互页面展示。"
                             if notification_route is None
                             else None
@@ -611,11 +584,10 @@ class QuickInteractionManager:
             raise RuntimeError("Worker task identity is unavailable")
         self._log_status(task.id, "requested", session.id)
         try:
-            if not queued_translation:
-                self.ai_session_manager.register_quick_native_claim(
-                    session.id,
-                    task.worker_task_id,
-                )
+            self.ai_session_manager.register_quick_native_claim(
+                session.id,
+                task.worker_task_id,
+            )
             self._submit_worker_task(task, session, prompt)
         except _WorkerSubmissionUncertain as exc:
             with self._lock:
@@ -636,11 +608,10 @@ class QuickInteractionManager:
             # second task identity.
             return task
         except Exception as exc:
-            if not queued_translation:
-                self._clear_quick_native_claim_safely(
-                    session.id,
-                    task.worker_task_id,
-                )
+            self._clear_quick_native_claim_safely(
+                session.id,
+                task.worker_task_id,
+            )
             self._log_status(task.id, "failed", session.id)
             detail = self._worker_exception_detail(exc)
             with self._lock:
@@ -917,11 +888,8 @@ class QuickInteractionManager:
             try:
                 self._recovery_ready_handler()
             except Exception:
-                # Translation recovery is independent from the Worker-backed
-                # Chub Session contract. Its local failure must not block new
-                # Session writes after Worker reconciliation has succeeded.
                 LOGGER.warning(
-                    "Independent post-Worker recovery failed; Chub Session writes remain available",
+                    "Post-Worker recovery callback failed; Chub Session writes remain available",
                     exc_info=True,
                 )
         if self.deferred_restart is not None:
@@ -1128,22 +1096,15 @@ class QuickInteractionManager:
             raise OSError("Worker task Session is unavailable") from exc
         if snapshot.native_session_id and claim_restore_error is None:
             try:
-                if task.kind == "translation":
-                    self.ai_session_manager.bind_quick_interaction_native_session(
-                        task.session_id,
-                        snapshot.native_session_id,
-                        implementation_id=task.implementation_id,
-                    )
-                else:
-                    if snapshot.execution_id is None:
-                        raise OSError("Worker native Session is missing execution identity")
-                    self.ai_session_manager.bind_quick_interaction_native_session(
-                        task.session_id,
-                        snapshot.native_session_id,
-                        worker_task_id=worker_task_id,
-                        execution_id=snapshot.execution_id,
-                        implementation_id=task.implementation_id,
-                    )
+                if snapshot.execution_id is None:
+                    raise OSError("Worker native Session is missing execution identity")
+                self.ai_session_manager.bind_quick_interaction_native_session(
+                    task.session_id,
+                    snapshot.native_session_id,
+                    worker_task_id=worker_task_id,
+                    execution_id=snapshot.execution_id,
+                    implementation_id=task.implementation_id,
+                )
             except ApiError as exc:
                 if (
                     exc.code != "quick_interaction_native_session_conflict"
@@ -1535,7 +1496,6 @@ class QuickInteractionManager:
                 task.model_copy(deep=True)
                 for task in self._tasks.values()
                 if task.session_id == session_id
-                and task.kind == "standard"
                 and task.status in {"succeeded", "failed", "timed_out"}
             ]
         if not candidates:
@@ -1552,7 +1512,6 @@ class QuickInteractionManager:
                 task
                 for task in self._tasks.values()
                 if task.notification_route == "weixin-task"
-                and task.kind == "standard"
                 and self._notification_routes.get(task.id) == route
             ]
             return WeixinTaskStatusSnapshot(
@@ -1589,8 +1548,7 @@ class QuickInteractionManager:
                 (
                     task
                     for task in self._tasks.values()
-                    if task.kind == "standard"
-                    and task.status in {"requested", "running"}
+                    if task.status in {"requested", "running"}
                 ),
                 key=lambda task: (task.created_at, task.id),
             )
@@ -2152,22 +2110,15 @@ class QuickInteractionManager:
                         )
                         started_logged = True
                 if snapshot.native_session_id:
-                    if task.kind == "translation":
-                        self.ai_session_manager.bind_quick_interaction_native_session(
-                            session.id,
-                            snapshot.native_session_id,
-                            implementation_id=task.implementation_id,
-                        )
-                    else:
-                        if snapshot.execution_id is None:
-                            raise OSError("Worker native Session is missing execution identity")
-                        self.ai_session_manager.bind_quick_interaction_native_session(
-                            session.id,
-                            snapshot.native_session_id,
-                            worker_task_id=worker_task_id,
-                            execution_id=snapshot.execution_id,
-                            implementation_id=task.implementation_id,
-                        )
+                    if snapshot.execution_id is None:
+                        raise OSError("Worker native Session is missing execution identity")
+                    self.ai_session_manager.bind_quick_interaction_native_session(
+                        session.id,
+                        snapshot.native_session_id,
+                        worker_task_id=worker_task_id,
+                        execution_id=snapshot.execution_id,
+                        implementation_id=task.implementation_id,
+                    )
                 if snapshot.status in {"queued", "accepted", "starting", "running"}:
                     threading.Event().wait(0.1)
                     continue
@@ -2222,9 +2173,7 @@ class QuickInteractionManager:
         session: AiSession,
         prompt: str,
     ) -> RuntimeTaskSubmission:
-        task_kind = "translation" if task.kind == "translation" else (
-            "weixin" if task.notification_route == "weixin-task" else "standard"
-        )
+        task_kind = "weixin" if task.notification_route == "weixin-task" else "standard"
         worker_task_id = task.worker_task_id
         if worker_task_id is None:
             raise OSError("Worker task identity is unavailable")
@@ -2258,11 +2207,7 @@ class QuickInteractionManager:
             implementation_id=implementation_id,
             session_id=session.id,
             workspace_id=session.workspace_id,
-            prompt=(
-                prompt
-                if task.kind == "translation"
-                else self._execution_prompt(prompt)
-            ),
+            prompt=self._execution_prompt(prompt),
             permission_profile=permission_profile,
             native_session_id=session.native_session_id,
             model=model,
@@ -2270,13 +2215,6 @@ class QuickInteractionManager:
             timeout_seconds=self.timeout_seconds,
             task_kind=task_kind,
             restart_sensitive=task.restart_sensitive,
-            queue_key=("weixin-translation" if task.kind == "translation" else None),
-            queue_limit=(self._translation_queue_limit if task.kind == "translation" else None),
-            queue_wait_seconds=(
-                self._translation_queue_wait_seconds
-                if task.kind == "translation"
-                else None
-            ),
         )
 
     def _submit_worker_task(
@@ -2350,32 +2288,17 @@ class QuickInteractionManager:
     ) -> None:
         if snapshot.status == "succeeded":
             result = snapshot.result or "Runtime 未返回最终结果。"
-            if task.kind == "translation" and not self._valid_translation_result(result):
-                self._finish(
+            with self._deferred_restart_transition_lock:
+                result = self._register_worker_deferred_restart(
                     task_id,
-                    "failed",
-                    "Runtime 未返回有效的润色与英文翻译。",
-                    error_source="chub",
+                    task,
+                    result,
                 )
-            else:
-                if task.kind != "translation":
-                    with self._deferred_restart_transition_lock:
-                        result = self._register_worker_deferred_restart(
-                            task_id,
-                            task,
-                            result,
-                        )
-                        self._finish(task_id, "succeeded", result)
-                else:
-                    self._finish(task_id, "succeeded", result)
+                self._finish(task_id, "succeeded", result)
         elif snapshot.status == "cancelled":
             self._finish(task_id, "cancelled", "已由用户停止。")
         elif snapshot.status == "timed_out":
-            message = (
-                "翻译任务排队超时。"
-                if snapshot.error_code == "queue_deadline_exceeded"
-                else f"Runtime 已达到配置的执行上限（{self.timeout_seconds} 秒）。"
-            )
+            message = f"Runtime 已达到配置的执行上限（{self.timeout_seconds} 秒）。"
             self._finish(task_id, "timed_out", message)
         else:
             self._finish(
@@ -2444,10 +2367,6 @@ class QuickInteractionManager:
             DEFERRED_RESTART_RESULT_SUFFIX,
         )
 
-    def configure_translation_worker_queue(self, *, limit: int, wait_seconds: int) -> None:
-        self._translation_queue_limit = limit
-        self._translation_queue_wait_seconds = wait_seconds
-
     def _worker_call(
         self,
         action: str,
@@ -2509,19 +2428,6 @@ class QuickInteractionManager:
         return "快速交互"
 
     @staticmethod
-    def _valid_translation_result(result: str) -> bool:
-        match = re.fullmatch(
-            r"润色：\n(?P<polished>\S(?:.*\S)?)\n\nEnglish：\n(?P<english>\S(?:.*\S)?)",
-            result.strip(),
-            flags=re.DOTALL,
-        )
-        return bool(
-            match
-            and match.group("polished").strip()
-            and match.group("english").strip()
-        )
-
-    @staticmethod
     def _append_result_suffix(result: str, suffix: str) -> str:
         if result.rstrip().endswith(suffix):
             return result.rstrip()
@@ -2565,13 +2471,7 @@ class QuickInteractionManager:
                 self.completion_notifier is not None
                 and task.notification_status is None
                 and task.notification_route == "weixin-task"
-                and (
-                    status == "succeeded"
-                    or (
-                        task.kind != "translation"
-                        and status in {"failed", "timed_out"}
-                    )
-                )
+                and status in {"succeeded", "failed", "timed_out"}
             ):
                 task.notification_status = "pending"
                 task.notification_updated_at = task.updated_at
@@ -2746,24 +2646,6 @@ class QuickInteractionManager:
                     "Unable to persist quick interaction operation log projection",
                     exc_info=True,
                 )
-
-    def find_task_by_operation(
-        self,
-        operation_id: str,
-        *,
-        kind: str,
-    ) -> QuickInteractionTask | None:
-        with self._lock:
-            matches = [
-                self._tasks[task_id]
-                for task_id, context in self._operation_contexts.items()
-                if context.operation_id == operation_id
-                and task_id in self._tasks
-                and self._tasks[task_id].kind == kind
-            ]
-        if len(matches) > 1:
-            raise OSError("Quick interaction operation identity is ambiguous")
-        return matches[0].model_copy(deep=True) if matches else None
 
     def close(self) -> None:
         self._closed.set()

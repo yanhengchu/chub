@@ -3,7 +3,7 @@
 > 状态：已验收
 > 主要读者：AI Agent；维护者通过与 AI Agent 协作，理解并确认本文规则。
 > 本文负责：Chub 对 OpenClaw/微信 ClawBot 的最小定制范围、身份与路由边界、插件归属、第三方适配器兼容补丁、Context Token 持久化和验收规则。
-> 本文不负责：微信固定指令语法和用户可见回复格式（见[Chub 集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md)），微信任务编排插件模块的流程与切换（见[Chub 微信任务编排插件模块设计](WEIXIN_TASK_ORCHESTRATION_PLUGIN_DESIGN.md)），插件协议、构建和部署命令（见[Chub OpenClaw 插件说明](../integrations/openclaw/chub/README.md)），以及 OpenClaw 或腾讯微信插件自身的上游功能。
+> 本文不负责：微信固定指令语法和用户可见回复格式（见[Chub 集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md)），统一任务编排分发协议（见[Chub 任务编排插件模块架构设计](CHUB_TASK_ORCHESTRATION_PLUGIN_DESIGN.md)），插件协议、构建和部署命令（见[Chub OpenClaw 插件说明](../integrations/openclaw/chub/README.md)），以及 OpenClaw 或腾讯微信插件自身的上游功能。
 
 ## 0. 维护基线
 
@@ -36,7 +36,7 @@ Chub 对 OpenClaw 的定制只保留以下内容：
 | Chub 插件 | `0.1.1`，状态 `loaded` | 固定 dispatch 协议与微信任务路由保持可用 | 不因 OpenClaw 版本升级自动获得新的插件能力 |
 | OpenClaw/微信适配器 | `2026.8.1` / `2.4.8` | Gateway、微信通道、补丁状态和维护者消息发送验收；两类补丁均已通过精确版本、哈希和正反向 dry-run 检查 | 其他 OpenClaw 或微信插件版本、加载目录和未经重新校验的运行产物不推断兼容 |
 
-首页工作站环境负责 Gateway 启停、重启与恢复和微信绑定；设置页只通过受保护的只读集成状态展示微信适配器、Chub 插件和逐项补丁的版本及结论。设置页按 OpenClaw 的配置/状态目录规则读取 JSON5 配置及其单文件插件引用，并从状态目录的 SQLite 插件索引读取受控安装元数据；不调用 OpenClaw CLI，也不读取或展示 Gateway 状态。Gateway 运行状态只在首页工作站环境查看。默认位置跟随 Chub 进程可见的 `OPENCLAW_CONFIG_PATH`、`OPENCLAW_STATE_DIR`、`OPENCLAW_HOME` 和 `OPENCLAW_PROFILE`；Gateway 使用不同进程环境、profile 或自定义目录时，维护者必须同时在 `openclaw.integration_config_path` 与 `openclaw.integration_state_dir` 登记实际位置。补丁列表只表示当前已验收基线的清单登记，不能证明运行时文件内容或插件加载；后两者只在“重启与恢复”流程中按版本、完整性和锚点核验。该状态不得触发安装、同步、补丁应用或服务操作，也不得暴露运行目录、来源路径、完整性哈希或账号标识。
+OpenClaw 设置页是 Gateway 与微信 ClawBot 的唯一 Web 入口：读取 Gateway/消息通道实时状态，提供 Gateway 启动、重启与恢复和微信绑定，并展示微信适配器、Chub 插件和逐项补丁的版本及结论；首页工作站不读取或展示 OpenClaw 状态。设置页的集成状态按 OpenClaw 的配置/状态目录规则读取 JSON5 配置及其单文件插件引用，并从状态目录的 SQLite 插件索引读取受控安装元数据；它不调用 OpenClaw CLI。Gateway 实时状态、启动和重启与恢复只调用受保护的固定 OpenClaw API：操作完成后必须以 Gateway、消息通道和兼容基线的最终状态为准。默认位置跟随 Chub 进程可见的 `OPENCLAW_CONFIG_PATH`、`OPENCLAW_STATE_DIR`、`OPENCLAW_HOME` 和 `OPENCLAW_PROFILE`；Gateway 使用不同进程环境、profile 或自定义目录时，维护者必须同时在 `openclaw.integration_config_path` 与 `openclaw.integration_state_dir` 登记实际位置。补丁列表只表示当前已验收基线的清单登记，不能证明运行时文件内容或插件加载；后两者只在“重启与恢复”流程中按版本、完整性和锚点核验。页面不得触发任意安装、同步、补丁应用或服务操作，也不得暴露运行目录、来源路径、完整性哈希或账号标识。
 
 补丁索引以 [`integrations/openclaw/patches/manifest.json`](../integrations/openclaw/patches/manifest.json) 为唯一入口；每个 OpenClaw 版本在 `integrations/openclaw/patches/<版本>/` 下保存独立清单和补丁文件。索引只把 `validated` 基线交给 Chub 自动恢复；当前自动恢复目标为 `2026.8.1`。`candidate` 目录只记录尚未验收的上游版本和包完整性，绝不参与自动同步。补丁版本与 Chub 插件版本、微信适配器版本分别管理；每个补丁仍只对清单记录的目标包版本、包完整性和 OpenClaw 版本负责。版本、来源、补丁锚点或实际加载目录变化时，当前基线立即失效，必须按第 7 节重新检查。Chub 插件保持单一通用源码，只有其 Hook 或插件协议发生版本分歧时才另行建立版本专属源码，不为目录整齐复制插件。
 
@@ -146,9 +146,9 @@ Context Token 没有本文定义的 TTL 或刷新保证。约 10 分钟等本机
 
 Codex 认证切换是当前微信 Owner 可调用的固定维护能力，但不属于普通任务或 OpenClaw Agent Tool：Chub 只接受无参数的既定认证查询与“切到另一模式”请求，认证脚本、自动化锁、浏览器恢复和最终状态确认仍在 Chub 本机完成。首次回执与最终通知使用同一保存路由；不能确认当前认证方式、脚本仍在运行或最终认证检查失败时，不猜测目标、不重复执行且不宣称成功。
 
-文本优化失败时失败关闭：不得执行原文、重复提交或生成虚假的任务成功状态。自动润色和确认模式在原消息、固定目标和可信回送路由已持久化入队后即返回受理；隐藏翻译任务的 Worker 交接在后台进行，后续失败只发送一次对应失败通知。确认模式将译文、目标、可信回送路由、到期时间和确认结果持久化；译文通知成功送达前不解析 `text` 确认命令，确认只提交保存的润色中文。确认队列与单一翻译 FIFO 分离，翻译可以继续而确认按 FIFO 展示；已确认的忙目标仅对该目标重试，不改投、不回退原文。携带正文的 `S#` 槽位指令会先持久化完成固定切换；随后优化失败时保留该切换结果，但正文不得提交。语音必须使用可信来源标记和干净转写。
+微信专属文本优化、确认模式和其 FIFO 已退役。`text`、`text-check`（包括帮助及子命令）固定明确拒绝，绝不执行原文、创建确认项或重放旧状态。携带正文的 `S#` 槽位指令仍先由固定路由选择目标，再经统一任务编排分发器的空阶段链提交；语音必须使用可信来源标记和干净转写。
 
-微信任务编排只在 Chub 已完成上述入口校验和固定指令处理、且存在待执行任务正文时开始。可信语音转写与文字正文使用相同的规范化任务路径；来源类型不成为编排实现可伪造或自行解释的参数。没有任务正文的固定指令不创建编排请求；携带正文的 `S#` 指令先由 Chub 固定路由选择目标，再把正文和该目标的受限授权上下文交给当前编排实现。续提和确认只恢复已有请求，不能另建请求或替代提交。
+微信任务编排只在 Chub 已完成上述入口校验和固定指令处理、且存在待执行任务正文时开始。可信语音转写与文字正文使用相同的规范化任务路径；来源类型不成为编排实现可伪造或自行解释的参数。没有任务正文的固定指令不创建编排请求；携带正文的 `S#` 指令先由 Chub 固定路由选择目标，再把正文和该目标的受限授权上下文交给统一分发器。续提只恢复已有请求，不能另建请求或替代提交。
 
 日志、响应、测试和文档不得包含 Token、Authorization、访问票据、完整账号、完整收件人或完整消息正文。
 
@@ -232,4 +232,4 @@ Chub 插件升级只从 `integrations/openclaw/chub/` 构建并安装；插件�
 - [Chub OpenClaw 插件说明](../integrations/openclaw/chub/README.md)：插件源码、构建、安装、部署和协议升级操作手册。
 - [Chub 总体架构](CHUB_ARCHITECTURE_DESIGN.md)：系统边界和状态所有权。
 - [Chub Quick Worker 设计](CHUB_QUICK_WORKER_DESIGN.md)：任务执行、恢复、通知终态和重启协调。
-- [Chub 微信任务编排插件模块设计](WEIXIN_TASK_ORCHESTRATION_PLUGIN_DESIGN.md)：微信任务编排插件的流程与切换边界。
+- [Chub 任务编排插件模块架构设计](CHUB_TASK_ORCHESTRATION_PLUGIN_DESIGN.md)：Web/微信普通任务的统一分发边界和未来阶段插件协议。

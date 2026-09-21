@@ -13,6 +13,7 @@ from app.ai_session.api_models import (
 from app.ai_interactions.models import (
     QuickInteractionWeixinRoute,
 )
+from app.ai_interactions.task_orchestration import TaskOrchestrationDispatcher
 from app.ai_session.models import (
     utc_now,
 )
@@ -75,7 +76,7 @@ def configured_manager(
     ai_session_manager.session_implementation_id.return_value = "codex-runtime-dev"
     ai_session_manager.runtime_settings_store.read_general.return_value = SimpleNamespace(
         default_runtime_id="codex",
-        model="translation-model",
+        model="runtime-model",
         reasoning_effort="medium",
     )
     ai_session_manager.workspaces.return_value = [
@@ -104,13 +105,21 @@ def configured_manager(
         pending_notification_count=0,
         failed_notification_count=0,
     )
-    quick_interactions.submit.return_value = SimpleNamespace(id="task-1")
+    quick_interactions.submit.return_value = SimpleNamespace(
+        id="task-1",
+        status="requested",
+    )
+    task_orchestrator = TaskOrchestrationDispatcher(
+        settings.openclaw.weixin_chub_mode.state_file,
+        quick_interactions,
+    )
     manager = WeixinChubModeManager(
         settings,
         ai_session_manager,
         quick_interactions,
         MagicMock(return_value=None),
         codex_command_parser=lambda: parse_weixin_command,
+        task_orchestrator=task_orchestrator,
     )
     manager.session_archiver = MagicMock()
     manager.session_deleter = MagicMock()

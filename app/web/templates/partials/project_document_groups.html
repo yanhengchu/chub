@@ -1,0 +1,17 @@
+{% for group_id, group_label, group_description, group_categories in document_groups %}
+{% set group_documents = documents | selectattr('group', 'equalto', group_id) | list %}
+{% if group_documents %}
+<section class="project-document-topic-group" data-document-topic-group="{{ group_id }}" aria-labelledby="document-topic-{{ project_document_variant }}-{{ group_id }}">
+      <header class="project-document-topic-group-heading"><h3 id="document-topic-{{ project_document_variant }}-{{ group_id }}">{{ group_label }}</h3><p>{{ group_description }}</p></header>
+      <div class="{% if project_document_variant == 'home' %}workspace-project-document-list{% else %}project-document-list{% endif %}">
+        {% for document in group_documents %}
+        {% if project_document_variant == 'home' %}
+        <a class="workspace-project-document" href="/project-docs/{{ document.id }}"><span class="workspace-project-document-copy"><span class="workspace-project-document-title-line"><strong>{{ document.title }}</strong><time datetime="{{ document.updated_at.isoformat() }}">{{ document.updated_at.strftime('%Y-%m-%d') }}</time></span><small>{{ document.summary }}</small></span><span class="workspace-project-document-meta"><span class="workspace-project-document-badges"><span class="badge badge-success">{{ document.status }}</span></span></span></a>
+        {% else %}
+        <article class="design-document-item" data-archived="{{ 'true' if document.archived else 'false' }}" data-category="{{ document.category }}" data-status="{{ document.status }}"><a class="design-document-main" href="/project-docs/{{ document.id }}"><span class="design-document-copy"><span class="design-document-title-line"><strong>{{ document.title }}</strong><time datetime="{{ document.updated_at.isoformat() }}">{{ document.updated_at.strftime('%Y-%m-%d') }}</time></span><span class="design-document-summary">{{ document.summary }}</span></span></a><div class="design-document-footer"><span class="design-document-badges"><span class="badge badge-success">{{ document.status }}</span>{% if document.archived %}<span class="badge badge-muted document-archived-badge">已隐藏</span>{% endif %}</span><button class="button-secondary document-archive-action" type="button" data-document-id="{{ document.id }}" data-archived="{{ 'true' if document.archived else 'false' }}" aria-haspopup="dialog" aria-controls="confirmation-dialog">{{ '显示' if document.archived else '隐藏' }}</button></div></article>
+        {% endif %}
+        {% endfor %}
+      </div>
+    </section>
+{% endif %}
+{% endfor %}

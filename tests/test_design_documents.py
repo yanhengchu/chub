@@ -22,6 +22,7 @@ def configure_document(monkeypatch, root: Path, content: str) -> None:
                         "summary": "测试摘要",
                         "status": "调研中",
                         "category": "delivery_requirement",
+                        "group": "ai-runtime",
                         "path": "design.md",
                     }
                 ],
@@ -73,6 +74,7 @@ def test_registered_markdown_links_use_project_document_routes(
                         "summary": "来源文档",
                         "status": "持续维护",
                         "category": "project_baseline",
+                        "group": "project-core-documents",
                         "path": "source.md",
                     },
                     {
@@ -81,6 +83,7 @@ def test_registered_markdown_links_use_project_document_routes(
                         "summary": "目标文档",
                         "status": "持续维护",
                         "category": "project_baseline",
+                        "group": "project-core-documents",
                         "path": "target.md",
                     },
                 ],
@@ -212,6 +215,7 @@ def test_design_document_index_is_reloaded(monkeypatch, tmp_path: Path) -> None:
                         "summary": "刷新后可见",
                         "status": "调研中",
                         "category": "delivery_requirement",
+                        "group": "ai-runtime",
                         "path": "new.md",
                     }
                 ],
@@ -261,6 +265,7 @@ def test_design_document_index_rejects_unsafe_path(
                         "summary": "不应读取",
                         "status": "调研中",
                         "category": "delivery_requirement",
+                        "group": "ai-runtime",
                         "path": "../outside.md",
                     }
                 ],
@@ -326,13 +331,30 @@ def test_registered_project_documents_exist() -> None:
     )
 
 
-def test_design_document_index_rejects_missing_or_unknown_category(
+def test_design_document_index_rejects_missing_or_unknown_category_or_group(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     configure_document(monkeypatch, tmp_path, "# 测试内容")
     payload = json.loads(service.DOCUMENTS_INDEX.read_text(encoding="utf-8"))
     payload["documents"][0].pop("category")
+    service.DOCUMENTS_INDEX.write_text(
+        json.dumps(payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    assert service.list_design_documents() == []
+
+    payload["documents"][0]["category"] = "delivery_requirement"
+    payload["documents"][0].pop("group")
+    service.DOCUMENTS_INDEX.write_text(
+        json.dumps(payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    assert service.list_design_documents() == []
+
+    payload["documents"][0]["group"] = "custom_group"
     service.DOCUMENTS_INDEX.write_text(
         json.dumps(payload, ensure_ascii=False),
         encoding="utf-8",
@@ -349,7 +371,7 @@ def test_design_document_index_rejects_missing_or_unknown_category(
     assert service.list_design_documents() == []
 
 
-def test_home_documents_group_by_category_and_limit_each_group() -> None:
+def test_home_documents_group_by_topic_and_limit_each_group() -> None:
     now = datetime(2026, 8, 18, 12, 0)
     documents = [
         service.DesignDocumentView(
@@ -360,6 +382,8 @@ def test_home_documents_group_by_category_and_limit_each_group() -> None:
             updated_at=now - timedelta(days=10),
             category="project_baseline",
             category_label="项目基线",
+            group="project-core-documents",
+            group_label="项目核心文档",
         ),
         service.DesignDocumentView(
             id="chub-architecture",
@@ -369,6 +393,8 @@ def test_home_documents_group_by_category_and_limit_each_group() -> None:
             updated_at=now - timedelta(days=5),
             category="project_baseline",
             category_label="项目基线",
+            group="project-core-documents",
+            group_label="项目核心文档",
         ),
         *[
             service.DesignDocumentView(
@@ -379,6 +405,8 @@ def test_home_documents_group_by_category_and_limit_each_group() -> None:
                 updated_at=now - timedelta(hours=index),
                 category="delivery_requirement",
                 category_label="专项需求与设计",
+                group="ai-runtime",
+                group_label="AI Runtime",
             )
             for index in range(1, 10)
         ],
@@ -392,6 +420,8 @@ def test_home_documents_group_by_category_and_limit_each_group() -> None:
         "design-1",
         "design-2",
         "design-3",
+        "design-4",
+        "design-5",
     ]
 
 
@@ -406,6 +436,8 @@ def test_home_documents_do_not_restore_hidden_core_document() -> None:
             updated_at=now - timedelta(days=5),
             category="project_baseline",
             category_label="项目基线",
+            group="project-core-documents",
+            group_label="项目核心文档",
         ),
         *[
             service.DesignDocumentView(
@@ -416,6 +448,8 @@ def test_home_documents_do_not_restore_hidden_core_document() -> None:
                 updated_at=now - timedelta(hours=index),
                 category="delivery_requirement",
                 category_label="专项需求与设计",
+                group="ai-runtime",
+                group_label="AI Runtime",
             )
             for index in range(1, 11)
         ],
@@ -428,4 +462,6 @@ def test_home_documents_do_not_restore_hidden_core_document() -> None:
         "design-1",
         "design-2",
         "design-3",
+        "design-4",
+        "design-5",
     ]

@@ -16,6 +16,9 @@ from app.core.build_info import SESSION_SCHEMA_VERSION, WEB_CODE_VERSION
 from app.core.config import Settings, load_settings
 from app.quick_worker import PROTOCOL_VERSION
 from app.services.openclaw import OpenClawManager
+from app.services.openclaw_weixin_chub_models import WeixinChubModeState
+from app.services.default_runtime_bootstrap import initialize_default_runtime
+from app.services.workstation_rebuild import WorkstationRebuildCoordinator
 from app.services.system_upgrade import (
     SystemUpgradeCoordinator,
     SystemUpgradeSession,
@@ -891,11 +894,10 @@ def test_force_recovery_discards_chub_owned_rebuildable_state(
     settings.automations.runtime_dir = tmp_path / "automation-runtime"
     settings.ai_runtime.modules.install_dir = tmp_path / "runtime-modules"
     settings.business_modules.install_dir = tmp_path / "business-modules"
-    settings.business_modules.state_file = tmp_path / "business-state/deliveryline.json"
-    settings.business_modules.deliveryline_state_dir = tmp_path / "deliveryline-state"
+    settings.business_modules.state_file = tmp_path / "business-state/plugin-lifecycle.json"
     settings.deployment_package.state_file = tmp_path / "deployment-state.json"
     settings.deployment_package.artifacts_dir = tmp_path / "release-artifacts"
-    plugin_lifecycle = settings.business_modules.state_file.with_name("plugin-lifecycle.json")
+    plugin_lifecycle = settings.business_modules.state_file
 
     removable_directories = (
         state_dir,
@@ -904,7 +906,6 @@ def test_force_recovery_discards_chub_owned_rebuildable_state(
         settings.automations.artifacts_dir,
         settings.ai_runtime.modules.install_dir,
         settings.business_modules.install_dir,
-        settings.business_modules.deliveryline_state_dir,
         settings.deployment_package.artifacts_dir,
         settings.automations.runtime_dir / "locks",
     )
@@ -940,6 +941,75 @@ def test_force_recovery_discards_chub_owned_rebuildable_state(
     assert all(not path.exists() for path in removable_directories)
     assert all(not path.exists() for path in retired_ai_runtime_directories(retired_root))
     assert preserved_file.read_text(encoding="utf-8") == "keep"
+
+
+def test_force_recovery_discards_weixin_task_projections_but_keeps_mode_configuration(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    settings.ai_runtime.shared.state_dir = tmp_path / "ai-runtime-state"
+    state_path = settings.openclaw.weixin_chub_mode.state_file
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "configuration": {"enabled": True, "workspace_id": "home"},
+                "session_id": "old-session",
+                "session_slots": [{"slot": 1, "session_id": "old-session"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    state_path.chmod(0o600)
+
+    with patch("app.system_recovery_cli.load_settings", return_value=settings):
+        force_reset_runtime_state()
+
+    recovered = WeixinChubModeState.model_validate_json(state_path.read_bytes())
+    assert recovered.configuration.enabled is True
+    assert recovered.configuration.workspace_id == "home"
+    assert recovered.session_id is None
+    assert recovered.session_slots == []
+    assert recovered.submissions == []
+    assert recovered.pending_retry is None
+
+
+def test_rebuild_bootstrap_imports_and_enables_only_current_default_runtime(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, bool]] = []
+
+    class DefaultRuntimeManager:
+        def __init__(self, _settings: Settings) -> None:
+            pass
+
+        def default_submission_implementation_id(self) -> str:
+            return "codex-runtime-dev"
+
+        def development_runtime_implementation_ids(self) -> tuple[str, ...]:
+            return ("codex-runtime-dev",)
+
+        def update_runtime_implementation_enabled(
+            self, implementation_id: str, enabled: bool
+        ) -> None:
+            calls.append((implementation_id, enabled))
+
+    monkeypatch.setattr(
+        "app.services.default_runtime_bootstrap.AiSessionManager",
+        DefaultRuntimeManager,
+    )
+
+    implementation_id = initialize_default_runtime(settings)
+
+    lifecycle_path = settings.business_modules.state_file
+    assert implementation_id == "codex-runtime-dev"
+    assert calls == [("codex-runtime-dev", True)]
+    assert json.loads(lifecycle_path.read_text(encoding="utf-8")) == {
+        "imports": {"runtime": ["development:codex-runtime-dev"]},
+        "enabled": {"runtime": ["development:codex-runtime-dev"]},
+        "metadata": {},
+    }
 
 
 def test_force_recovery_uses_default_when_local_configuration_is_invalid(
@@ -1703,23 +1773,28 @@ def test_system_upgrade_runner_uses_current_fixed_runtime_recovery_plan() -> Non
     assert "loaded.fingerprint != state.fingerprint" in application[start:end]
 
 
-def test_weixin_system_upgrade_uses_application_upgrade_coordinator(
+def test_weixin_rebuild_uses_application_workstation_rebuild_coordinator(
     settings: Settings,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings.openclaw.weixin_chub_mode.enabled = True
+    rebuild = WorkstationRebuildCoordinator(tmp_path / "workstation-rebuild.json")
+    maintenance = MagicMock()
+    monkeypatch.setattr(
+        "app.application.WorkstationRebuildCoordinator",
+        lambda: rebuild,
+    )
+    monkeypatch.setattr(
+        "app.application.WorkstationRebuildMaintenanceUseCase",
+        lambda: maintenance,
+    )
     app = create_app(settings)
-    plan_path = tmp_path / "system-upgrade.json"
-    write_plan(plan_path)
-    app.state.system_upgrade.plan_path = plan_path
-    app.state.quick_interactions._recovery_ready = True
-    app.state.run_system_upgrade = lambda _operation_id: None
-    app.state.system_upgrade_restart_readiness = lambda: None
     result = app.state.weixin_chub_mode.dispatch(
-        message_id="weixin-system-upgrade",
-        prompt="upgrade",
+        message_id="weixin-rebuild",
+        prompt="chub rebuild",
         message_type="text",
-        correlation_id="upgrade-request",
+        correlation_id="rebuild-request",
         source_ip="100.64.0.21",
         delivery_route=QuickInteractionWeixinRoute(
             account_id="weixin-account",
@@ -1728,8 +1803,10 @@ def test_weixin_system_upgrade_uses_application_upgrade_coordinator(
     )
 
     assert result.message == (
-        "Upgrade: Started. The final result will be sent when completed."
+        "Workstation rebuild: Started. Current Chub tasks will end and Chub may be "
+        "unavailable briefly. Check status again later with `check`."
     )
-    operation = app.state.system_upgrade.operation()
+    operation = rebuild.operation()
     assert operation is not None
     assert operation.source_ip == "100.64.0.21"
+    maintenance.start.assert_called_once_with(operation.operation_id)

@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.response import ApiError, ApiResponse
 from app.core.security import require_trusted_network
-from app.deliveryline.store import DeliveryLine, DeliverylineError, DeliverylineNotFound, DeliverylineTransitionNotAllowed
+from .store import DeliveryLine, DeliverylineError, DeliverylineNotFound, DeliverylineTransitionNotAllowed
 from app.services.internal_session_visibility import internal_session_visibility_lock
 from app.services.operation_log import log_operation
 

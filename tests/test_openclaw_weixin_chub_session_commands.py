@@ -240,15 +240,10 @@ def test_codex_switch_with_task_switches_and_submits_once(
     )
 
 
-def test_codex_switch_task_uses_enabled_text_optimization(
+def test_codex_switch_task_submits_through_shared_dispatcher(
     settings: Settings,
 ) -> None:
     manager, ai_session_manager, quick_interactions = configured_manager(settings)
-    manager.translation_manager = MagicMock()
-    manager.translation_manager.enabled.return_value = True
-    manager._state.orchestration_enabled = True
-    manager.translation_manager.has_active_target.return_value = False
-    manager.translation_manager.enqueue.return_value = True
     manager._state.session_id = "session-1"
     sessions = [
         AiSessionFixture(
@@ -271,7 +266,7 @@ def test_codex_switch_task_uses_enabled_text_optimization(
     ai_session_manager.get_session.return_value = sessions[1]
 
     first = manager.dispatch(
-        message_id="switch-optimized-task",
+        message_id="switch-task",
         prompt="S2 检查服务状态",
         message_type="text",
         correlation_id=None,
@@ -279,7 +274,7 @@ def test_codex_switch_task_uses_enabled_text_optimization(
         delivery_route=delivery_route(),
     )
     duplicate = manager.dispatch(
-        message_id="switch-optimized-task",
+        message_id="switch-task",
         prompt="S2 重复正文不得执行",
         message_type="text",
         correlation_id=None,
@@ -288,33 +283,17 @@ def test_codex_switch_task_uses_enabled_text_optimization(
     )
 
     assert first.message is not None
-    assert first.message.startswith(
-        "Session: S2 selected. Optimizing · Preparing to submit."
-    )
+    assert first.message.startswith("Session: S2 selected. Task submitted.")
     assert "▶ S2 · [Chub] 第 2 项\n\nTask · 检查服务状态" in first.message
     assert duplicate == first
     assert manager.session_id() == "session-2"
-    quick_interactions.submit.assert_not_called()
-    manager.translation_manager.enqueue.assert_called_once()
-    enqueue_kwargs = manager.translation_manager.enqueue.call_args.kwargs
-    assert enqueue_kwargs["message_id"] == manager._command_task_message_id(
-        "switch-optimized-task"
-    )
-    assert enqueue_kwargs["original"] == "检查服务状态"
-    assert enqueue_kwargs["route"] == delivery_route()
-    assert enqueue_kwargs["source_ip"] == "100.64.0.21"
-    assert enqueue_kwargs["target_session_id"] == "session-2"
-    assert enqueue_kwargs["confirmation_required"] is False
-    assert isinstance(enqueue_kwargs["orchestration_id"], str)
+    quick_interactions.submit.assert_called_once()
 
 
-def test_codex_switch_task_bypasses_confirm_mode_when_plugin_is_disabled(
+def test_codex_switch_task_submits_without_retired_processing(
     settings: Settings,
 ) -> None:
     manager, ai_session_manager, quick_interactions = configured_manager(settings)
-    manager.translation_manager = MagicMock()
-    manager.translation_manager.processing_mode.return_value = "confirm"
-    manager.translation_manager.has_active_target.return_value = False
     manager._state.session_id = "session-1"
     sessions = [
         AiSessionFixture(
@@ -350,18 +329,12 @@ def test_codex_switch_task_bypasses_confirm_mode_when_plugin_is_disabled(
     assert result.message.startswith("Session: S2 selected. Task submitted.")
     quick_interactions.submit.assert_called_once()
     assert quick_interactions.submit.call_args.args[1] == task_prompt
-    manager.translation_manager.enqueue.assert_not_called()
 
 
-def test_codex_switch_task_keeps_selection_when_optimization_cannot_queue(
+def test_codex_switch_task_keeps_selection_when_submitted(
     settings: Settings,
 ) -> None:
     manager, ai_session_manager, quick_interactions = configured_manager(settings)
-    manager.translation_manager = MagicMock()
-    manager.translation_manager.enabled.return_value = True
-    manager._state.orchestration_enabled = True
-    manager.translation_manager.has_active_target.return_value = False
-    manager.translation_manager.enqueue.return_value = False
     manager._state.session_id = "session-1"
     sessions = [
         AiSessionFixture(
@@ -384,7 +357,7 @@ def test_codex_switch_task_keeps_selection_when_optimization_cannot_queue(
     ai_session_manager.get_session.return_value = sessions[1]
 
     result = manager.dispatch(
-        message_id="switch-optimization-failed",
+        message_id="switch-task-submitted",
         prompt="S2 检查服务状态",
         message_type="text",
         correlation_id=None,
@@ -393,13 +366,10 @@ def test_codex_switch_task_keeps_selection_when_optimization_cannot_queue(
     )
 
     assert result.message is not None
-    assert result.message.startswith(
-        "Session: S2 selected, but the task was not submitted."
-    )
+    assert result.message.startswith("Session: S2 selected. Task submitted.")
     assert "Task · 检查服务状态" in result.message
     assert manager.session_id() == "session-2"
-    quick_interactions.submit.assert_not_called()
-    manager.translation_manager.enqueue.assert_called_once()
+    quick_interactions.submit.assert_called_once()
 
 
 def test_codex_switch_with_task_failure_shows_task_summary(

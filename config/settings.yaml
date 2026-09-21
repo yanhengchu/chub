@@ -107,17 +107,6 @@ openclaw:
     workspace_id: "chub"
     session_name_max_width: 30
     task_name_max_width: 64
-    # Initial default for the Settings-page text-processing mode.
-    translation_mode: "direct" # direct | auto | confirm
-    # Trusted local ZIP implementations for the Weixin refinement stage.
-    # They are distinct from AI Runtime plugins and only affect new tasks.
-    orchestration_modules_dir: "data/local/runtime/openclaw/weixin-orchestration-modules"
-    orchestration_module_max_archive_bytes: 8388608
-    translation_queue_limit: 10
-    translation_max_wait_seconds: 1800
-    translation_max_input_chars: 8000
-    # Submit longer task bodies directly instead of polishing/translating them.
-    translation_preprocess_max_input_chars: 1200
   quick_interaction_completion:
     # Completion notifications are sent only for tasks submitted through the
     # Weixin ClawBot route. The following recipient fields are retained for

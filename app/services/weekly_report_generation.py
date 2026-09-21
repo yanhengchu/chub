@@ -93,15 +93,27 @@ class WeeklyReportGenerationService:
                         session_id,
                         self._session_title(period),
                     )
+                operation_id = f"weekly-report-{stage}-{uuid4().hex}"
+                self._save_stage(
+                    period,
+                    stage,
+                    session_id=session_id,
+                    task_id=None,
+                    operation_id=operation_id,
+                    status="submitting",
+                )
                 prompt = self._prompt(stage, period)
                 with self._quick_interactions.session_operation_guard(session_id):
                     task = self._quick_interactions.submit(
                         session_id,
                         prompt,
-                        operation_id=f"weekly-report-{stage}-{uuid4().hex}",
+                        operation_id=operation_id,
                         source_ip=source_ip,
                     )
             except Exception:
+                recovered = self._recover_unlinked_stage(period, stage)
+                if recovered is not None:
+                    return recovered
                 if created_session and session_id is not None:
                     self._session_manager.discard_unstarted_session(session_id)
                 raise
@@ -110,6 +122,8 @@ class WeeklyReportGenerationService:
                 stage,
                 session_id=session_id,
                 task_id=task.id,
+                operation_id=operation_id,
+                status="requested",
             )
             return self._read_stage(period, stage)
 
@@ -169,8 +183,21 @@ class WeeklyReportGenerationService:
         stages = period_data.get("stages")
         entry = stages.get(stage) if isinstance(stages, dict) else None
         task_id = entry.get("task_id") if isinstance(entry, dict) else None
-        if not isinstance(session_id, str) or not isinstance(task_id, str):
+        operation_id = entry.get("operation_id") if isinstance(entry, dict) else None
+        if not isinstance(session_id, str):
             return WeeklyReportGenerationStep(stage, None, None, "idle", "等待前序步骤完成")
+        if not isinstance(task_id, str):
+            if isinstance(operation_id, str):
+                recovered = self._recover_unlinked_stage(period, stage)
+                if recovered is not None:
+                    return recovered
+            return WeeklyReportGenerationStep(
+                stage,
+                self._available_session_id(session_id),
+                None,
+                "failed",
+                "生成会话提交状态未能确认，可再次开始。",
+            )
         available_session_id = self._available_session_id(session_id)
         try:
             task = self._quick_interactions.get(task_id)
@@ -243,7 +270,42 @@ class WeeklyReportGenerationService:
             return {"periods": {}}
         return value if isinstance(value, dict) else {"periods": {}}
 
-    def _save_stage(self, period: str, stage: str, *, session_id: str, task_id: str) -> None:
+    def _recover_unlinked_stage(
+        self, period: str, stage: str
+    ) -> WeeklyReportGenerationStep | None:
+        period_data = self._period_data(period)
+        session_id = period_data.get("session_id")
+        stages = period_data.get("stages")
+        entry = stages.get(stage) if isinstance(stages, dict) else None
+        operation_id = entry.get("operation_id") if isinstance(entry, dict) else None
+        if not isinstance(session_id, str) or not isinstance(operation_id, str):
+            return None
+        find_for_operation = getattr(self._quick_interactions, "find_for_operation", None)
+        task = find_for_operation(operation_id) if callable(find_for_operation) else None
+        if task is None:
+            return None
+        if getattr(task, "session_id", session_id) != session_id or getattr(task, "kind", "standard") != "standard":
+            return None
+        self._save_stage(
+            period,
+            stage,
+            session_id=session_id,
+            task_id=task.id,
+            operation_id=operation_id,
+            status="requested",
+        )
+        return self._read_stage(period, stage)
+
+    def _save_stage(
+        self,
+        period: str,
+        stage: str,
+        *,
+        session_id: str,
+        task_id: str | None,
+        operation_id: str | None = None,
+        status: str = "requested",
+    ) -> None:
         data = self._load()
         periods = data.setdefault("periods", {})
         if not isinstance(periods, dict):
@@ -257,7 +319,11 @@ class WeeklyReportGenerationService:
         stages = period_data.setdefault("stages", {})
         if not isinstance(stages, dict):
             stages = period_data["stages"] = {}
-        stages[stage] = {"task_id": task_id}
+        stages[stage] = {
+            "task_id": task_id,
+            "operation_id": operation_id,
+            "status": status,
+        }
         payload = json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         self._state_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         with NamedTemporaryFile(

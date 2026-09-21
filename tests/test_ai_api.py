@@ -245,7 +245,7 @@ async def test_runtime_management_lists_and_updates_enablement(settings: Setting
 
 
 @pytest.mark.anyio
-async def test_session_list_hides_internal_translation_session(
+async def test_session_list_uses_current_visibility_rules(
     settings: Settings,
 ) -> None:
     app = create_app(settings)
@@ -282,21 +282,6 @@ async def test_session_list_hides_internal_translation_session(
             discovered=True,
         ),
         SessionInfo(
-            id="translation-session",
-            runtime_id="codex",
-            workspace_id="weixin-translation",
-            workspace_name="微信文本优化与翻译",
-            cwd="/runtime/translation",
-            title="文本优化与翻译",
-            can_archive=True,
-            status="stopped",
-            activity="idle",
-            permission_mode="read-only",
-            error=None,
-            created_at="2026-08-14T11:00:00Z",
-            updated_at="2026-08-14T11:00:00Z",
-        ),
-        SessionInfo(
             id="search-session",
             runtime_id="codex",
             workspace_id="home",
@@ -316,7 +301,7 @@ async def test_session_list_hides_internal_translation_session(
         manager.list_sessions.return_value,
         native_sessions,
     )
-    manager.read_session.return_value = manager.list_sessions.return_value[1]
+    manager.read_session.return_value = manager.list_sessions.return_value[0]
     app.state.ai_session_manager = manager
     app.state.ai_search = MagicMock()
     app.state.ai_search.hidden_session_ids.return_value = {"search-session"}
@@ -327,26 +312,17 @@ async def test_session_list_hides_internal_translation_session(
             "/api/ai/sessions",
             headers=authorization(settings),
         )
-        visible = await client.get(
-            "/api/ai/sessions?include_translation=true",
-            headers=authorization(settings),
-        )
         detail = await client.get(
-            "/api/ai/sessions/translation-session",
+            "/api/ai/sessions/ordinary-session",
             headers=authorization(settings),
         )
 
     assert hidden.status_code == 200
-    assert [item["id"] for item in hidden.json()["data"]["sessions"]] == [
-        "ordinary-session"
-    ]
+    assert [item["id"] for item in hidden.json()["data"]["sessions"]] == ["ordinary-session"]
     assert hidden.json()["data"]["native_sessions"][0]["title"] == "发现的终端"
     assert hidden.json()["data"]["native_sessions"][0]["runtime_id"] == "codex"
-    assert [item["id"] for item in visible.json()["data"]["sessions"]] == [
-        "ordinary-session"
-    ]
     assert detail.status_code == 200
-    assert detail.json()["data"]["id"] == "translation-session"
+    assert detail.json()["data"]["id"] == "ordinary-session"
 
 
 @pytest.mark.anyio
@@ -705,7 +681,7 @@ def quick_task() -> QuickInteractionTask:
 
 
 @pytest.mark.anyio
-async def test_page_quick_interaction_preserves_bound_weixin_session_context(
+async def test_page_quick_interaction_uses_task_orchestration_dispatcher(
     settings: Settings,
 ) -> None:
     app = create_app(settings)
@@ -729,6 +705,8 @@ async def test_page_quick_interaction_preserves_bound_weixin_session_context(
     quick_interactions.session_operation_guard.return_value = session_guard
     app.state.ai_session_manager = manager
     app.state.quick_interactions = quick_interactions
+    app.state.task_orchestrator = MagicMock()
+    app.state.task_orchestrator.submit_web.return_value = quick_task()
     app.state.weixin_chub_mode = MagicMock()
     app.state.weixin_chub_mode.session_slot.side_effect = lambda _session_id: (
         lock_order.append("slot-snapshot") or 3
@@ -738,17 +716,19 @@ async def test_page_quick_interaction_preserves_bound_weixin_session_context(
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             "/api/ai/sessions/session-1/quick-interactions",
-            headers=authorization(settings),
+            headers={
+                **authorization(settings),
+                "X-Chub-Task-Request-Id": "11111111-1111-4111-8111-111111111111",
+            },
             json={"prompt": "检查状态"},
         )
 
     assert response.status_code == 200
-    assert lock_order == ["session-lock"]
-    submitted = quick_interactions.submit.call_args
-    assert submitted.args == ("session-1", "检查状态")
-    assert "weixin_session_slot" not in submitted.kwargs
-    assert "weixin_session_title" not in submitted.kwargs
-    assert submitted.kwargs.get("notification_route") is None
+    assert lock_order == []
+    submitted = app.state.task_orchestrator.submit_web.call_args
+    assert submitted.kwargs["session_id"] == "session-1"
+    assert submitted.kwargs["prompt"] == "检查状态"
+    assert submitted.kwargs["request_id"] == "11111111-1111-4111-8111-111111111111"
 
 
 @pytest.mark.anyio

@@ -21,6 +21,7 @@ from app.ai_search.models import (
 )
 from app.automations.browser import (
     DebugChromePageContent,
+    DebugChromePageLink,
     DebugChromePageReadError,
     read_debug_chrome_page,
 )
@@ -47,6 +48,9 @@ TODAY_FOCUS_SOURCE_HOSTS = {
     "www.huggingface.co": "Hugging Face",
 }
 TODAY_FOCUS_SNAPSHOT_CHARS = 700
+TODAY_FOCUS_LINKS_PER_SOURCE = 3
+TODAY_FOCUS_LINK_TEXT_CHARS = 96
+TODAY_FOCUS_LINK_URL_CHARS = 240
 LOGGER = logging.getLogger("hub.ai_today_focus")
 TODAY_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
@@ -132,6 +136,7 @@ class AiSearchService:
                 operation_id=uuid4().hex,
                 query=TODAY_FOCUS_LABEL,
                 prompt=self._prompt(snapshots),
+                detail_links=self._detail_links_by_source(snapshots),
                 status="submitting",
                 created_at=_now(),
                 updated_at=_now(),
@@ -156,12 +161,22 @@ class AiSearchService:
                         source_ip=source_ip,
                     )
             except ApiError:
-                self._discard_pending_run()
-                raise
+                if self._recover_pending_run(quick_interactions):
+                    return self._data()
+                raise ApiError(
+                    503,
+                    "today_focus_submission_pending",
+                    "今日关注提交状态正在确认，请稍后刷新，勿重复提交。",
+                ) from None
             except Exception as exc:
                 LOGGER.warning("Today focus submission failed run_id=%s exception_type=%s", run.id, type(exc).__name__)
-                self._discard_pending_run()
-                raise ApiError(503, "today_focus_refresh_failed", "今日关注未能更新，可再次刷新。") from exc
+                if self._recover_pending_run(quick_interactions):
+                    return self._data()
+                raise ApiError(
+                    503,
+                    "today_focus_submission_pending",
+                    "今日关注提交状态正在确认，请稍后刷新，勿重复提交。",
+                ) from exc
             try:
                 self._update_pending(task_id=task.id, status="requested")
                 self._promote_pending_run()
@@ -195,7 +210,7 @@ class AiSearchService:
             self._fail(task.error or "今日 AI 动态未能完成。")
             return
         try:
-            payload = self._parse_result(task.result)
+            payload = self._parse_result(task.result, detail_links=current.detail_links)
         except ValueError as exc:
             self._fail(str(exc))
             return
@@ -337,7 +352,11 @@ class AiSearchService:
         return True
 
     @staticmethod
-    def _parse_result(value: str) -> SearchResultPayload:
+    def _parse_result(
+        value: str,
+        *,
+        detail_links: dict[str, list[str]] | None = None,
+    ) -> SearchResultPayload:
         content = value.strip()
         match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL)
         if match:
@@ -352,6 +371,10 @@ class AiSearchService:
             source = AiSearchService._source_name_for_url(normalized_url)
             if source is None:
                 raise ValueError("AI 返回了固定来源之外的链接，可再次刷新。")
+            if AiSearchService._is_source_home_url(normalized_url, source):
+                raise ValueError("AI 返回了来源首页链接而不是资讯详情链接，可再次刷新。")
+            if detail_links is not None and normalized_url not in detail_links.get(source, []):
+                raise ValueError("AI 返回了未在来源快照中出现的详情链接，可再次刷新。")
             results.append(item.model_copy(update={
                 "title": item.title.strip(),
                 "url": normalized_url,
@@ -366,13 +389,72 @@ class AiSearchService:
         return TODAY_FOCUS_SOURCE_HOSTS.get(host.lower() if host else "")
 
     @staticmethod
+    def _source_path(value: str) -> str:
+        return urlsplit(value).path.rstrip("/") or "/"
+
+    @staticmethod
+    def _is_source_home_url(value: str, source: str) -> bool:
+        parsed = urlsplit(value)
+        for source_name, source_url in TODAY_FOCUS_SOURCES:
+            if source_name != source:
+                continue
+            expected = urlsplit(source_url)
+            return (
+                AiSearchService._source_name_for_url(value) == source
+                and (parsed.path.rstrip("/") or "/") == (expected.path.rstrip("/") or "/")
+            )
+        return False
+
+    @staticmethod
+    def _detail_links_by_source(
+        snapshots: tuple[DebugChromePageContent | DebugChromePageReadError, ...],
+    ) -> dict[str, list[str]]:
+        detail_links: dict[str, list[str]] = {}
+        for (name, url), outcome in zip(TODAY_FOCUS_SOURCES, snapshots, strict=True):
+            if not isinstance(outcome, DebugChromePageContent):
+                continue
+            source_path = AiSearchService._source_path(url)
+            links: list[str] = []
+            seen_urls: set[str] = set()
+            for link in outcome.links:
+                parsed_link = urlsplit(link.url)
+                if (
+                    link.url in seen_urls
+                    or len(link.url) > TODAY_FOCUS_LINK_URL_CHARS
+                    or AiSearchService._source_name_for_url(link.url) != name
+                    or (parsed_link.path.rstrip("/") or "/") == source_path
+                ):
+                    continue
+                seen_urls.add(link.url)
+                links.append(link.url)
+                if len(links) >= TODAY_FOCUS_LINKS_PER_SOURCE:
+                    break
+            if links:
+                detail_links[name] = links
+        return detail_links
+
+    @staticmethod
     def _prompt(snapshots: tuple[DebugChromePageContent | DebugChromePageReadError, ...]) -> str:
+        snapshots = tuple(snapshots)
         source_blocks: list[str] = []
+        detail_links = AiSearchService._detail_links_by_source(snapshots)
         for (name, url), outcome in zip(TODAY_FOCUS_SOURCES, snapshots, strict=True):
             if isinstance(outcome, DebugChromePageContent):
+                candidate_urls = detail_links.get(name, [])
+                candidate_by_url = {link.url: link.text for link in outcome.links}
+                link_block = (
+                    "\n详情链接候选（标题必须与对应链接匹配）：\n"
+                    + "\n".join(
+                        f"- {candidate_by_url.get(candidate, '')[:TODAY_FOCUS_LINK_TEXT_CHARS]} -> {candidate}"
+                        for candidate in candidate_urls
+                    )
+                    if candidate_urls
+                    else ""
+                )
                 source_blocks.append(
                     f"[{name}]\n来源地址：{url}\n最终地址：{outcome.final_url[:240]}\n"
-                    f"标题：{outcome.title[:120]}\n正文快照：\n{outcome.content}\n[快照结束]"
+                    f"标题：{outcome.title[:120]}\n正文快照：\n{outcome.content}"
+                    f"{link_block}\n[快照结束]"
                 )
             else:
                 source_blocks.append(f"[{name}]\n来源地址：{url}\n读取结果：不可读取。")
@@ -385,7 +467,8 @@ class AiSearchService:
             "只返回一个 JSON 对象，不要 Markdown 或解释，格式必须为："
             '{"summary":"不超过 2000 字的当日摘要和限制","results":[{"title":"动态标题",'
             '"url":"固定来源的 http(s) 链接","description":"不超过 1200 字的说明","source":"来源"}]}'
-            "。results 最多 10 条；没有可靠动态时返回空列表。"
+            "。results 最多 10 条；url 必须使用对应来源的详情链接候选，不能使用来源首页或编造链接；"
+            "没有可靠动态或没有详情链接时返回空列表。"
         )
 
     def _read(self) -> AiSearchState:
@@ -397,7 +480,7 @@ class AiSearchService:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
             if not isinstance(payload, dict):
                 return AiSearchState()
-            if payload.get("version") == 7:
+            if payload.get("version") == 9:
                 return AiSearchState.model_validate(payload)
             self._commit(AiSearchState())
             return AiSearchState()
