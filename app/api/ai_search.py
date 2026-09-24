@@ -3,19 +3,12 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict
 
-from app.ai_search.models import AiSearchData, AiSearchSettings
+from app.ai_search.models import AiSearchData
 from app.core.response import ApiResponse
 from app.core.security import require_trusted_network
-from app.services.internal_session_visibility import internal_session_visibility_lock
 
 
 router = APIRouter(prefix="/api/today-focus", tags=["today-focus"], dependencies=[Depends(require_trusted_network)])
-
-
-class AiSearchSettingsUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    show_sessions: bool
 
 
 @router.get("", response_model=ApiResponse[AiSearchData])
@@ -25,23 +18,6 @@ def current_today_focus(request: Request) -> ApiResponse[AiSearchData]:
             request.app.state.ai_session_manager,
             request.app.state.quick_interactions,
         )
-    )
-
-
-@router.get("/settings", response_model=ApiResponse[AiSearchSettings])
-def get_today_focus_settings(request: Request) -> ApiResponse[AiSearchSettings]:
-    return ApiResponse(data=AiSearchSettings(show_sessions=request.app.state.ai_search.show_sessions()))
-
-
-@router.put("/settings", response_model=ApiResponse[AiSearchSettings])
-def update_today_focus_settings(
-    payload: AiSearchSettingsUpdate,
-    request: Request,
-) -> ApiResponse[AiSearchSettings]:
-    with internal_session_visibility_lock:
-        show_sessions = request.app.state.ai_search.set_show_sessions(payload.show_sessions)
-    return ApiResponse(
-        data=AiSearchSettings(show_sessions=show_sessions)
     )
 
 

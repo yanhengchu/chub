@@ -76,8 +76,8 @@
     {
       "id": "ai-session-state",
       "title": "Chub Session 状态模型设计",
-      "summary": "定义 Chub Session、Native Session 数据消费与映射、Activity、交互入口、usage 投影、操作、微信槽位和单 writer 状态语义。",
-      "status": "已验收",
+      "summary": "定义 Chub Session 普通/内部类型、统一列表可见性、Native Session 数据消费与映射、Activity、交互入口、usage 投影、操作、微信槽位和单 writer 状态语义。",
+      "status": "持续维护",
       "category": "delivery_requirement",
       "group": "task-orchestration",
       "path": "AI_SESSION_STATE_DESIGN.md"
@@ -144,6 +144,15 @@
       "category": "delivery_requirement",
       "group": "delivery-automation",
       "path": "DELIVERYLINE_PLATFORM_DESIGN.md"
+    },
+    {
+      "id": "deliveryline-case-task-prompt-optimizer",
+      "title": "真实案例：Chub 任务提示词优化插件设计",
+      "summary": "记录任务提示词优化插件这条真实交付线的当前场景和后续推进结果。",
+      "status": "调研中",
+      "category": "delivery_requirement",
+      "group": "delivery-automation",
+      "path": "DELIVERYLINE_CASE_TASK_PROMPT_OPTIMIZER.md"
     }
   ]
 }

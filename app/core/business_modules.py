@@ -35,9 +35,6 @@ class BusinessModuleDefinition:
     initialize: Callable[[FastAPI, Settings], None] | None = None
     workspace_state: Callable[[Request], dict[str, Any] | None] | None = None
     workspace_records: Callable[[Request], tuple[list[Any], list[Any]]] | None = None
-    session_visibility_get: Callable[[Request], bool] | None = None
-    session_visibility_set: Callable[[Request, bool], None] | None = None
-    hidden_session_ids: Callable[[Request], set[str]] | None = None
     recovery_state_paths: Callable[[Settings], tuple[Path, ...]] | None = None
 
 

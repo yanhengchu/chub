@@ -751,10 +751,9 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert 'id="deployment-package-runtime-version"' not in pages["diagnostics"].text
     assert 'id="deployment-package-weixin-version"' not in pages["diagnostics"].text
     assert '<strong>发布版本</strong>' in pages["diagnostics"].text
-    assert 'deployment-package-show-release-note-session' in session_visibility_script.text
-    assert '"/api/settings/deployment-package/release-note-session"' in session_visibility_script.text
     assert '"/api/settings/internal-session-visibility"' in session_visibility_script.text
-    assert 'bulkToggle.textContent = allShown() ? "隐藏" : "展示";' in session_visibility_script.text
+    assert 'show_internal_sessions: requested' in session_visibility_script.text
+    assert 'window.refreshWorkspaceSessions?.();' in session_visibility_script.text
     assert '.settings-field input[type="text"]' in stylesheet.text
     assert ".deployment-package-heading" in stylesheet.text
     assert ".deployment-package-artifacts" in stylesheet.text
@@ -815,10 +814,8 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert '新建 Session 默认项由 Chub 安全保存。' not in pages["openclaw"].text
     assert '浏览器拒绝保存时，主题和文字大小仅在当前页临时应用。' in pages["openclaw"].text
     assert 'href="/settings/task-orchestration"' not in pages["runtime"].text
-    assert '"/api/deliveryline/settings"' in session_visibility_script.text
     assert '"/api/settings/weixin-translation"' not in session_visibility_script.text
-    assert '"/api/today-focus/settings"' in session_visibility_script.text
-    assert 'data-session-visibility-feedback' in session_visibility_script.text
+    assert 'data-session-visibility-feedback' not in session_visibility_script.text
     assert 'internal-session-visibility-message' not in session_visibility_script.text
     assert '"/api/today-focus/refresh"' in workspace_search_script.text
     assert '"/api/today-focus/open-pages"' not in workspace_search_script.text
@@ -1110,6 +1107,8 @@ async def test_root_page_is_the_workspace_and_legacy_workspace_redirects(
     assert 'href="/?section=project-docs"' in home.text
     assert 'href="/?section=search"' not in home.text
     assert "工作站环境" in home.text
+    assert 'id="workspace-workstation-refresh"' not in home.text
+    assert 'id="workspace-development-refresh"' not in home.text
     assert 'aria-label="Runtime Session 列表"' in home.text
     assert 'data-workspace-session-id="session-123"' in selected_session.text
     assert 'src="/ai/sessions/session-123/quick-interactions/conversation?embedded=workspace"' in selected_session.text
@@ -2424,6 +2423,22 @@ async def test_native_session_without_a_title_is_marked_as_unavailable(
     assert "nativeSessionDetailLines" not in response.text
     assert '"未命名 Native Session"' not in response.text
     assert 'empty.textContent = "暂无会话。";' in response.text
+
+
+@pytest.mark.anyio
+async def test_runtime_detail_settings_show_plugin_status(settings: Settings) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        page = await client.get("/settings/runtime/codex")
+        script = await client.get("/static/settings.js")
+
+    assert page.status_code == 200
+    assert 'id="runtime-plugin-status"' in page.text
+    assert 'id="runtime-plugin-status-detail"' in page.text
+    assert "正在读取插件状态。" in page.text
+    assert script.status_code == 200
+    assert "renderRuntimePluginStatus(implementations);" in script.text
+    assert "暂时无法读取 Runtime 插件状态。" in script.text
 
 
 @pytest.mark.anyio

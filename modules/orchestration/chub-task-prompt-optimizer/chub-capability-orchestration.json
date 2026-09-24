@@ -1,0 +1,14 @@
+{
+  "protocol_version": 1,
+  "module_id": "chub-task-prompt-optimizer",
+  "version": "0.1.0",
+  "module_type": "capability-orchestration",
+  "scope": "ordinary_user_task",
+  "orchestration_protocol_version": 1,
+  "capability_protocol_version": 1,
+  "display_name": "任务提示词优化",
+  "description": "在统一任务编排分发点中优化普通用户任务提示词，并将结果交回分发点。",
+  "chub_version": "dev",
+  "entry": "entry:create_orchestration_plugin",
+  "command_entry": null
+}

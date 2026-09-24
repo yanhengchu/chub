@@ -15,7 +15,7 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-MentionMode = Literal["none", "recipients", "all"]
+MentionMode = Literal["none", "recipients", "inline_recipients", "all"]
 
 
 class NotificationRequest(StrictModel):
@@ -43,9 +43,9 @@ class NotificationRequest(StrictModel):
 
     @model_validator(mode="after")
     def validate_mentions(self) -> "NotificationRequest":
-        if self.mention_mode == "recipients" and not self.recipients:
+        if self.mention_mode in {"recipients", "inline_recipients"} and not self.recipients:
             raise ValueError("recipients are required for recipient mentions")
-        if self.mention_mode != "recipients" and self.recipients:
+        if self.mention_mode not in {"recipients", "inline_recipients"} and self.recipients:
             raise ValueError("recipients require mention_mode=recipients")
         return self
 
@@ -60,7 +60,7 @@ class NotificationResult(StrictModel):
 
 class NotificationTargetSummary(StrictModel):
     id: str
-    display_name: str
+    display_names: list[str]
     provider: Literal["feishu"]
     enabled: bool
     allow_mention_all: bool

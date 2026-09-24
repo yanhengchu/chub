@@ -1,5 +1,6 @@
 import json
 import zipfile
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 from app.services.deployment_package import (
@@ -87,3 +88,30 @@ def test_release_note_generation_marks_missing_unlinked_task_as_failed(settings,
 
     assert state.release_note_generation.status == "failed"
     assert "状态未能确认" in state.release_note_generation.message
+
+
+def test_release_note_session_is_created_as_internal(settings, tmp_path) -> None:
+    settings.deployment_package.state_file = tmp_path / "state.json"
+    created = []
+    manager = SimpleNamespace(
+        create_session=lambda runtime, *, session_kind: created.append(
+            (runtime, session_kind)
+        )
+        or SimpleNamespace(id="release-session"),
+        rename_session=lambda session_id, title: created.append((session_id, title)),
+    )
+    quick = SimpleNamespace(session_creation_guard=nullcontext)
+    service = DeploymentPackageService(
+        settings,
+        session_manager=manager,
+        quick_interactions=quick,
+    )
+
+    session_id, was_created = service._ensure_release_note_session(service._read())
+
+    assert session_id == "release-session"
+    assert was_created is True
+    assert created == [
+        ("chub", "internal"),
+        ("release-session", "版本发布说明"),
+    ]

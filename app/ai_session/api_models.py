@@ -8,7 +8,7 @@ from unicodedata import category
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.ai_runtime import RUNTIME_ID_PATTERN
-from app.ai_session.models import PermissionMode
+from app.ai_session.models import PermissionMode, SessionKind
 
 
 WORKSPACE_ID_PATTERN = r"^[a-z][a-z0-9-]{0,63}$"
@@ -31,6 +31,7 @@ class SessionUsage(BaseModel):
 
 class SessionInfo(BaseModel):
     id: str
+    session_kind: SessionKind = "user"
     runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
     workspace_id: str
     workspace_name: str

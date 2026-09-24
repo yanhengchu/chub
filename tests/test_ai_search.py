@@ -27,14 +27,22 @@ class _Manager:
         self.create_calls = 0
         self.created_workspace_id: str | None = None
         self.permission_mode: str | None = None
+        self.session_kind: str | None = None
         self.title: str | None = None
         self.native_deleted: list[str] = []
         self.finalized_deletes: list[str] = []
 
-    def create_session(self, workspace_id: str, permission_mode: str | None = None):
+    def create_session(
+        self,
+        workspace_id: str,
+        permission_mode: str | None = None,
+        *,
+        session_kind: str = "user",
+    ):
         self.create_calls += 1
         self.created_workspace_id = workspace_id
         self.permission_mode = permission_mode
+        self.session_kind = session_kind
         session = SimpleNamespace(
             id=self.session_id,
             workspace_id=workspace_id,
@@ -209,9 +217,9 @@ def test_today_focus_reads_sources_before_creating_a_session(tmp_path: Path) -> 
     events: list[str] = []
 
     class OrderedManager(_Manager):
-        def create_session(self, workspace_id: str, permission_mode: str | None = None):
+        def create_session(self, workspace_id: str, permission_mode: str | None = None, **kwargs):
             events.append("session-created")
-            return super().create_session(workspace_id, permission_mode)
+            return super().create_session(workspace_id, permission_mode, **kwargs)
 
     async def read_page(url: str, *, max_content_chars: int) -> DebugChromePageContent:
         events.append(f"read:{url}")
@@ -264,17 +272,13 @@ def test_today_focus_rejects_source_snapshots_redirected_outside_official_hosts(
     assert all(isinstance(snapshot, DebugChromePageContent) for snapshot in snapshots[1:])
 
 
-def test_today_focus_visibility_defaults_to_hidden_and_persists(tmp_path: Path) -> None:
+def test_today_focus_creates_an_internal_session(tmp_path: Path) -> None:
     service = _service(tmp_path / "ai-search.json")
     manager = _Manager()
     quick = _QuickInteractions()
     service.refresh(manager, quick, source_ip="127.0.0.1")
 
-    assert service.show_sessions() is False
-    assert service.hidden_session_ids() == {"session-1"}
-    assert service.set_show_sessions(True) is True
-    assert service.hidden_session_ids() == set()
-    assert _service(tmp_path / "ai-search.json").show_sessions() is True
+    assert manager.session_kind == "internal"
 
 
 def test_today_focus_recovers_accepted_task_when_submission_response_is_lost(tmp_path: Path) -> None:
@@ -432,15 +436,11 @@ async def test_today_focus_no_longer_exposes_page_opening(settings) -> None:
 
 
 @pytest.mark.anyio
-async def test_today_focus_session_visibility_setting_is_independent_of_snapshot(settings) -> None:
+async def test_today_focus_no_longer_exposes_a_session_visibility_setting(settings) -> None:
     app = create_app(settings)
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         current = await client.get("/api/today-focus/settings")
-        updated = await client.put("/api/today-focus/settings", json={"show_sessions": True})
-        restored = await client.get("/api/today-focus/settings")
 
-    assert current.json()["data"] == {"show_sessions": False}
-    assert updated.json()["data"] == {"show_sessions": True}
-    assert restored.json()["data"] == {"show_sessions": True}
+    assert current.status_code == 404

@@ -547,7 +547,7 @@
       },
 
       submitTask({ prompt }) {
-        const requestStorageKey = `hub.quickInteractionRequest.v1.${encodedSessionId}`;
+        const requestStorageKey = `hub.quickInteractionRequest.v2.${encodedSessionId}`;
         let requestId = "";
         try {
           requestId = sessionStorage.getItem(requestStorageKey) || "";
@@ -575,6 +575,7 @@
           return data;
         }).catch((error) => {
           if ([
+            "task_orchestration_request_conflict",
             "task_orchestration_submission_failed",
             "task_orchestration_retained",
           ].includes(error?.code)) {

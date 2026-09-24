@@ -31,13 +31,14 @@ def test_new_local_state_does_not_read_legacy_field_collaboration_file(tmp_path:
     state_dir.mkdir()
     (state_dir / "ai-collaboration.json").write_text('{"version":2,"requirements":[]}', encoding="utf-8")
     collaboration = DeliverylineCollaboration(state_dir)
-    assert collaboration.show_sessions() is False
     assert not (state_dir / "line-ai-clarification.json").exists()
 
 
 def test_submission_exception_recovers_task_by_operation_id(tmp_path: Path) -> None:
     class Manager:
-        def create_session(self, _workspace_id: str): return SimpleNamespace(id="session-1")
+        def create_session(self, _workspace_id: str, *, session_kind: str = "user"):
+            assert session_kind == "internal"
+            return SimpleNamespace(id="session-1")
         def rename_session(self, _session_id: str, _title: str): pass
         def get_session(self, _session_id: str): return SimpleNamespace(id="session-1")
         def discard_unstarted_session(self, _session_id: str): pass

@@ -2,7 +2,9 @@ version: 2
 
 targets:
   test:
-    display_name: "Test Feishu Group"
+    display_names:
+      - "Test Feishu Group"
+      - "测试群"
     provider: feishu
     webhook_file: test.webhook
     enabled: true

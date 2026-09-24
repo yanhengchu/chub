@@ -19,8 +19,16 @@ from app.ai_runtime.development_plugins import development_runtime_artifact_id
 from app.core.module_sources import registered_module_source, registered_module_sources
 from app.core.config import PROJECT_ROOT, Settings
 from app.core.response import ApiError
+from app.plugin_lifecycle.orchestration_manifest import inspect_archive as inspect_orchestration_archive
+from app.plugin_lifecycle.orchestration_manifest import inspect_development_root as inspect_orchestration_root
+from app.plugin_lifecycle.orchestration_loader import (
+    OrchestrationPluginLoadResult,
+    load_development_orchestration_plugin,
+)
 
 _BUSINESS_MANIFEST = "chub-business-module.json"
+_ORCHESTRATION_MODULE_TYPE = "orchestration"
+_PROMPT_OPTIMIZER_MODULE_ID = "chub-task-prompt-optimizer"
 LOGGER = logging.getLogger("hub.plugin_lifecycle")
 
 
@@ -36,6 +44,45 @@ class PluginLifecycleService:
         self.ai_session_manager = ai_session_manager
         self.path = settings.business_modules.state_file
         self._lock = RLock()
+        self._orchestration_load_results: dict[tuple[str, str], OrchestrationPluginLoadResult] = {}
+        self._startup_enabled_artifacts: dict[str, frozenset[str]] = {}
+
+    def assemble_orchestration_plugins(self) -> dict[str, object]:
+        """Load enabled, imported development modules during Web assembly only."""
+        loaded: dict[str, object] = {}
+        results: dict[tuple[str, str], OrchestrationPluginLoadResult] = {}
+        with self._lock:
+            state = self._read()
+            for source in registered_module_sources(_ORCHESTRATION_MODULE_TYPE):
+                if source.module_id != _PROMPT_OPTIMIZER_MODULE_ID:
+                    continue
+                enabled = self._enabled_ids(state, source.module_id)
+                imported = state.setdefault("imports", {}).setdefault(source.module_id, [])
+                self._startup_enabled_artifacts[source.module_id] = frozenset(enabled)
+                for artifact_id in enabled:
+                    if artifact_id not in imported:
+                        result = OrchestrationPluginLoadResult(
+                            artifact_id,
+                            "failed",
+                            reason="插件尚未导入；请重新扫描并导入后再启用。",
+                        )
+                    elif not artifact_id.startswith("development:"):
+                        result = OrchestrationPluginLoadResult(
+                            artifact_id,
+                            "failed",
+                            reason="当前交付项仅支持仓库开发模块的启用与加载。",
+                        )
+                    else:
+                        result = load_development_orchestration_plugin(
+                            source,
+                            artifact_id,
+                            self.settings.app.version,
+                        )
+                    results[(source.module_id, artifact_id)] = result
+                    if result.state == "loaded" and result.descriptor is not None:
+                        loaded[source.module_id] = result.descriptor
+        self._orchestration_load_results = results
+        return loaded
 
     def list(self, request: Request) -> dict[str, object]:
         with self._lock:
@@ -71,6 +118,7 @@ class PluginLifecycleService:
 
     async def import_artifact(self, request: Request, plugin_id: str, artifact_id: str) -> dict[str, object]:
         self._require(plugin_id)
+        module_type = self._module_type(plugin_id)
         with self._lock:
             artifact = self._find(request, plugin_id, artifact_id)
         if artifact.get("available") is False:
@@ -91,10 +139,22 @@ class PluginLifecycleService:
                 result = await install_runtime_plugin_archive(request, artifact_id.split(":", 1)[1], archive)
                 final_id = f"runtime:{result.module_id}"
                 extension_updated = True
+            elif module_type == _ORCHESTRATION_MODULE_TYPE:
+                metadata = inspect_orchestration_archive(
+                    archive, plugin_id, self.settings.app.version
+                )
+                digest = hashlib.sha256(archive).hexdigest()
+                final_id = f"orchestration:{plugin_id}@{metadata['version']}+{digest}"
+                installation = self._install_plugin_archive(plugin_id, artifact_id, archive)
+                extension_updated = True
             else:
                 metadata = self._inspect_business_archive(plugin_id, archive)
-                installation = self._install_business_archive(plugin_id, artifact_id, archive)
+                installation = self._install_plugin_archive(plugin_id, artifact_id, archive)
                 extension_updated = True
+        elif module_type == _ORCHESTRATION_MODULE_TYPE:
+            metadata = self._orchestration_source_metadata(plugin_id)
+            if artifact_id.startswith("development:") and metadata.get("development_ref") != artifact_id:
+                raise ApiError(409, "plugin_artifact_changed", "开发模块在预检后发生变化；刷新候选后重试。")
         with self._lock:
             state = self._read_after_extension_action(extension_updated)
             imports = state.setdefault("imports", {}).setdefault(plugin_id, [])
@@ -109,13 +169,19 @@ class PluginLifecycleService:
 
     async def remove(self, request: Request, plugin_id: str, artifact_id: str) -> dict[str, object]:
         self._require(plugin_id)
+        module_type = self._module_type(plugin_id)
         with self._lock:
             state = self._read()
             if artifact_id not in state.setdefault("imports", {}).setdefault(plugin_id, []):
                 raise ApiError(404, "plugin_import_not_found", "插件尚未导入。")
             is_enabled = artifact_id in self._enabled_ids(state, plugin_id)
+            installation = self._installation_path(state, plugin_id, artifact_id)
         if is_enabled:
             await self.set_enabled(request, plugin_id, artifact_id, False)
+        if module_type == _ORCHESTRATION_MODULE_TYPE and installation is not None:
+            # Keep the registration intact when its dedicated installation copy
+            # cannot be removed, so the maintainer can retry from plugin settings.
+            self._remove_installation(installation, required=True)
         extension_updated = is_enabled and plugin_id == "runtime"
         if artifact_id.startswith("runtime:"):
             from app.api.runtime_plugins import remove_runtime_plugin
@@ -126,7 +192,6 @@ class PluginLifecycleService:
             state = self._read_after_extension_action(extension_updated)
             state.setdefault("imports", {}).setdefault(plugin_id, []).remove(artifact_id)
             self._metadata(state, plugin_id).pop(artifact_id, None)
-            installation = self._installation_path(state, plugin_id, artifact_id)
             installed = state.setdefault("installations", {}).get(plugin_id)
             if isinstance(installed, dict):
                 installed.pop(artifact_id, None)
@@ -138,12 +203,22 @@ class PluginLifecycleService:
             else:
                 state.setdefault("enabled", {}).pop(plugin_id, None)
             self._write_after_extension_action(state, extension_updated)
-            if installation is not None:
+            if installation is not None and module_type != _ORCHESTRATION_MODULE_TYPE:
                 self._remove_installation(installation)
             return self._status(request, plugin_id, state)
 
     async def set_enabled(self, request: Request, plugin_id: str, artifact_id: str, enabled: bool) -> dict[str, object]:
         self._require(plugin_id)
+        module_type = self._module_type(plugin_id)
+        if module_type == _ORCHESTRATION_MODULE_TYPE and (
+            plugin_id != _PROMPT_OPTIMIZER_MODULE_ID
+            or not artifact_id.startswith("development:")
+        ):
+            raise ApiError(
+                409,
+                "plugin_artifact_lifecycle_unavailable",
+                "当前交付项仅开放提示词优化插件仓库开发模块的启用、停用与加载。",
+            )
         with self._lock:
             state = self._read()
             if artifact_id not in state.setdefault("imports", {}).setdefault(plugin_id, []):
@@ -217,7 +292,7 @@ class PluginLifecycleService:
         imports = list(state.setdefault("imports", {}).setdefault(plugin_id, []))
         enabled = self._enabled_ids(state, plugin_id)
         metadata = self._metadata(state, plugin_id)
-        artifacts = [dict(item) for item in self._artifacts(request, plugin_id)]
+        artifacts = [dict(item) for item in self._artifacts(request, plugin_id, state)]
         known = {item["artifact_id"] for item in artifacts}
         for artifact_id in imports:
             if artifact_id not in known:
@@ -231,6 +306,21 @@ class PluginLifecycleService:
                 artifact.update(metadata[artifact_id])
             artifact["imported"] = artifact_id in imports
             artifact["enabled"] = artifact_id in enabled
+            if self._module_type(plugin_id) == _ORCHESTRATION_MODULE_TYPE:
+                load_result = self._orchestration_load_results.get((plugin_id, artifact_id))
+                startup_enabled = self._startup_enabled_artifacts.get(plugin_id, frozenset())
+                artifact["enablement_available"] = (
+                    plugin_id == _PROMPT_OPTIMIZER_MODULE_ID
+                    and artifact.get("source") == "development"
+                )
+                artifact["loaded"] = bool(load_result and load_result.state == "loaded")
+                artifact["load_state"] = (
+                    load_result.state
+                    if load_result is not None
+                    else "pending_reload" if artifact_id in enabled else "not_loaded"
+                )
+                artifact["load_reason"] = load_result.reason if load_result else None
+                artifact["reload_required"] = (artifact_id in enabled) != (artifact_id in startup_enabled)
         imported_implementation_refs = self._imported_implementation_refs(plugin_id, imports)
         artifacts = [
             artifact
@@ -247,16 +337,32 @@ class PluginLifecycleService:
         ]
         for artifact in artifacts:
             artifact.pop("implementation_ref", None)
+            artifact.pop("development_ref", None)
         result: dict[str, object] = {
             "plugin_id": plugin_id,
             "name": self._plugin_name(plugin_id),
             "imported_artifact_ids": imports,
             "enabled_artifact_ids": enabled,
             "artifacts": artifacts,
+            "module_type": self._module_type(plugin_id),
+            "lifecycle_available": (
+                self._module_type(plugin_id) != _ORCHESTRATION_MODULE_TYPE
+                or plugin_id == _PROMPT_OPTIMIZER_MODULE_ID
+            ),
         }
+        if self._module_type(plugin_id) == _ORCHESTRATION_MODULE_TYPE:
+            result["loaded_artifact_ids"] = [
+                artifact_id
+                for (loaded_plugin_id, artifact_id), load_result in self._orchestration_load_results.items()
+                if loaded_plugin_id == plugin_id and load_result.state == "loaded"
+            ]
+            startup_enabled = self._startup_enabled_artifacts.get(plugin_id, frozenset())
+            result["reload_required"] = frozenset(enabled) != startup_enabled
         return result
 
-    def _artifacts(self, request: Request, plugin_id: str) -> list[dict[str, object]]:
+    def _artifacts(
+        self, request: Request, plugin_id: str, state: dict[str, object]
+    ) -> list[dict[str, object]]:
         if plugin_id == "runtime":
             from app.api.runtime_plugins import _module_list
 
@@ -268,6 +374,48 @@ class PluginLifecycleService:
                     else f"runtime:{item.module_id}"
                 )
                 rows.append({"artifact_id": identifier, "source": item.source, "name": item.name, "version": item.version, "description": item.description or "提供 AI Runtime 执行能力。", "available": item.status == "active", "removable": item.removable, "reason": item.reason})
+            return rows + self._candidates(plugin_id)
+        if self._module_type(plugin_id) == _ORCHESTRATION_MODULE_TYPE:
+            available = self._orchestration_source_available(plugin_id)
+            try:
+                source_metadata = self._orchestration_source_metadata(plugin_id)
+            except ApiError:
+                source_metadata = {}
+            development_ref = str(source_metadata.get("development_ref") or f"development:{plugin_id}")
+            imports = state.setdefault("imports", {}).setdefault(plugin_id, [])
+            rows = [{
+                "artifact_id": development_ref,
+                "source": "development",
+                "name": str(source_metadata.get("name") or self._plugin_name(plugin_id)),
+                "version": "dev",
+                "description": f"{self._plugin_name(plugin_id)}开发模块；导入登记后可启用，实际装载在 Web 重新加载时确认。",
+                "available": available,
+                "removable": development_ref in imports,
+                "reason": None if available else "编排模块索引、Manifest、协议版本或入口不兼容。",
+            }]
+            known = {item["artifact_id"] for item in rows}
+            for artifact_id in state.setdefault("imports", {}).setdefault(plugin_id, []):
+                if artifact_id in known:
+                    continue
+                metadata = self._metadata(state, plugin_id).get(artifact_id, {})
+                row = dict(metadata) if isinstance(metadata, dict) else {}
+                if artifact_id.startswith("development:"):
+                    available = artifact_id == source_metadata.get("development_ref")
+                    reason = None if available else "开发源码已变化；已登记引用不再匹配当前源码。"
+                else:
+                    installation = self._installation_path(state, plugin_id, artifact_id)
+                    available = installation is not None
+                    reason = None if available else "已导入制品目录不可用。"
+                row.update({
+                    "artifact_id": artifact_id,
+                    "name": row.get("name") or artifact_id,
+                    "version": row.get("version") or "",
+                    "description": row.get("description") or "已登记的编排插件制品。",
+                    "available": available,
+                    "removable": artifact_id in imports,
+                    "reason": reason,
+                })
+                rows.append(row)
             return rows + self._candidates(plugin_id)
         return [{"artifact_id": f"development:{plugin_id}", "source": "development", "name": "开发实现", "version": "dev", "description": f"{self._plugin_name(plugin_id)}业务插件开发实现。", "available": self._business_source_available(plugin_id), "removable": True, "reason": None if self._business_source_available(plugin_id) else "业务模块清单缺失或与当前 Chub 版本不兼容。"}] + self._candidates(plugin_id)
 
@@ -313,7 +461,8 @@ class PluginLifecycleService:
         return set()
 
     def _find(self, request: Request, plugin_id: str, artifact_id: str) -> dict[str, object]:
-        item = next((item for item in self._artifacts(request, plugin_id) if item["artifact_id"] == artifact_id), None)
+        state = self._read()
+        item = next((item for item in self._artifacts(request, plugin_id, state) if item["artifact_id"] == artifact_id), None)
         if item is None:
             raise ApiError(404, "plugin_artifact_not_found", "本机插件制品不存在或已不可用。")
         return item
@@ -412,23 +561,22 @@ class PluginLifecycleService:
         relative = module_installations.get(artifact_id) if isinstance(module_installations, dict) else None
         if not isinstance(relative, str) or not relative:
             return None
-        candidate = self.settings.business_modules.install_dir / relative
+        install_dir = self._install_dir(plugin_id)
+        candidate = install_dir / relative
         try:
-            candidate.resolve(strict=True).relative_to(
-                self.settings.business_modules.install_dir.resolve(strict=True)
-            )
+            candidate.resolve(strict=True).relative_to(install_dir.resolve(strict=True))
         except (OSError, ValueError):
             return None
         return candidate if candidate.is_dir() and not candidate.is_symlink() else None
 
-    def _install_business_archive(
+    def _install_plugin_archive(
         self,
         plugin_id: str,
         artifact_id: str,
         archive: bytes,
     ) -> tuple[str, bool]:
         digest = hashlib.sha256(archive).hexdigest()
-        root = self.settings.business_modules.install_dir / plugin_id
+        root = self._install_dir(plugin_id) / plugin_id
         target = root / digest
         try:
             root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -469,40 +617,96 @@ class PluginLifecycleService:
             raise ApiError(422, f"{plugin_id}_plugin_install_invalid", f"{self._plugin_name(plugin_id)}插件无法安装。") from None
         return f"{plugin_id}/{digest}", True
 
+    def _install_dir(self, plugin_id: str) -> Path:
+        if self._module_type(plugin_id) == _ORCHESTRATION_MODULE_TYPE:
+            return PROJECT_ROOT / "data/local/runtime/task-orchestration-modules"
+        return self.settings.business_modules.install_dir
+
     @staticmethod
-    def _remove_installation(path: Path) -> None:
+    def _remove_installation(path: Path, *, required: bool = False) -> None:
         try:
             shutil.rmtree(path)
         except OSError:
-            LOGGER.warning("Unable to remove business module installation %s", path, exc_info=True)
+            LOGGER.warning("Unable to remove plugin module installation %s", path, exc_info=True)
+            if required:
+                raise ApiError(
+                    500,
+                    "plugin_installation_remove_failed",
+                    "插件专属安装副本未能清理；导入登记仍保留，请稍后重试。",
+                ) from None
 
     @staticmethod
-    def _require(plugin_id: str) -> None:
-        if plugin_id not in ("runtime",) + tuple(source.module_id for source in registered_module_sources("business")):
+    def _module_type(plugin_id: str) -> str | None:
+        if plugin_id == "runtime":
+            return "runtime"
+        for module_type in ("business", _ORCHESTRATION_MODULE_TYPE):
+            source = registered_module_source(module_type, plugin_id)
+            if source is None:
+                continue
+            if (
+                module_type == _ORCHESTRATION_MODULE_TYPE
+                and plugin_id == _PROMPT_OPTIMIZER_MODULE_ID
+                and source.source != "bundled"
+            ):
+                return None
+            return module_type
+        return None
+
+    @classmethod
+    def _require(cls, plugin_id: str) -> None:
+        if cls._module_type(plugin_id) is None:
             raise ApiError(404, "plugin_not_found", "插件不存在。")
 
     @staticmethod
     def _plugin_ids() -> tuple[str, ...]:
-        return ("runtime",) + tuple(
-            source.module_id for source in registered_module_sources("business")
-        )
+        return ("runtime",) + tuple(dict.fromkeys(
+            source.module_id
+            for module_type in ("business", _ORCHESTRATION_MODULE_TYPE)
+            for source in registered_module_sources(module_type)
+            if not (
+                module_type == _ORCHESTRATION_MODULE_TYPE
+                and source.module_id == _PROMPT_OPTIMIZER_MODULE_ID
+                and source.source != "bundled"
+            )
+        ))
 
-    @staticmethod
-    def _plugin_name(plugin_id: str) -> str:
+    def _plugin_name(self, plugin_id: str) -> str:
         if plugin_id == "runtime":
             return "AI Runtime"
-        source = registered_module_source("business", plugin_id)
+        module_type = self._module_type(plugin_id)
+        if module_type == _ORCHESTRATION_MODULE_TYPE:
+            return "任务编排插件"
+        source = registered_module_source(module_type or "business", plugin_id)
         if source is not None:
+            manifest_name = (
+                "chub-capability-orchestration.json"
+                if module_type == _ORCHESTRATION_MODULE_TYPE
+                else _BUSINESS_MANIFEST
+            )
             try:
-                manifest = json.loads(
-                    (source.root / _BUSINESS_MANIFEST).read_text(encoding="utf-8")
-                )
+                manifest_path = source.root / manifest_name
+                if manifest_path.is_symlink() or manifest_path.stat().st_size > 64 * 1024:
+                    return plugin_id
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 name = manifest.get("display_name")
                 if isinstance(name, str) and name.strip():
                     return name.strip()
             except (OSError, UnicodeDecodeError, json.JSONDecodeError):
                 pass
         return plugin_id
+
+    def _orchestration_source_metadata(self, plugin_id: str) -> dict[str, object]:
+        source = registered_module_source(_ORCHESTRATION_MODULE_TYPE, plugin_id)
+        if source is None:
+            raise ApiError(404, "plugin_not_found", "插件不存在。")
+        return inspect_orchestration_root(source.root, plugin_id, self.settings.app.version)
+
+    def _orchestration_source_available(self, plugin_id: str) -> bool:
+        try:
+            self._orchestration_source_metadata(plugin_id)
+            return True
+        except ApiError:
+            return False
 
     def _business_source_available(self, plugin_id: str) -> bool:
         source = registered_module_source("business", plugin_id)

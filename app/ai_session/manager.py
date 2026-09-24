@@ -49,6 +49,7 @@ from app.ai_session.models import (
     ActivitySource,
     AiSession,
     PermissionMode,
+    SessionKind,
     TurnActivity,
     normalize_utc_datetime,
     utc_now,
@@ -984,6 +985,30 @@ class AiSessionManager:
         sessions, _native_sessions = self.list_sessions_with_native_sessions()
         return sessions
 
+    def show_internal_sessions(self) -> bool:
+        with self._lock:
+            self._require_store()
+            try:
+                return self.store.show_internal_sessions
+            except OSError as exc:
+                raise ApiError(
+                    503,
+                    "ai_session_state_unavailable",
+                    "内部会话显示设置暂时无法读取。",
+                ) from exc
+
+    def set_show_internal_sessions(self, show: bool) -> bool:
+        with self._lock:
+            self._require_store()
+            try:
+                return self.store.set_show_internal_sessions(show)
+            except OSError as exc:
+                raise ApiError(
+                    503,
+                    "ai_session_state_unavailable",
+                    "内部会话显示设置未能保存。",
+                ) from exc
+
     def list_sessions_with_native_sessions(self) -> tuple[list[SessionInfo], list[NativeSessionInfo]]:
         with self._lock:
             self._require_store()
@@ -1238,6 +1263,7 @@ class AiSessionManager:
         model: str | None = None,
         reasoning_effort: str | None = None,
         *,
+        session_kind: SessionKind = "user",
         creation_request_id: str | None = None,
         creation_request_fingerprint: str | None = None,
     ) -> SessionInfo:
@@ -1310,6 +1336,7 @@ class AiSessionManager:
                 )
             session = AiSession(
                 id=str(uuid.uuid4()),
+                session_kind=session_kind,
                 creation_request_id=creation_request_id,
                 creation_request_fingerprint=creation_request_fingerprint,
                 runtime_id=runtime_id,
@@ -2096,6 +2123,7 @@ class AiSessionManager:
             runtime_submission_reason = exc.message
         return SessionInfo(
             id=session.id,
+            session_kind=session.session_kind,
             runtime_id=session.runtime_id,
             workspace_id=session.workspace_id,
             workspace_name=session.workspace_name,

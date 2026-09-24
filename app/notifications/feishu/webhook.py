@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -106,6 +107,7 @@ def build_text(
     request: NotificationRequest,
 ) -> str:
     mentions: list[str] = []
+    safe_message: str
     if request.mention_mode == "all":
         if not target.allow_mention_all:
             raise FeishuProviderError(
@@ -113,6 +115,7 @@ def build_text(
                 "This notification target does not allow mentioning everyone",
             )
         mentions.append('<at user_id="all">所有人</at>')
+        safe_message = html.escape(request.message, quote=False)
     elif request.mention_mode == "recipients":
         for recipient_id in request.recipients:
             recipient = users.users.get(recipient_id)
@@ -125,8 +128,45 @@ def build_text(
             mentions.append(
                 f'<at user_id="{recipient.open_id}">{safe_label}</at>'
             )
+        safe_message = html.escape(request.message, quote=False)
+    elif request.mention_mode == "inline_recipients":
+        inline_mentions: dict[str, tuple[str, str]] = {}
+        for recipient_id in request.recipients:
+            recipient = users.users.get(recipient_id)
+            if recipient is None:
+                raise FeishuProviderError(
+                    "notification_recipient_not_found",
+                    "Notification recipient is not configured",
+                )
+            marker = f"@{recipient.display_name}"
+            if marker in inline_mentions:
+                raise FeishuProviderError(
+                    "notification_inline_mention_ambiguous",
+                    "Inline mention display name is ambiguous",
+                )
+            inline_mentions[marker] = (recipient_id, recipient.open_id)
 
-    safe_message = html.escape(request.message, quote=False)
+        markers = sorted(inline_mentions, key=len, reverse=True)
+        pattern = re.compile("|".join(re.escape(marker) for marker in markers))
+        parts: list[str] = []
+        found: set[str] = set()
+        cursor = 0
+        for match in pattern.finditer(request.message):
+            parts.append(html.escape(request.message[cursor:match.start()], quote=False))
+            recipient_id, open_id = inline_mentions[match.group()]
+            label = html.escape(match.group()[1:], quote=False)
+            parts.append(f'<at user_id="{open_id}">{label}</at>')
+            found.add(recipient_id)
+            cursor = match.end()
+        parts.append(html.escape(request.message[cursor:], quote=False))
+        if found != set(request.recipients):
+            raise FeishuProviderError(
+                "notification_inline_mention_not_found",
+                "A selected recipient has no matching inline mention",
+            )
+        safe_message = "".join(parts)
+    else:
+        safe_message = html.escape(request.message, quote=False)
     return " ".join([*mentions, safe_message])
 
 

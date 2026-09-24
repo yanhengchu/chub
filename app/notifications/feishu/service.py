@@ -74,13 +74,45 @@ class NotificationService:
         return [
             NotificationTargetSummary(
                 id=target_id,
-                display_name=target.display_name,
+                display_names=target.display_names,
                 provider=target.provider,
                 enabled=target.enabled,
                 allow_mention_all=target.allow_mention_all,
             )
             for target_id, target in sorted(registry.targets.items())
         ]
+
+    def resolve_target_id(self, value: str) -> str:
+        registry, _ = self._load_configuration()
+        candidate = value.strip()
+        if not candidate:
+            raise NotificationError(
+                422,
+                "notification_target_invalid",
+                "Notification target is invalid",
+            )
+        if candidate in registry.targets:
+            return candidate
+
+        key = candidate.casefold()
+        matches = [
+            target_id
+            for target_id, target in registry.targets.items()
+            if any(display_name.casefold() == key for display_name in target.display_names)
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            raise NotificationError(
+                409,
+                "notification_target_ambiguous",
+                "Notification target name matches multiple configured targets",
+            )
+        raise NotificationError(
+            404,
+            "notification_target_not_found",
+            "Notification target is not configured",
+        )
 
     def search_users(self, query: str) -> NotificationUserSearchResult:
         normalized_query = query.strip()

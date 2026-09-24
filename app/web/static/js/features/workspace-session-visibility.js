@@ -4,134 +4,68 @@
   window.initializeSessionVisibilitySettings = () => {
     window.disposeSessionVisibilitySettings?.();
 
-    const panel = document.getElementById("internal-session-visibility-settings");
-    if (!(panel instanceof HTMLElement)) return;
-
-    const bulkToggle = document.getElementById("internal-session-visibility-toggle");
-    const bulkFeedback = document.getElementById("internal-session-visibility-feedback");
-    const businessConfigs = [...panel.querySelectorAll("[data-session-visibility-feedback]")]
-      .map((feedback) => feedback.dataset.sessionVisibilityFeedback)
-      .filter((moduleId) => moduleId && !["today-focus", "deployment-package"].includes(moduleId))
-      .map((moduleId) => ({
-        control: document.getElementById(`${moduleId}-show-collaboration-sessions`),
-        path: `/api/settings/business-modules/${encodeURIComponent(moduleId)}/session-visibility`,
-        field: "show_sessions",
-        feedback: moduleId,
-      }));
-    const configs = [
-      ...businessConfigs,
-      { control: document.getElementById("today-focus-show-sessions"), path: "/api/today-focus/settings", field: "show_sessions", feedback: "today-focus" },
-      { control: document.getElementById("deployment-package-show-release-note-session"), path: "/api/settings/deployment-package/release-note-session", field: "show_sessions", feedback: "deployment-package" },
-    ].filter((config) => config.control instanceof HTMLInputElement);
+    const control = document.getElementById("show-internal-sessions");
+    const feedback = document.getElementById("internal-session-visibility-feedback");
+    if (!(control instanceof HTMLInputElement) || !(feedback instanceof HTMLElement)) return;
     let disposed = false;
     let busy = false;
 
-    const feedbackFor = (name) => panel.querySelector(
-      `[data-session-visibility-feedback="${name}"]`,
-    );
-    const setFeedback = (feedback, text = "") => {
-      if (disposed || !(feedback instanceof HTMLElement)) return;
+    const setFeedback = (text = "") => {
+      if (disposed) return;
       feedback.textContent = text;
+      feedback.className = text ? "message message-error" : "message";
     };
-    const request = async (path, options = {}) => {
-      const response = await fetch(path, { cache: "no-store", ...options });
+    const request = async (options = {}) => {
+      const response = await fetch("/api/settings/internal-session-visibility", {
+        cache: "no-store",
+        ...options,
+      });
       const payload = await response.json().catch(() => null);
       if (!response.ok || payload?.success !== true) {
         throw new Error(payload?.error?.message || "内部会话显示设置暂时不可用。");
       }
       return payload.data;
     };
-    const allShown = () => configs.length > 0 && configs.every((config) => config.saved === true);
-    const updateBulkToggle = () => {
-      if (disposed || !(bulkToggle instanceof HTMLButtonElement)) return;
-      const loaded = configs.length > 0 && configs.every((config) => config.loaded === true);
-      bulkToggle.textContent = allShown() ? "隐藏" : "展示";
-      bulkToggle.disabled = busy || !loaded;
-    };
-    const setControlsDisabled = (disabled) => {
-      configs.forEach((config) => {
-        config.control.disabled = disabled || config.loaded !== true;
-      });
-    };
-    const render = (config, data) => {
+    const render = (data) => {
       if (disposed) return;
-      config.saved = data?.[config.field] === true;
-      config.loaded = true;
-      config.control.checked = config.saved;
-      config.control.disabled = busy;
-      setFeedback(feedbackFor(config.feedback));
-      updateBulkToggle();
+      control.checked = data?.show_internal_sessions === true;
+      control.disabled = busy;
+      setFeedback();
     };
-    const refresh = async (config, showError = true) => {
+    const refresh = async () => {
       try {
-        render(config, await request(config.path));
-        return true;
+        render(await request());
       } catch (error) {
         if (disposed) return false;
-        config.loaded = false;
-        config.control.disabled = true;
-        if (showError) {
-          setFeedback(feedbackFor(config.feedback), error instanceof Error ? error.message : "内部会话显示设置暂时不可用。");
-        }
-        updateBulkToggle();
-        return false;
+        control.disabled = true;
+        setFeedback(error instanceof Error ? error.message : "内部会话显示设置暂时不可用。");
       }
     };
-    const refreshAll = async () => Promise.all(configs.map((config) => refresh(config)));
-
-    if (configs.length === 0) return;
-    configs.forEach((config) => {
-      config.saved = false;
-      config.loaded = false;
-      config.control.addEventListener("change", async () => {
-        if (disposed || busy) return;
-        busy = true;
-        setControlsDisabled(true);
-        updateBulkToggle();
-        setFeedback(feedbackFor(config.feedback));
-        try {
-          render(config, await request(config.path, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ [config.field]: config.control.checked }),
-          }));
-        } catch (error) {
-          if (!disposed) {
-            config.control.checked = config.saved;
-            setFeedback(feedbackFor(config.feedback), error instanceof Error ? error.message : "内部会话显示设置保存失败，请稍后刷新页面重试。");
-          }
-        } finally {
-          busy = false;
-          setControlsDisabled(false);
-          updateBulkToggle();
-        }
-      });
-    });
-
-    bulkToggle?.addEventListener("click", async () => {
-      if (disposed || busy || !configs.every((config) => config.loaded === true)) return;
+    control.addEventListener("change", async () => {
+      if (disposed || busy) return;
+      const requested = control.checked;
       busy = true;
-      setControlsDisabled(true);
-      updateBulkToggle();
-      setFeedback(bulkFeedback);
+      control.disabled = true;
+      setFeedback();
       try {
-        await request("/api/settings/internal-session-visibility", {
+        render(await request({
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ show_sessions: !allShown() }),
-        });
+          body: JSON.stringify({ show_internal_sessions: requested }),
+        }));
+        window.refreshWorkspaceSessions?.();
       } catch (error) {
         if (!disposed) {
-          setFeedback(bulkFeedback, error instanceof Error ? error.message : "部分内部会话显示设置未完成。");
+          control.checked = !requested;
+          setFeedback(error instanceof Error ? error.message : "内部会话显示设置保存失败，请稍后重试。");
         }
       } finally {
-        await refreshAll();
         busy = false;
-        setControlsDisabled(false);
-        updateBulkToggle();
+        control.disabled = false;
       }
     });
-    void refreshAll();
+
+    void refresh();
     window.disposeSessionVisibilitySettings = () => {
       disposed = true;
     };

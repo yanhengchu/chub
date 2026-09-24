@@ -25,6 +25,7 @@ class AiSessionStore:
         self.path = path
         self._lock = threading.RLock()
         self._sessions: dict[str, AiSession] = {}
+        self._show_internal_sessions = False
         self._load_error: str | None = None
         self._load()
 
@@ -63,6 +64,7 @@ class AiSessionStore:
         ):
             return False
         temporary_store._sessions = {}
+        temporary_store._show_internal_sessions = False
         try:
             temporary_store._write()
         except OSError:
@@ -86,16 +88,25 @@ class AiSessionStore:
             self._load_error = str(exc)
             return
         try:
-            self._sessions = self._parse_payload(payload)
+            state = self._parse_state(payload)
+            self._sessions = self._sessions_from_state(state)
+            self._show_internal_sessions = state.show_internal_sessions
         except AiSessionStoreUnavailable as exc:
             self._load_error = str(exc)
 
     @staticmethod
-    def _parse_payload(payload: object) -> dict[str, AiSession]:
+    def _parse_state(payload: object) -> AiSessionState:
         try:
-            state = AiSessionState.model_validate(payload)
+            return AiSessionState.model_validate(payload)
         except ValidationError as exc:
             raise AiSessionStoreUnavailable("AI Session 状态文件格式无效。") from exc
+
+    @classmethod
+    def _parse_payload(cls, payload: object) -> dict[str, AiSession]:
+        return cls._sessions_from_state(cls._parse_state(payload))
+
+    @staticmethod
+    def _sessions_from_state(state: AiSessionState) -> dict[str, AiSession]:
         sessions: dict[str, AiSession] = {}
         native_ids: set[tuple[str, str]] = set()
         for session in state.sessions:
@@ -162,7 +173,8 @@ class AiSessionStore:
                     "AI Session 状态文件与当前内存状态不一致。"
                 )
             return
-        sessions = self._parse_payload(payload)
+        state = self._parse_state(payload)
+        sessions = self._sessions_from_state(state)
         current = {
             session_id: session.model_dump(mode="json")
             for session_id, session in self._sessions.items()
@@ -175,6 +187,32 @@ class AiSessionStore:
             raise AiSessionStoreUnavailable(
                 "AI Session 状态文件与当前内存状态不一致。"
             )
+        if state.show_internal_sessions != self._show_internal_sessions:
+            raise AiSessionStoreUnavailable(
+                "AI Session 可见性设置与当前内存状态不一致。"
+            )
+
+    @property
+    def show_internal_sessions(self) -> bool:
+        with self._lock:
+            self._require_available()
+            self._assert_on_disk_matches_memory()
+            return self._show_internal_sessions
+
+    def set_show_internal_sessions(self, show: bool) -> bool:
+        with self._lock:
+            self._require_available()
+            self._assert_on_disk_matches_memory()
+            previous = self._show_internal_sessions
+            if previous == show:
+                return previous
+            self._show_internal_sessions = show
+            try:
+                self._write()
+            except Exception:
+                self._show_internal_sessions = previous
+                raise
+            return self._show_internal_sessions
 
     def list(self) -> list[AiSession]:
         with self._lock:
@@ -351,6 +389,7 @@ class AiSessionStore:
         try:
             os.fchmod(descriptor, 0o600)
             payload = AiSessionState(
+                show_internal_sessions=self._show_internal_sessions,
                 sessions=[session for session in self._sessions.values()]
             ).model_dump(mode="json")
             content = (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode(

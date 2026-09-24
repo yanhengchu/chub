@@ -42,7 +42,7 @@ from app.api.project_documents import router as project_documents_router
 from app.api.weekly_reports import router as weekly_reports_router
 from app.api.settings import router as settings_router
 from app.api.plugins import router as plugins_router
-from app.plugin_lifecycle import PluginLifecycleService
+from app.plugin_lifecycle import PluginLifecycleService, PromptOptimizerSettingsStore
 from app.api.status import router as status_router
 from app.ai_session import AiSessionManager
 from app.ai_session.operations import archive_session, delete_session
@@ -456,6 +456,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         resolved_settings,
         ai_session_manager,
     )
+    prompt_optimizer_settings = PromptOptimizerSettingsStore(
+        resolved_settings.business_modules.state_file.parent.parent,
+    )
+    orchestration_plugins = plugin_lifecycle.assemble_orchestration_plugins()
     business_modules = load_business_modules(resolved_settings)
     configure_business_module_templates(resolved_settings)
     ai_session_manager.set_runtime_plugin_lifecycle_state_reader(
@@ -1237,6 +1241,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.maintenance_lock = threading.RLock()
     application.state.weixin_chub_mode = weixin_chub_mode
     application.state.plugin_lifecycle = plugin_lifecycle
+    application.state.prompt_optimizer_settings = prompt_optimizer_settings
+    application.state.orchestration_plugins = orchestration_plugins
     application.state.business_modules = business_modules
     for module in business_modules:
         if module.initialize is not None:

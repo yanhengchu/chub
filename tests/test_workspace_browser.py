@@ -536,8 +536,8 @@ async def test_workspace_does_not_read_openclaw_state(
             await expect(page.locator("#workspace-third-party-environment")).to_have_count(0)
             await page.wait_for_timeout(100)
             assert requested_openclaw_paths == []
-            await page.locator("#workspace-workstation-refresh").click()
-            await expect(page.locator("#workspace-workstation-refresh")).to_be_enabled()
+            assert await page.locator("#workspace-workstation-refresh").count() == 0
+            assert await page.locator("#workspace-development-refresh").count() == 0
         finally:
             await context.close()
 
@@ -623,7 +623,7 @@ async def test_settings_navigation_rebinds_confirmation_dialog(
     assert page_errors == []
 
 
-async def test_internal_session_visibility_bulk_toggle(
+async def test_internal_session_visibility_toggle_is_unified(
     workspace_browser_server: str,
 ) -> None:
     browser_session = session_factory()
@@ -647,49 +647,26 @@ async def test_internal_session_visibility_bulk_toggle(
                 await fetch("/api/settings/internal-session-visibility", {
                   method: "PUT",
                   headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ show_sessions: false }),
-                });
-                await fetch("/api/today-focus/settings", {
-                  method: "PUT",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ show_sessions: true }),
+                  body: JSON.stringify({ show_internal_sessions: false }),
                 });
             }""")
             await page.goto(
                 f"{workspace_browser_server}/settings/session",
                 wait_until="domcontentloaded",
             )
-            toggle = page.locator("#internal-session-visibility-toggle")
-            today_focus = page.locator("#today-focus-show-sessions")
-            release_note = page.locator("#deployment-package-show-release-note-session")
-            layout = await page.locator("#internal-session-visibility-settings").evaluate("""(section) => {
-                const rect = (selector) => section.querySelector(selector).getBoundingClientRect();
-                const internalTitle = rect("#internal-session-visibility-title");
-                const internalDescription = rect(".internal-session-visibility-copy .settings-subsection-description");
-                const copy = rect(".internal-session-visibility-copy");
-                const button = rect("#internal-session-visibility-toggle");
-                const defaultTitle = document.querySelector("#session-defaults-title").getBoundingClientRect();
-                const defaultDescription = document.querySelector("#session-defaults-title + .settings-subsection-description").getBoundingClientRect();
-                return {
-                    buttonCenter: button.top + button.height / 2,
-                    copyCenter: copy.top + copy.height / 2,
-                    internalGap: internalDescription.top - internalTitle.bottom,
-                    defaultGap: defaultDescription.top - defaultTitle.bottom,
-                };
+            toggle = page.locator("#show-internal-sessions")
+            await expect(toggle).to_be_visible()
+            await expect(toggle).not_to_be_checked()
+            await toggle.check()
+            await expect(toggle).to_be_checked()
+            state = await page.evaluate("""async () => {
+                const response = await fetch("/api/settings/internal-session-visibility");
+                return (await response.json()).data.show_internal_sessions;
             }""")
-            assert abs(layout["buttonCenter"] - layout["copyCenter"]) < 1
-            assert abs(layout["internalGap"] - layout["defaultGap"]) < 1
-            await expect(toggle).to_have_text("展示")
-            await expect(today_focus).to_be_checked()
-            await expect(release_note).not_to_be_checked()
-            await toggle.click()
-            await expect(toggle).to_have_text("隐藏")
-            await expect(today_focus).to_be_checked()
-            await expect(release_note).to_be_checked()
-            await toggle.click()
-            await expect(toggle).to_have_text("展示")
-            await expect(today_focus).not_to_be_checked()
-            await expect(release_note).not_to_be_checked()
+            assert state is True
+            assert await page.locator("#internal-session-visibility-settings").count() == 0
+            assert await page.locator("#today-focus-show-sessions").count() == 0
+            assert await page.locator("#deployment-package-show-release-note-session").count() == 0
         finally:
             await context.close()
 
@@ -1912,7 +1889,7 @@ async def test_workspace_session_creation_ignores_double_submit(
     assert page_errors == []
 
 
-async def test_workspace_worker_restart_recovers_from_a_failed_refresh(
+async def test_workspace_worker_status_recovers_after_failed_initial_read(
     workspace_browser_server: str,
 ) -> None:
     browser_session = session_factory()
@@ -1922,7 +1899,7 @@ async def test_workspace_worker_restart_recovers_from_a_failed_refresh(
         nonlocal worker_reads
         if urlsplit(route.request.url).path == "/api/maintenance/quick-worker":
             worker_reads += 1
-            if worker_reads > 1:
+            if worker_reads == 1:
                 await route.fulfill(
                     status=503,
                     content_type="application/json",
@@ -1943,10 +1920,9 @@ async def test_workspace_worker_restart_recovers_from_a_failed_refresh(
             page.on("pageerror", lambda error: page_errors.append(str(error)))
             response = await page.goto(workspace_browser_server, wait_until="domcontentloaded")
             assert response is not None and response.status == 200
+            assert await page.locator("#workspace-workstation-refresh").count() == 0
+            assert await page.locator("#workspace-development-refresh").count() == 0
             worker_restart = page.locator("#workspace-worker-restart")
-            await expect(worker_restart).to_be_enabled()
-            await page.locator("#workspace-workstation-refresh").click()
-            await expect(page.locator("#workspace-workstation-refresh")).to_be_enabled()
             await expect(worker_restart).to_be_enabled()
         finally:
             await context.close()
@@ -1959,6 +1935,14 @@ async def test_workspace_section_switch_disposes_workstation_controller(
     workspace_browser_server: str,
 ) -> None:
     browser_session = session_factory()
+    status_reads = 0
+
+    async def route_workspace_api(route) -> None:
+        nonlocal status_reads
+        if urlsplit(route.request.url).path == "/api/status":
+            status_reads += 1
+        await _mock_workspace_api(route)
+
     async with browser_session(ensure_page=False) as chrome:
         context = await chrome.browser.new_context(viewport={"width": 1280, "height": 900})
         try:
@@ -1972,13 +1956,15 @@ async def test_workspace_section_switch_disposes_workstation_controller(
                 data={"artifact_id": "development:codex-runtime-dev", "enabled": True},
             )
             assert enabled.ok
-            await context.route(f"{workspace_browser_server}/api/**", _mock_workspace_api)
+            await context.route(f"{workspace_browser_server}/api/**", route_workspace_api)
             page = await context.new_page()
             page_errors: list[str] = []
             page.on("pageerror", lambda error: page_errors.append(str(error)))
             response = await page.goto(workspace_browser_server, wait_until="domcontentloaded")
             assert response is not None and response.status == 200
-            await expect(page.locator("#workspace-workstation-refresh")).to_be_visible()
+            assert await page.locator("#workspace-workstation-refresh").count() == 0
+            assert await page.locator("#workspace-development-refresh").count() == 0
+            await expect(page.locator("#workspace-chub-detail")).to_contain_text("Chub v")
             await page.evaluate(
                 """() => {
                     const dispose = window.disposeWorkspaceWorkstation;
@@ -2042,6 +2028,9 @@ async def test_workspace_section_switch_disposes_workstation_controller(
                 assert await page.locator(selector).evaluate(
                     "(element) => getComputedStyle(element, '::before').display",
                 ) == "none"
+            await page.get_by_role("link", name="工作台").click()
+            await expect(page.locator("#workspace-chub-detail")).to_contain_text("Chub v")
+            assert status_reads >= 2
             dispose_calls = await page.evaluate("window.__workstationDisposeCalls")
         finally:
             await context.close()

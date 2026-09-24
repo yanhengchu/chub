@@ -315,8 +315,17 @@ core.request("/api/ai/sessions").then(() => {
     }
 
 
+@pytest.mark.parametrize(
+    "error_code",
+    [
+        "task_orchestration_request_conflict",
+        "task_orchestration_retained",
+    ],
+)
 @pytest.mark.skipif(NODE is None, reason="Node.js is required for JavaScript behavior tests")
-def test_quick_interaction_client_releases_retained_request_id_without_replay() -> None:
+def test_quick_interaction_client_releases_unusable_request_id_without_replay(
+    error_code: str,
+) -> None:
     program = """
 const values = new Map();
 global.sessionStorage = {
@@ -334,7 +343,7 @@ global.fetch = async (_path, options) => {
     json: async () => ({
       success: false,
       error: {
-        code: "task_orchestration_retained",
+        code: process.argv[2],
         message: "任务详情已过期，请重新提交。",
       },
     }),
@@ -347,19 +356,19 @@ core.createClient({ sessionId: "session-1" }).submitTask({ prompt: "retry" })
     process.stdout.write(JSON.stringify({
       code: error.code,
       hasSubmittedRequestId: typeof submittedRequestId === "string" && submittedRequestId.length > 0,
-      retained: values.has("hub.quickInteractionRequest.v1.session-1"),
+      retained: values.has("hub.quickInteractionRequest.v2.session-1"),
     }));
   });
 """
     result = subprocess.run(
-        [NODE, "-e", program, str(CORE_SCRIPT)],
+        [NODE, "-e", program, str(CORE_SCRIPT), error_code],
         check=True,
         capture_output=True,
         text=True,
     )
 
     assert json.loads(result.stdout) == {
-        "code": "task_orchestration_retained",
+        "code": error_code,
         "hasSubmittedRequestId": True,
         "retained": False,
     }

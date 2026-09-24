@@ -24,6 +24,7 @@ SessionStatus = Literal["new", "running", "stopped", "error"]
 TurnActivity = Literal["unknown", "working", "idle"]
 ActivitySource = Literal["none", "quick"]
 PermissionMode = Literal["ask", "auto-review", "read-only", "full-access"]
+SessionKind = Literal["user", "internal"]
 
 
 class SessionCreationRecord(Protocol):
@@ -55,6 +56,7 @@ class AiSession(_StrictModel):
     """Current logical Session record owned exclusively by Chub."""
 
     id: str = Field(min_length=36, max_length=36)
+    session_kind: SessionKind = "user"
     # A browser-created Session keeps the request UUID that created it.  This
     # lets a retried POST return the existing logical Session after a response
     # loss, rather than creating a second one.
@@ -130,4 +132,5 @@ class AiSession(_StrictModel):
 
 class AiSessionState(_StrictModel):
     version: Literal[3] = 3
+    show_internal_sessions: bool = False
     sessions: list[AiSession] = Field(default_factory=list)

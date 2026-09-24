@@ -75,22 +75,88 @@
       const detail = document.createElement("small");
       const unavailable = artifact.available === false;
       title.textContent = `${plugin.name} · ${artifact.name}`;
+      const loadLabel = artifact.load_state === "loaded"
+        ? (enabled ? "入口已装配；尚未接入任务阶段" : "当前仍已装配；待重载卸载（未接入阶段）")
+        : artifact.load_state === "failed"
+          ? `装配失败：${artifact.load_reason || "修复模块后重新加载 Web。"}`
+          : artifact.load_state === "pending_reload"
+            ? "待 Web 重载装配入口"
+            : "未装配入口";
+      const lifecycleDetail = plugin.module_type === "orchestration" && (imported || artifact.loaded)
+        ? ` ${enabled ? "已启用" : "未启用"} · ${loadLabel}`
+        : "";
+      const description = plugin.plugin_id === "chub-task-prompt-optimizer"
+        ? "优化普通任务提示词，结果返回统一分发点。"
+        : artifact.description || "该版本的能力说明暂不可用。";
       detail.textContent = unavailable
         ? (artifact.reason || "该插件制品当前不可用；可恢复制品后继续使用，或移除该记录。")
-        : (artifact.description || "该版本的能力说明暂不可用。");
+        : `${description}${lifecycleDetail}`;
       copy.append(title, detail);
       const actions = document.createElement("span");
       actions.className = "runtime-module-row-actions";
       if (!imported) {
         if (!unavailable) actions.append(button("导入", "button-secondary", () => void perform(() => request(`/api/plugins/${encodeURIComponent(plugin.plugin_id)}/imports`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ artifact_id: artifact.artifact_id }) }), { refreshNavigation: true })));
+      } else if (plugin.lifecycle_available === false) {
+        const registered = document.createElement("small");
+        registered.textContent = "已导入登记；启用、停用与加载将在后续生命周期交付项中开放。";
+        actions.append(registered);
+        const removeButton = button("移除登记", "button-danger", () => {
+          const remove = () => perform(
+            () => request(`/api/plugins/${encodeURIComponent(plugin.plugin_id)}/imports/${encodeURIComponent(artifact.artifact_id)}`, { method: "DELETE" }),
+            { refreshNavigation: true, propagate: true },
+          );
+          if (typeof window.showConfirmationDialog !== "function") { void remove(); return; }
+          const body = artifact.source === "development"
+            ? "只撤销导入登记，保留仓库中的开发模块源码。"
+            : "撤销导入登记并清理该插件专属安装副本，保留 ZIP 来源文件。";
+          void window.showConfirmationDialog({
+            title: "移除编排插件登记",
+            body,
+            details: [{ label: "插件", value: `${plugin.name} · ${artifact.name}` }],
+            confirmLabel: "移除登记",
+            pendingLabel: "正在移除…",
+            errorMessage: "插件登记未能移除。",
+            onConfirm: remove,
+          });
+        });
+        if (artifact.removable === false) {
+          removeButton.disabled = true;
+          removeButton.title = artifact.reason || "该插件实现由宿主保留，当前不能移除。";
+        }
+        actions.append(removeButton);
+      } else if (plugin.module_type === "orchestration" && artifact.enablement_available === false) {
+        const scope = document.createElement("small");
+        scope.textContent = "ZIP 制品的启用与加载属于后续独立交付项。";
+        actions.append(scope);
+        const removeButton = button("移除", "button-danger", () => {
+          const remove = () => perform(
+            () => request(`/api/plugins/${encodeURIComponent(plugin.plugin_id)}/imports/${encodeURIComponent(artifact.artifact_id)}`, { method: "DELETE" }),
+            { refreshNavigation: true, propagate: true },
+          );
+          if (typeof window.showConfirmationDialog !== "function") { void remove(); return; }
+          void window.showConfirmationDialog({
+            title: "移除编排插件登记",
+            body: "撤销该 ZIP 制品的导入登记，并清理其专属安装副本；来源 ZIP 保留。",
+            details: [{ label: "插件", value: `${plugin.name} · ${artifact.name}` }],
+            confirmLabel: "移除",
+            pendingLabel: "正在移除…",
+            errorMessage: "插件登记未能移除。",
+            onConfirm: remove,
+          });
+        });
+        if (artifact.removable === false) {
+          removeButton.disabled = true;
+          removeButton.title = artifact.reason || "该插件实现由宿主保留，当前不能移除。";
+        }
+        actions.append(removeButton);
       } else {
         const toggle = button(enabled ? "禁用" : "启用", "button-secondary", () => void perform(() => request(`/api/plugins/${encodeURIComponent(plugin.plugin_id)}/enabled`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ artifact_id: artifact.artifact_id, enabled: !enabled }) })));
-        if (!enabled && unavailable) {
+        if ((!enabled && unavailable) || (plugin.module_type === "orchestration" && artifact.enablement_available === false)) {
           toggle.disabled = true;
-          toggle.title = "插件制品当前不可用，无法启用。";
+          toggle.title = unavailable ? "插件制品当前不可用，无法启用。" : "当前交付项仅开放仓库开发模块的启停。";
         }
         actions.append(toggle);
-        actions.append(button("移除", "button-danger", () => {
+        const removeButton = button("移除", "button-danger", () => {
           const remove = () => perform(
             () => request(`/api/plugins/${encodeURIComponent(plugin.plugin_id)}/imports/${encodeURIComponent(artifact.artifact_id)}`, { method: "DELETE" }),
             { refreshNavigation: true, propagate: true },
@@ -98,14 +164,21 @@
           if (typeof window.showConfirmationDialog !== "function") { void remove(); return; }
           void window.showConfirmationDialog({
             title: "移除插件",
-            body: "移除会停止该实现用于后续新任务；已受理任务按原有快照与恢复规则继续处理。",
+            body: plugin.module_type === "orchestration"
+              ? "若已启用，将先停用再移除；已受理任务按原有快照继续处理。当前实例已装配的入口会在 Web 重载后卸载。"
+              : "若已启用，将先停用再移除；已受理任务按原有快照与恢复规则继续处理。",
             details: [{ label: "插件", value: `${plugin.name} · ${artifact.name}` }],
             confirmLabel: "移除",
             pendingLabel: "正在移除…",
             errorMessage: "插件未能移除。",
             onConfirm: remove,
           });
-        }));
+        });
+        if (artifact.removable === false) {
+          removeButton.disabled = true;
+          removeButton.title = artifact.reason || "该插件实现由宿主保留，当前不能移除。";
+        }
+        actions.append(removeButton);
       }
       item.append(copy, actions);
       return item;
@@ -122,18 +195,36 @@
       if (!(target instanceof HTMLElement)) return;
       const enabled = Array.isArray(plugin.enabled_artifact_ids) ? plugin.enabled_artifact_ids : [];
       const imported = Array.isArray(plugin.imported_artifact_ids) ? plugin.imported_artifact_ids : [];
-      const selectedId = enabled[0] || imported[0] || "";
+      const loadedArtifacts = Array.isArray(plugin.loaded_artifact_ids) ? plugin.loaded_artifact_ids : [];
+      const selectedId = enabled[0] || imported[0] || loadedArtifacts[0] || "";
       const artifact = (plugin.artifacts || []).find((item) => item.artifact_id === selectedId);
-      const source = artifact?.source === "development" ? "开发实现" : artifact?.version ? `正式版 v${artifact.version}` : "未导入";
+      const source = plugin.module_type === "orchestration"
+        ? (artifact?.name || "未导入")
+        : artifact?.source === "development" ? "开发实现" : artifact?.version ? `正式版 v${artifact.version}` : "未导入";
+      const loaded = Array.isArray(plugin.loaded_artifact_ids) && plugin.loaded_artifact_ids.includes(selectedId);
+      const loadStatus = plugin.module_type === "orchestration"
+        ? artifact?.load_state === "failed"
+          ? `装配失败：${artifact.load_reason || "修复模块后重新加载 Web。"}`
+          : loaded
+            ? (enabled.includes(selectedId) ? "入口已装配，尚未接入任务阶段" : "当前仍已装配，待重载卸载（未接入阶段）")
+            : enabled.includes(selectedId)
+              ? "已启用，待 Web 重载装配入口"
+              : "未装配入口"
+        : "";
       const item = document.createElement("div");
       item.className = "workstation-status-row plugin-lifecycle-status-row";
       const copy = document.createElement("div");
       copy.className = "workstation-status-copy";
       const title = document.createElement("strong");
       const detail = document.createElement("span");
-      detail.className = `workstation-status-detail workstation-status-detail-${enabled.length ? "success" : "warning"}`;
+      const tone = plugin.module_type === "orchestration" && artifact?.load_state === "failed"
+        ? "warning"
+        : enabled.length ? "success" : "warning";
+      detail.className = `workstation-status-detail workstation-status-detail-${tone}`;
       title.textContent = "当前插件状态";
-      detail.textContent = `插件版本：${plugin.name} · ${source} · 导入状态：${selectedId ? "已导入" : "未导入"} · 启用状态：${enabled.length ? "已启用" : "未启用"}。`;
+      detail.textContent = plugin.module_type === "orchestration"
+        ? `${source} · ${enabled.length ? "已启用" : "未启用"} · ${loadStatus || "未装配入口"}。`
+        : `插件版本：${plugin.name} · ${source} · 导入状态：${imported.includes(selectedId) ? "已导入" : "未导入"} · 启用状态：${enabled.length ? "已启用" : "未启用"}${loadStatus ? ` · 加载状态：${loadStatus}` : ""}。`;
       copy.append(title, detail);
       item.append(copy);
       target.querySelector(".plugin-lifecycle-status-row")?.remove();

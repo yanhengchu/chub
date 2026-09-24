@@ -1,0 +1,27 @@
+<section class="settings-section" aria-labelledby="prompt-optimizer-settings-title">
+  <div class="settings-section-heading">
+    <h2 id="prompt-optimizer-settings-title">运行模式</h2>
+    <p>更改后立即保存，仅影响后续受理的任务。</p>
+  </div>
+  <div class="settings-subsection">
+    <div class="workstation-status-list settings-divided-list" aria-live="polite">
+      <div class="workstation-status-row">
+        <div class="workstation-status-copy">
+          <strong>插件状态</strong>
+          <span id="prompt-optimizer-plugin-status" class="workstation-status-detail">正在读取插件状态。</span>
+        </div>
+      </div>
+    </div>
+    <label class="settings-field" for="prompt-optimizer-mode">
+      <span>
+        <strong>提示词处理模式</strong>
+        <small>direct 返回已规范化的原始提示词；auto 由 AI Agent 生成优化后的提示词。</small>
+      </span>
+      <select id="prompt-optimizer-mode" data-settings-picker data-settings-picker-multiline disabled>
+        <option value="direct" data-description="直接返回已规范化的原始提示词">direct</option>
+        <option value="auto" data-description="AI Agent 生成优化后的提示词" disabled>auto</option>
+      </select>
+    </label>
+    <p id="prompt-optimizer-settings-message" class="message" role="status" aria-live="polite"></p>
+  </div>
+</section>

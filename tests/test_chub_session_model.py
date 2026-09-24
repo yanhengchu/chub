@@ -50,6 +50,31 @@ def test_current_store_persists_single_chub_session_schema(tmp_path: Path) -> No
 
     payload = json.loads(store.path.read_text(encoding="utf-8"))
     assert payload["version"] == 3
+    assert payload["show_internal_sessions"] is False
+
+
+def test_session_kind_is_owned_by_chub_and_persisted(tmp_path: Path) -> None:
+    path = tmp_path / "ai-sessions.json"
+    store = AiSessionStore(path)
+    ordinary = AiSession(
+        id=str(uuid4()),
+        runtime_id="codex",
+        implementation_id="codex-runtime-dev",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd=tmp_path,
+        permission_mode="read-only",
+    )
+    internal = ordinary.model_copy(update={"id": str(uuid4()), "session_kind": "internal"})
+
+    store.save(ordinary)
+    store.save(internal)
+    loaded = AiSessionStore(path)
+
+    assert {session.id: session.session_kind for session in loaded.list()} == {
+        ordinary.id: "user",
+        internal.id: "internal",
+    }
 
 
 def test_session_manager_registers_quick_native_claim_for_current_session_schema(

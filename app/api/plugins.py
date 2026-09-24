@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field
+from typing import Literal
 
 from app.core.response import ApiError, ApiResponse
 from app.core.security import require_trusted_network
@@ -21,9 +22,93 @@ class Enablement(BaseModel):
     enabled: bool
 
 
+class PromptOptimizerSettingsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["direct", "auto"]
+
+
+def _prompt_optimizer_settings_data(request: Request) -> dict[str, object]:
+    plugin_id = "chub-task-prompt-optimizer"
+    plugins = request.app.state.plugin_lifecycle.list(request).get("plugins", [])
+    plugin = next(
+        (
+            item for item in plugins
+            if isinstance(item, dict) and item.get("plugin_id") == plugin_id
+        ),
+        None,
+    )
+    if not isinstance(plugin, dict) or not plugin.get("imported_artifact_ids"):
+        raise ApiError(404, "plugin_settings_not_found", "该插件尚未导入，设置页不可用。")
+
+    settings_data = request.app.state.prompt_optimizer_settings.read()
+    enabled_ids = plugin.get("enabled_artifact_ids", [])
+    loaded_ids = plugin.get("loaded_artifact_ids", [])
+    enabled = isinstance(enabled_ids, list) and bool(enabled_ids)
+    loaded = isinstance(loaded_ids, list) and bool(loaded_ids)
+    return {
+        **settings_data,
+        "plugin_enabled": enabled,
+        "entry_loaded": loaded,
+        "auto_available": False,
+        "auto_unavailable_reason": (
+            "auto 模式依赖的任务阶段尚未接入，后续交付完成后开放。"
+        ),
+        "effective": False,
+        "effective_mode": None,
+        "runtime_notice": "当前阶段链尚未接入，模式配置暂不参与普通任务执行。",
+    }
+
+
 @router.get("")
 def list_plugins(request: Request) -> ApiResponse[dict[str, object]]:
     return ApiResponse(data=request.app.state.plugin_lifecycle.list(request))
+
+
+@router.get("/chub-task-prompt-optimizer/settings")
+def get_prompt_optimizer_settings(request: Request) -> ApiResponse[dict[str, object]]:
+    return ApiResponse(data=_prompt_optimizer_settings_data(request))
+
+
+@router.put("/chub-task-prompt-optimizer/settings")
+def update_prompt_optimizer_settings(
+    payload: PromptOptimizerSettingsUpdate,
+    request: Request,
+) -> ApiResponse[dict[str, object]]:
+    operation_id = log_operation(
+        request,
+        action="update_plugin_settings",
+        status="requested",
+        target="chub-task-prompt-optimizer",
+    )
+    log_operation(
+        request,
+        action="update_plugin_settings",
+        status="started",
+        target="chub-task-prompt-optimizer",
+        operation_id=operation_id,
+    )
+    try:
+        _prompt_optimizer_settings_data(request)
+        request.app.state.prompt_optimizer_settings.save(payload.mode)
+        data = _prompt_optimizer_settings_data(request)
+    except ApiError as exc:
+        log_operation(
+            request,
+            action="update_plugin_settings",
+            status="failed",
+            target="chub-task-prompt-optimizer",
+            operation_id=operation_id,
+            reason=exc.code,
+        )
+        raise
+    log_operation(
+        request,
+        action="update_plugin_settings",
+        status="succeeded",
+        target="chub-task-prompt-optimizer",
+        operation_id=operation_id,
+    )
+    return ApiResponse(data=data)
 
 
 @router.post("/{plugin_id}/imports")
@@ -56,6 +141,7 @@ async def remove_plugin(plugin_id: str, artifact_id: str, request: Request) -> A
 async def update_plugin_enablement(plugin_id: str, payload: Enablement, request: Request) -> ApiResponse[dict[str, object]]:
     action = "enable_plugin" if payload.enabled else "disable_plugin"
     operation_id = log_operation(request, action=action, status="requested", target=f"{plugin_id}:{payload.artifact_id}")
+    log_operation(request, action=action, status="started", target=plugin_id, operation_id=operation_id)
     try:
         data = await request.app.state.plugin_lifecycle.set_enabled(request, plugin_id, payload.artifact_id, payload.enabled)
     except ApiError as exc:

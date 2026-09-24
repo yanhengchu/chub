@@ -31,6 +31,7 @@ def parser() -> argparse.ArgumentParser:
     mention = send.add_mutually_exclusive_group()
     mention.add_argument("--mention-all", action="store_true")
     mention.add_argument("--mention-recipient", action="append", default=[])
+    mention.add_argument("--mention-inline-recipient", action="append", default=[])
     return root
 
 
@@ -54,10 +55,14 @@ async def run(arguments: argparse.Namespace) -> dict[str, object]:
             elif arguments.mention_recipient:
                 mention_mode = "recipients"
                 recipients = arguments.mention_recipient
+            elif arguments.mention_inline_recipient:
+                mention_mode = "inline_recipients"
+                recipients = arguments.mention_inline_recipient
+        target = service.resolve_target_id(arguments.target)
         result = await service.send(
             NotificationRequest(
                 request_id=uuid4().hex,
-                target=arguments.target,
+                target=target,
                 message=message,
                 mention_mode=mention_mode,
                 recipients=recipients,

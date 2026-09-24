@@ -81,30 +81,6 @@ class AiSearchService:
                 self._refresh(quick_interactions)
             return self._data()
 
-    def show_sessions(self) -> bool:
-        with self._lock:
-            self._require_available()
-            return self._state.show_sessions
-
-    def set_show_sessions(self, show: bool) -> bool:
-        with self._lock:
-            self._require_available()
-            if self._state.show_sessions != show:
-                self._commit(self._state.model_copy(update={"show_sessions": show}))
-            return self._state.show_sessions
-
-    def hidden_session_ids(self) -> set[str]:
-        with self._lock:
-            if self._state_error is not None or self._state.show_sessions:
-                return set()
-            return {
-                session_id
-                for session_id in (
-                    self._state.session_id,
-                )
-                if session_id is not None
-            }
-
     def refresh(self, manager, quick_interactions, *, source_ip: str) -> AiSearchData:
         with self._lock:
             self._require_available()
@@ -299,7 +275,7 @@ class AiSearchService:
                 self._replace_session(manager, quick_interactions, session_id)
         try:
             with quick_interactions.session_creation_guard():
-                return manager.create_session("home"), True
+                return manager.create_session("home", session_kind="internal"), True
         except ApiError:
             raise
         except Exception as exc:

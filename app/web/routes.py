@@ -80,6 +80,23 @@ def _imported_business_modules(request: Request) -> tuple:
     )
 
 
+_ORCHESTRATION_SETTINGS_PAGES = {
+    "chub-task-prompt-optimizer": "任务提示词优化",
+}
+
+
+def _imported_orchestration_navigation(request: Request) -> tuple[dict[str, str], ...]:
+    try:
+        imported = request.app.state.plugin_lifecycle.imported_plugin_ids()
+    except (ApiError, OSError, RuntimeOperationError):
+        return ()
+    return tuple(
+        {"module_id": module_id, "name": name}
+        for module_id, name in _ORCHESTRATION_SETTINGS_PAGES.items()
+        if module_id in imported
+    )
+
+
 @router.get("/", response_class=HTMLResponse, include_in_schema=False)
 def index(request: Request, section: str = "workbench") -> HTMLResponse:
     workspace_session_id = request.query_params.get("session", "").strip()
@@ -147,6 +164,7 @@ def render_settings_page(
     settings = request.app.state.settings
     runtime_navigation = ()
     business_module_navigation = _imported_business_modules(request)
+    orchestration_navigation = _imported_orchestration_navigation(request)
     try:
         runtime_navigation = _imported_runtime_navigation(request)
     except (ApiError, OSError, RuntimeOperationError):
@@ -165,6 +183,7 @@ def render_settings_page(
             "settings_runtime_id": runtime_id,
             "runtime_navigation": runtime_navigation,
             "business_module_navigation": business_module_navigation,
+            "orchestration_navigation": orchestration_navigation,
             "settings_module": (
                 loaded_business_module(request, page)
                 if page in {module.module_id for module in business_module_navigation}
@@ -205,7 +224,7 @@ def session_settings(request: Request) -> Response:
         request,
         page="session",
         title="会话",
-        description="管理新会话默认配置，以及模块内部会话在工作台中的显示方式。",
+        description="管理新会话默认配置，以及内部会话在工作台列表中的显示方式。",
     )
 
 
@@ -300,6 +319,19 @@ def workspace_preview(
 
 @router.get("/settings/{module_id}", response_class=HTMLResponse, include_in_schema=False)
 def business_module_settings(request: Request, module_id: str) -> HTMLResponse:
+    if module_id == "chub-task-prompt-optimizer":
+        try:
+            imported = request.app.state.plugin_lifecycle.imported_plugin_ids()
+        except (ApiError, OSError, RuntimeOperationError):
+            raise HTTPException(status_code=503, detail="Plugin settings are temporarily unavailable") from None
+        if module_id not in imported:
+            raise HTTPException(status_code=404, detail="Settings page not found")
+        return render_settings_page(
+            request,
+            page=module_id,
+            title="任务提示词优化",
+            description="配置提示词优化插件的运行模式。",
+        )
     module = loaded_business_module(request, module_id)
     if module is None or module.settings_template is None:
         raise HTTPException(status_code=404, detail="Settings page not found")

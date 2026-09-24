@@ -40,7 +40,6 @@ from app.ai_session.operations import (
 )
 from app.ai_runtime.development_plugins import development_runtime_artifact_id
 from app.core.response import ApiError, ApiResponse
-from app.core.business_modules import loaded_business_modules
 from app.core.security import require_trusted_network
 from app.services.operation_log import log_operation, write_operation
 from app.web.routes import WEB_DIR
@@ -154,25 +153,7 @@ def list_sessions(
             listed_sessions, native_sessions = combined_sessions
         else:
             listed_sessions = manager.list_sessions()
-    hidden_business_session_ids: set[str] = set()
-    for module in loaded_business_modules(request):
-        if module.hidden_session_ids is not None:
-            hidden_business_session_ids.update(module.hidden_session_ids(request))
-    ai_search = getattr(request.app.state, "ai_search", None)
-    hidden_search_session_ids = (
-        ai_search.hidden_session_ids()
-        if ai_search is not None
-        else set()
-    )
-    deployment_package = getattr(request.app.state, "deployment_package", None)
-    try:
-        hidden_release_note_session_ids = (
-            deployment_package.hidden_release_note_session_ids()
-            if deployment_package is not None
-            else set()
-        )
-    except ApiError:
-        hidden_release_note_session_ids = set()
+    show_internal_sessions = manager.show_internal_sessions()
     sessions = [
         session.model_copy(
             update={
@@ -186,9 +167,7 @@ def list_sessions(
             }
         )
         for session in listed_sessions
-        if session.id not in hidden_business_session_ids
-        and session.id not in hidden_search_session_ids
-        and session.id not in hidden_release_note_session_ids
+        if show_internal_sessions or session.session_kind != "internal"
     ]
     try:
         configured_runtime_id = manager.configured_default_runtime_id()

@@ -159,6 +159,7 @@ class _State(_StrictModel):
     release_note_generation: DeploymentPackageReleaseNoteGeneration = Field(
         default_factory=DeploymentPackageReleaseNoteGeneration
     )
+    # Retained only to read existing local state; list visibility is Session-owned.
     show_release_note_session: bool = False
     release_note_session_id: str | None = Field(default=None, min_length=1, max_length=64)
 
@@ -465,25 +466,6 @@ class DeploymentPackageService:
             self._write(state)
             return self.status()
 
-    def show_release_note_session(self) -> bool:
-        with self._lock:
-            return self._read().show_release_note_session
-
-    def set_show_release_note_session(self, show: bool) -> bool:
-        with self._lock:
-            state = self._read()
-            if state.show_release_note_session != show:
-                state.show_release_note_session = show
-                self._write(state)
-            return state.show_release_note_session
-
-    def hidden_release_note_session_ids(self) -> set[str]:
-        with self._lock:
-            state = self._read()
-            if state.show_release_note_session or state.release_note_session_id is None:
-                return set()
-            return {state.release_note_session_id}
-
     def generate_release_note(
         self,
         *,
@@ -582,7 +564,7 @@ class DeploymentPackageService:
                 if exc.code != "session_not_found":
                     raise
         with self._quick_interactions.session_creation_guard():
-            session = self._session_manager.create_session("chub")
+            session = self._session_manager.create_session("chub", session_kind="internal")
         self._session_manager.rename_session(session.id, "版本发布说明")
         return session.id, True
 

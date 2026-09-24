@@ -64,6 +64,7 @@ class LineCollaboration(_StrictModel):
 
 class CollaborationState(_StrictModel):
     version: int = 3
+    # Inert legacy field retained so current-version local state remains readable.
     show_sessions: bool = False
     lines: list[LineCollaboration] = Field(default_factory=list, max_length=500)
 
@@ -76,26 +77,6 @@ class DeliverylineCollaboration:
         self._lock = threading.RLock()
         self._state_error: str | None = None
         self._state = self._read()
-
-    def show_sessions(self) -> bool:
-        with self._lock:
-            self._require_state_available()
-            return self._state.show_sessions
-
-    def set_show_sessions(self, show: bool) -> bool:
-        with self._lock:
-            self._require_state_available()
-            if self._state.show_sessions != show:
-                next_state = self._state.model_copy(deep=True)
-                next_state.show_sessions = show
-                self._commit(next_state)
-            return self._state.show_sessions
-
-    def hidden_session_ids(self) -> set[str]:
-        with self._lock:
-            if self._state_error is not None or self._state.show_sessions:
-                return set()
-            return {item.session_id for item in self._state.lines}
 
     def status_for(self, line: DeliveryLine, quick_interactions) -> dict[str, object] | None:
         with self._lock:
@@ -131,7 +112,7 @@ class DeliverylineCollaboration:
                     association = None
             if association is None:
                 with quick_interactions.session_creation_guard():
-                    session = manager.create_session("chub")
+                    session = manager.create_session("chub", session_kind="internal")
                 association = LineCollaboration(line_id=line.id, session_id=session.id)
                 try:
                     manager.rename_session(session.id, f"Deliveryline · {line.id}")

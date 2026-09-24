@@ -16,6 +16,7 @@ const runtimeDefaultImplementation = document.querySelector(
 const runtimeSettingsMessage = document.querySelector(
   "#runtime-settings-message",
 );
+const runtimePluginStatus = document.querySelector("#runtime-plugin-status");
 const settingsRuntimeId = document.body.dataset.settingsRuntimeId || "";
 const quickInteractionCore = window.QuickInteractionCore;
 const settingsOpenClawIntegrationList = document.querySelector(
@@ -110,7 +111,18 @@ function positionSettingsChoicePicker(picker) {
 function renderSettingsChoicePicker(picker) {
   const { select, trigger, menu } = picker;
   const selected = select.selectedOptions[0] || select.options[0];
-  trigger.querySelector("[data-settings-picker-value]").textContent = selected?.textContent || "";
+  const value = trigger.querySelector("[data-settings-picker-value]");
+  if (select.hasAttribute("data-settings-picker-multiline")) {
+    value.classList.add("settings-choice-picker-value-multiline");
+    const title = document.createElement("strong");
+    title.textContent = selected?.textContent || "";
+    const description = document.createElement("small");
+    description.textContent = selected?.dataset.description || "";
+    value.replaceChildren(title, description);
+  } else {
+    value.classList.remove("settings-choice-picker-value-multiline");
+    value.textContent = selected?.textContent || "";
+  }
   trigger.disabled = select.disabled;
   menu.replaceChildren(...Array.from(select.options, (option) => {
     const button = document.createElement("button");
@@ -270,6 +282,50 @@ function versionDescription(item) {
     : `使用正式插件包 ${version}；仅影响之后新建的 Session 和任务。`;
 }
 
+function renderRuntimePluginStatus(data, errorMessage = "") {
+  if (!(runtimePluginStatus instanceof HTMLElement)) return;
+  const implementations = Array.isArray(data?.implementations) ? data.implementations : [];
+  const selected = implementations.find((item) => item.implementation_id === data?.default_implementation_id)
+    || implementations.find((item) => item.enabled === true)
+    || implementations[0];
+  const copy = document.createElement("div");
+  const title = document.createElement("strong");
+  const detail = document.createElement("span");
+  const row = document.createElement("div");
+  row.className = "workstation-status-row";
+  copy.className = "workstation-status-copy";
+  title.textContent = "插件状态";
+  detail.id = "runtime-plugin-status-detail";
+  detail.className = "workstation-status-detail";
+  if (errorMessage) {
+    detail.textContent = errorMessage;
+    detail.classList.add("workstation-status-detail-failed");
+  } else if (!selected) {
+    detail.textContent = "当前 Runtime 尚无可用插件版本。";
+    detail.classList.add("workstation-status-detail-warning");
+  } else {
+    const source = selected.version === "dev" ? "开发实现" : `正式版 v${formalVersion(selected.version)}`;
+    const state = !selected.imported
+      ? "未导入"
+      : !selected.enabled
+        ? "已停用"
+        : selected.healthy
+          ? "已启用，可用"
+          : `已启用，不可用${selected.reason ? `：${selected.reason}` : ""}`;
+    detail.textContent = `${selected.name} · ${source} · ${state}。`;
+    detail.classList.add(
+      !selected.imported || !selected.enabled
+        ? "workstation-status-detail-warning"
+        : selected.healthy
+          ? "workstation-status-detail-success"
+          : "workstation-status-detail-failed",
+    );
+  }
+  copy.append(title, detail);
+  row.append(copy);
+  runtimePluginStatus.replaceChildren(row);
+}
+
 function renderRuntimeImplementations(implementations) {
   const versions = Array.isArray(implementations?.implementations)
     ? implementations.implementations
@@ -331,9 +387,11 @@ async function loadRuntimePlugins() {
     const implementations = await fetchSettingsApi(
       `/api/ai/runtime-implementations?runtime_id=${encodeURIComponent(settingsRuntimeId)}`,
     );
+    renderRuntimePluginStatus(implementations);
     renderRuntimeImplementations(implementations);
     setRuntimeSettingsMessage("");
   } catch (_error) {
+    renderRuntimePluginStatus(null, "暂时无法读取 Runtime 插件状态。");
     setRuntimeSettingsMessage("暂时无法读取 Runtime 版本状态。", "error");
   }
 }
@@ -413,6 +471,12 @@ function disposeGeneralRuntimeSettingsPickers() {
 
 function renderGeneralRuntimeSettings(data, catalog = null) {
   if (!(generalRuntimeSettingsPanel instanceof HTMLElement)) return;
+  const internalVisibilitySetting = generalRuntimeSettingsPanel.querySelector(
+    "#internal-session-visibility-setting",
+  );
+  const internalVisibilityFeedback = generalRuntimeSettingsPanel.querySelector(
+    "#internal-session-visibility-feedback",
+  );
   disposeGeneralRuntimeSettingsPickers();
   generalRuntimeSettingsPanel.replaceChildren();
   const sections = Array.isArray(data?.sections) ? data.sections : [];
@@ -467,11 +531,17 @@ function renderGeneralRuntimeSettings(data, catalog = null) {
       });
       form.append(label);
     }
+    if (section.id === "session-defaults" && internalVisibilitySetting instanceof HTMLElement) {
+      form.append(internalVisibilitySetting);
+    }
     const message = document.createElement("p");
     message.className = "message";
     message.setAttribute("aria-live", "polite");
     form.append(message);
     generalRuntimeSettingsPanel.append(form);
+  }
+  if (internalVisibilityFeedback instanceof HTMLElement) {
+    generalRuntimeSettingsPanel.append(internalVisibilityFeedback);
   }
   initializeSettingsChoicePickers();
 }
@@ -485,11 +555,23 @@ async function loadGeneralRuntimeSettings() {
     ]);
     renderGeneralRuntimeSettings(data, catalog);
   } catch (_error) {
+    const internalVisibilitySetting = generalRuntimeSettingsPanel.querySelector(
+      "#internal-session-visibility-setting",
+    );
+    const internalVisibilityFeedback = generalRuntimeSettingsPanel.querySelector(
+      "#internal-session-visibility-feedback",
+    );
     generalRuntimeSettingsPanel.replaceChildren();
     const message = document.createElement("p");
     message.className = "message message-error";
     message.textContent = "暂时无法读取 Runtime 默认项。";
     generalRuntimeSettingsPanel.append(message);
+    if (internalVisibilitySetting instanceof HTMLElement) {
+      generalRuntimeSettingsPanel.append(internalVisibilitySetting);
+    }
+    if (internalVisibilityFeedback instanceof HTMLElement) {
+      generalRuntimeSettingsPanel.append(internalVisibilityFeedback);
+    }
   }
 }
 
@@ -540,6 +622,70 @@ async function fetchSettingsApi(path, options = {}) {
     throw new Error(payload.error?.message || payload.error?.code || "request_failed");
   }
   return payload.data;
+}
+
+function initializePromptOptimizerSettings() {
+  const mode = document.querySelector("#prompt-optimizer-mode");
+  const pluginStatus = document.querySelector("#prompt-optimizer-plugin-status");
+  const message = document.querySelector("#prompt-optimizer-settings-message");
+  if (!(mode instanceof HTMLSelectElement)) return;
+
+  const endpoint = "/api/plugins/chub-task-prompt-optimizer/settings";
+  let current = null;
+  let busy = false;
+  const render = (data) => {
+    current = data;
+    const autoOption = mode.querySelector('option[value="auto"]');
+    if (autoOption instanceof HTMLOptionElement) {
+      autoOption.disabled = data.auto_available !== true;
+      autoOption.textContent = "auto";
+      autoOption.dataset.description = data.auto_available === true
+        ? "AI Agent 生成优化后的提示词"
+        : data.auto_unavailable_reason || "AI 优化尚未就绪";
+    }
+    mode.value = data.mode;
+    mode.disabled = busy;
+    const picker = settingsChoicePickers.get(mode);
+    if (picker) renderSettingsChoicePicker(picker);
+    if (pluginStatus) {
+      const status = data.plugin_enabled ? "插件已启用" : "插件已停用，设置保留但暂不生效";
+      pluginStatus.textContent = `${status}；${data.entry_loaded ? "入口已装配" : "入口尚未装配"}。`;
+    }
+  };
+  const load = async () => {
+    try {
+      render(await fetchSettingsApi(endpoint));
+      setSettingsMessage(message, "");
+    } catch (error) {
+      mode.disabled = true;
+      setSettingsMessage(message, error instanceof Error ? error.message : "无法读取插件设置。", "error");
+    }
+  };
+  mode.addEventListener("change", async () => {
+    if (busy || !current) return;
+    const previousMode = current.mode;
+    const nextMode = mode.value;
+    if (nextMode === previousMode) return;
+
+    busy = true;
+    mode.disabled = true;
+    setSettingsMessage(message, "正在保存…");
+    try {
+      render(await fetchSettingsApi(endpoint, {
+        method: "PUT",
+        headers: settingsHeaders(true),
+        body: JSON.stringify({ mode: nextMode }),
+      }));
+      setSettingsMessage(message, "");
+    } catch (error) {
+      render(current);
+      setSettingsMessage(message, error instanceof Error ? error.message : "插件设置未能保存。", "error");
+    } finally {
+      busy = false;
+      if (current) render(current);
+    }
+  });
+  void load();
 }
 
 function closeMaintenanceTerminalDialog() {
@@ -1324,6 +1470,9 @@ if (settingsPage === "appearance") {
   window.initializeSessionVisibilitySettings?.();
 } else if (settingsPage === "runtime") {
   window.initializeWorkspacePluginLifecycle?.();
+} else if (settingsPage === "chub-task-prompt-optimizer") {
+  initializeSettingsChoicePickers();
+  initializePromptOptimizerSettings();
 } else if (document.querySelector("[data-plugin-version-picker]")) {
   initializeSettingsChoicePickers();
   window.initializeWorkspacePluginLifecycle?.();

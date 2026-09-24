@@ -5,7 +5,6 @@ window.initializeWorkspaceWorkstation = () => {
   const byId = (id) => document.getElementById(id);
   const elements = {
     health: byId("workspace-preview-health"),
-    refresh: byId("workspace-workstation-refresh"),
     runtimeSummary: byId("workspace-runtime-summary"),
     runtimeSummaryDetail: byId("workspace-runtime-summary-detail"),
     tailnetSummary: byId("workspace-tailnet-summary"),
@@ -18,7 +17,6 @@ window.initializeWorkspaceWorkstation = () => {
     workerRestart: byId("workspace-worker-restart"),
     upgradeDetail: byId("workspace-upgrade-detail"),
     upgradeStart: byId("workspace-upgrade-start"),
-    developmentRefresh: byId("workspace-development-refresh"),
     developmentEnvironment: byId("workspace-development-environment"),
     developmentRuntimeList: byId("workspace-development-runtime-list"),
     developmentBusinessList: byId("workspace-development-business-list"),
@@ -30,8 +28,6 @@ window.initializeWorkspaceWorkstation = () => {
   let hubRestarting = false;
   let workerRestarting = false;
   let upgradeStarting = false;
-  let developmentLoading = false;
-  let developmentRefreshing = false;
   let developmentSnapshot = null;
   let workerTimer = 0;
   let workerRetryDelay = 1000;
@@ -39,13 +35,11 @@ window.initializeWorkspaceWorkstation = () => {
   let pageReloadTimer = 0;
   const pendingWaits = new Map();
   let disposed = false;
-  let statusIsCurrent = false;
   let workerIsCurrent = false;
   let upgradeIsCurrent = false;
   let snapshot = { status: null, worker: null, upgrade: null };
   const snapshotCacheKey = "chub.workspace.workstation.v1";
   const developmentSnapshotCacheKey = "chub.workspace.development.v1";
-  const workbenchStatusLoadingMinimumMs = 220;
   const requestAbortController = new AbortController();
 
   const request = async (path, options = {}) => {
@@ -222,7 +216,6 @@ window.initializeWorkspaceWorkstation = () => {
     elements.chubRestart.disabled = hubRestarting || upgradeRunning;
     elements.workerRestart.disabled = workerRestarting || !workerState?.can_restart || upgradeRunning;
     elements.upgradeStart.disabled = upgradeStarting || !upgradeIsCurrent || !upgradeState?.can_start;
-    elements.developmentRefresh.disabled = developmentLoading || developmentRefreshing;
   };
 
   const renderStatus = (data) => {
@@ -368,8 +361,8 @@ window.initializeWorkspaceWorkstation = () => {
       if (disposed) return false;
       renderStatus(data);
       snapshot.status = data;
-      statusIsCurrent = true;
       cacheSnapshot();
+      setToolbarStatus(toolbarStatus(data));
     } catch (error) {
       if (disposed || error?.name === "AbortError") return false;
       if (!snapshot.status) {
@@ -377,6 +370,7 @@ window.initializeWorkspaceWorkstation = () => {
       } else {
         showToolbarFeedback(error.message || "Chub 状态读取失败。");
       }
+      setToolbarStatus("工作台状态暂时无法更新");
       return false;
     }
     return true;
@@ -428,8 +422,6 @@ window.initializeWorkspaceWorkstation = () => {
   };
 
   const loadDevelopment = async () => {
-    developmentLoading = true;
-    syncControls();
     try {
       const [runtime, runtimeManagement, lifecycle] = await Promise.all([
         request("/api/ai/runtime-implementations", { cache: "no-store" }),
@@ -453,47 +445,7 @@ window.initializeWorkspaceWorkstation = () => {
         showToolbarFeedback(error.message || "插件状态读取失败。");
       }
       return false;
-    } finally {
-      developmentLoading = false;
-      syncControls();
     }
-  };
-
-  const refreshDevelopment = async () => {
-    developmentRefreshing = true;
-    syncControls();
-    try {
-      await loadDevelopment();
-    } finally {
-      developmentRefreshing = false;
-      syncControls();
-    }
-  };
-
-  const refresh = async () => {
-    const refreshStartedAt = window.performance.now();
-    elements.refresh.disabled = true;
-    statusIsCurrent = false;
-    workerIsCurrent = false;
-    upgradeIsCurrent = false;
-    syncControls();
-    setToolbarStatus("正在读取工作台状态…");
-    const results = await Promise.all([loadStatus(), loadWorker(), loadUpgrade()]);
-    if (disposed) return;
-    const remainingLoadingTime = Math.max(
-      0,
-      workbenchStatusLoadingMinimumMs - (window.performance.now() - refreshStartedAt),
-    );
-    if (remainingLoadingTime) {
-      await waitFor(remainingLoadingTime);
-    }
-    if (disposed) return;
-    if (results.every(Boolean) && snapshot.status) {
-      setToolbarStatus(toolbarStatus(snapshot.status));
-    } else {
-      setToolbarStatus("工作台状态暂时无法更新");
-    }
-    elements.refresh.disabled = false;
   };
 
   const waitForRestart = async (previousInstanceId) => {
@@ -631,7 +583,6 @@ window.initializeWorkspaceWorkstation = () => {
     cancelPendingWaits();
   };
 
-  elements.refresh.addEventListener("click", () => { void refresh(); });
   elements.chubRestart.addEventListener("click", () => {
     void showConfirmationDialog({
       title: "重启 Chub Web 控制面",
@@ -664,7 +615,7 @@ window.initializeWorkspaceWorkstation = () => {
     });
   });
 
-  void refresh();
+  void Promise.all([loadStatus(), loadWorker(), loadUpgrade()]);
   void loadDevelopment();
 };
 

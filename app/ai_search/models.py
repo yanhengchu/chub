@@ -51,6 +51,7 @@ class SearchRun(_StrictModel):
 
 class AiSearchState(_StrictModel):
     version: Literal[9] = 9
+    # Inert legacy field retained so current-version local state remains readable.
     show_sessions: bool = False
     session_id: str | None = Field(default=None, min_length=1, max_length=64)
     pending_run: SearchRun | None = None
@@ -60,7 +61,3 @@ class AiSearchState(_StrictModel):
 class AiSearchData(_StrictModel):
     current: SearchRun | None = None
     latest: SearchRun | None = None
-
-
-class AiSearchSettings(_StrictModel):
-    show_sessions: bool

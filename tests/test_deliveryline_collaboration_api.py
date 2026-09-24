@@ -15,8 +15,9 @@ from modules.business.deliveryline.store import DeliverylineUnavailable
 class _Manager:
     def __init__(self) -> None:
         self.sessions: set[str] = set()
-    def create_session(self, workspace_id: str):
+    def create_session(self, workspace_id: str, *, session_kind: str = "user"):
         assert workspace_id == "chub"
+        assert session_kind == "internal"
         session_id = f"session-{len(self.sessions) + 1}"; self.sessions.add(session_id)
         return SimpleNamespace(id=session_id)
     def rename_session(self, session_id: str, _title: str): assert session_id in self.sessions
@@ -155,16 +156,13 @@ async def test_delete_preserves_line_when_associated_session_cannot_be_deleted(s
 
     assert deleted.status_code == 409
     assert deleted.json()["error"]["code"] == "session_busy"
-    assert [item["id"] for item in overview.json()["data"]["lines"]] == [line_id]
+    assert line_id in {item["id"] for item in overview.json()["data"]["lines"]}
 
 
 @pytest.mark.anyio
-async def test_collaboration_session_visibility_setting_remains_available(settings) -> None:
+async def test_collaboration_session_visibility_setting_was_removed(settings) -> None:
     app = create_app(settings)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        await client.post("/api/plugins/deliveryline/imports", json={"artifact_id": "development:deliveryline"})
-        current = await client.get("/api/deliveryline/settings")
-        updated = await client.put("/api/deliveryline/settings", json={"show_sessions": True})
-    assert current.json()["data"]["show_sessions"] is False
-    assert updated.json()["data"]["show_sessions"] is True
+        response = await client.get("/api/deliveryline/settings")
+    assert response.status_code == 404

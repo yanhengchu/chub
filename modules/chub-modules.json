@@ -10,6 +10,11 @@
       "module_id": "deliveryline",
       "module_type": "business",
       "path": "business/deliveryline"
+    },
+    {
+      "module_id": "chub-task-prompt-optimizer",
+      "module_type": "orchestration",
+      "path": "orchestration/chub-task-prompt-optimizer"
     }
   ]
 }

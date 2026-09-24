@@ -10,7 +10,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.core.response import ApiError, ApiResponse
 from app.core.security import require_trusted_network
 from .store import DeliveryLine, DeliverylineError, DeliverylineNotFound, DeliverylineTransitionNotAllowed
-from app.services.internal_session_visibility import internal_session_visibility_lock
 from app.services.operation_log import log_operation
 
 
@@ -36,11 +35,6 @@ class GoalConfirmation(BaseModel):
     confirmed_facts: list[str] = Field(default_factory=list, max_length=30)
     scope_boundary: str = Field(default="", max_length=4000)
     open_questions: list[str] = Field(default_factory=list, max_length=30)
-
-
-class CollaborationSettingsUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    show_sessions: bool
 
 
 class LineData(BaseModel):
@@ -72,10 +66,6 @@ class DeliverylineOverview(BaseModel):
 
 class LineDeleted(BaseModel):
     id: str
-
-
-class CollaborationSettingsData(BaseModel):
-    show_sessions: bool
 
 
 def _data(record: DeliveryLine, collaboration: dict[str, object] | None = None) -> LineData:
@@ -245,17 +235,3 @@ def delete_line(line_id: str, request: Request) -> ApiResponse[LineDeleted]:
         LOGGER.warning("Unable to remove deleted Deliveryline clarification state", exc_info=True)
     log_operation(request, action="delete_deliveryline_line", status="succeeded", target=line_id, operation_id=operation_id)
     return ApiResponse(data=LineDeleted(id=line_id))
-
-
-@router.get("/settings", response_model=ApiResponse[CollaborationSettingsData])
-def get_collaboration_settings(request: Request) -> ApiResponse[CollaborationSettingsData]:
-    _deliveryline_plugin(request)
-    return ApiResponse(data=CollaborationSettingsData(show_sessions=request.app.state.deliveryline_collaboration.show_sessions()))
-
-
-@router.put("/settings", response_model=ApiResponse[CollaborationSettingsData])
-def update_collaboration_settings(payload: CollaborationSettingsUpdate, request: Request) -> ApiResponse[CollaborationSettingsData]:
-    _deliveryline_plugin(request)
-    with internal_session_visibility_lock:
-        show_sessions = request.app.state.deliveryline_collaboration.set_show_sessions(payload.show_sessions)
-    return ApiResponse(data=CollaborationSettingsData(show_sessions=show_sessions))

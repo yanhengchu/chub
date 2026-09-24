@@ -27,18 +27,6 @@ def _initialize(application: FastAPI, settings: Settings) -> None:
     )
 
 
-def _session_visibility_get(request: Request) -> bool:
-    return request.app.state.deliveryline_collaboration.show_sessions()
-
-
-def _session_visibility_set(request: Request, value: bool) -> None:
-    request.app.state.deliveryline_collaboration.set_show_sessions(value)
-
-
-def _hidden_session_ids(request: Request) -> set[str]:
-    return request.app.state.deliveryline_collaboration.hidden_session_ids()
-
-
 def _recovery_state_paths(settings: Settings) -> tuple[Path, ...]:
     return (MODULE_STATE_DIR,)
 
@@ -62,9 +50,6 @@ def create_business_module(
         initialize=_initialize,
         workspace_state=workspace_state,
         workspace_records=workspace_records,
-        session_visibility_get=_session_visibility_get,
-        session_visibility_set=_session_visibility_set,
-        hidden_session_ids=_hidden_session_ids,
         recovery_state_paths=_recovery_state_paths,
     )
 

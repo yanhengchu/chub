@@ -1,13 +1,13 @@
 # Chub Session 状态模型设计
 
-> 状态：已验收
+> 状态：持续维护
 > 主要读者：AI Agent；维护者通过与 AI Agent 协作，理解并确认本文规则。
-> 本文负责：Chub Session 的存储模型、Native Session 绑定、状态投影、Session 操作和恢复边界。
+> 本文负责：Chub Session 的存储模型、普通/内部类型、Native Session 绑定、列表可见性、状态投影、Session 操作和恢复边界。
 > 本文不负责：Runtime 私有发现格式、Worker 任务恢复与通知、Runtime 插件模块生命周期和微信消息路由。
 
 ## AI 可执行契约
 
-Chub 只管理一种 `Chub Session`。页面、API、微信槽位和任务入口统一使用 `session_id`；调用方不能提交或替换 `native_session_id`、`runtime_id` 或 `implementation_id`。
+Chub 只管理一种逻辑 `Chub Session` 实体，并通过后端拥有的 `session_kind` 区分普通会话与内部会话。页面、API、微信槽位和任务入口统一使用 `session_id`；调用方不能提交或替换 `native_session_id`、`runtime_id` 或 `implementation_id`、`session_kind`。
 
 Session Store 的当前格式为 v3，位于共享 AI Runtime 状态目录 `data/local/state/ai-runtime`，严格校验文件类型、所有者、权限、大小和字段结构。Chub Session 的创建、更新时间和最近活动时间统一规范化为 UTC；读取旧的 naive 值时按 UTC 收敛。读取失败时，Session 写入失败关闭；不根据页面缓存、标题或工作目录猜测状态。Chub 自有的旧格式状态不兼容时整体初始化为当前格式，第三方或 Runtime 原生数据不在该边界内。退役的 `data/local/state/codex` 不作为读取或迁移来源；升级恢复会按固定边界清理它。
 
@@ -15,7 +15,7 @@ Session Store 的当前格式为 v3，位于共享 AI Runtime 状态目录 `data
 
 | 字段组 | 所有者与含义 |
 | --- | --- |
-| 身份与工作区 | `id`、`runtime_id`、固定的 `implementation_id`、工作区和工作目录，由 Chub 创建并持久化。 |
+| 身份与工作区 | `id`、`session_kind`（`user` 或 `internal`）、`runtime_id`、固定的 `implementation_id`、工作区和工作目录，由 Chub 创建并持久化。 |
 | Native 映射 | `native_session_id` 与兼容组，只能由可信 Worker 结果绑定；同一 `(runtime_id, native_session_id)` 最多属于一个 Chub Session。 |
 | 任务认领 | 当前 Quick Worker 的任务 ID 与执行代次，只用于首个 Native ID 的原子认领和迟到结果拒绝。 |
 | 用户配置 | 标题、权限、模型和推理等级；`ask` 不能用于后台任务提交。 |
@@ -31,7 +31,17 @@ Session Manager 是上述 Session Store、Native 映射和认领记录的唯一 
 4. 绑定成功后写入 Native ID 与兼容组。后续任务使用同一 Native ID 调用 Runtime 的 `resume`；默认实现、模型或其他 Session 的变化不得改投已绑定 Session。
 5. Native ID 冲突、过期结果、无法确认的结果或 Store 写入失败均不得改写映射。任务终态会释放未完成的认领。
 
-固定用途的内部能力可以使用独立工作区和专用 Session。它不进入用户 Session 列表或微信槽位；其 Native writer 和轮换规则必须由对应专项设计定义。
+固定用途的内部能力可以使用独立工作区和专用 Session。内部 Session 不进入微信槽位；其 Native writer 和轮换规则必须由对应专项设计定义。
+
+## Session 类型与列表可见性
+
+`session_kind` 是 Chub Session 是否属于普通用户会话或内部能力会话的唯一权威标记。普通 Session 创建时由后端固定写入 `user`；今日关注、Deliveryline、版本说明等固定内部流程必须由受信后端创建入口写入 `internal`。客户端请求不得提交或修改该字段。列表不得按标题、工作目录、Runtime 元数据或模块保存的 Session ID 推断类型。当前 Store 对缺少 `session_kind` 的记录按 `user` 读取，不推断或迁移其类型；因此首次启用本规则前必须先归档或删除现存内部 Session，不能依赖统一开关隐藏这些旧记录。
+
+会话设置提供一个核心级 `show_internal_sessions` 布尔偏好，默认关闭。开启时，Runtime Sessions 主列表包含全部 `internal` Chub Session；关闭时统一隐藏它们。该设置只改变 Chub Session 列表投影，不改变 Session、任务、权限、模型或 Native Session 状态，也不控制独立的 Native Sessions 列表。设置页将此开关作为“新会话默认配置”中的独立设置行；其生效范围包含已有和之后创建的内部 Session，并非新会话创建参数。
+
+各内部功能仍可在自身状态中保存 Session ID，以续接任务、恢复业务流程或维护关联关系；这些业务引用不再拥有 Session 列表可见性。功能模块不再读取或写入有效的模块级可见性偏好，也不通过逐模块写入实现全局开关。为保留现有严格格式的模块状态可读性，旧 Store 中的 `show_sessions` 字段可作为无效字段被动读取，但不得用于列表过滤；其旧值不迁移为全局设置。内部 Session 创建或重建时都必须写入 `internal`，普通 Session 的创建入口不得因工作区或调用来源而自动变为内部。
+
+首次加载该实现前，由维护者明确归档或删除现存内部 Chub Session；不迁移旧 Session 类型或旧的逐模块可见性偏好，不在服务启动时自动清理，也不得连带清理普通 Session、Runtime 原生数据或其他模块状态。归档会同时处理已绑定的 Native Session；删除的影响范围以 Session 操作契约为准。Deliveryline 旧协作 Session 被清理后，失效关联在后续澄清时会被重建，关联保存的旧澄清轮次可能随之丢失。
 
 ## 状态与使用投影
 
@@ -81,12 +91,14 @@ Native discovery 采用逐项尽力读取：一个原生项或标题辅助信息
 
 归档和删除先处理当前任务与 Native 操作，再清理 Chub 自有状态。原生项已处于目标终态时可按幂等完成；进程启动、HTTP 成功或任务受理均不能替代原生操作、Worker 或槽位的最终确认。删除 Native 失败且任务停止已确认时，删除流程可在第二次危险确认后仅清理 Chub Session、任务记录和微信槽位；该降级不声称 Native 已归档或删除。
 
-## 当前页面行为
+## 当前行为与边界
 
-首页按 Runtime 展示 Chub Sessions 与 Native Sessions。用户进入任何 Chub Session 都进入同一对话页面；任务历史、提交、重命名、停止、归档和删除都围绕该 Session 执行。权限、模型和推理等级始终可修改，修改只作为下一次任务的默认值；已受理任务继续使用创建时的配置快照。外部占用和状态未知的 Session 仍允许查看历史，但除后续任务配置外的写入和破坏性操作按服务端最终门禁收敛。
+首页按 Runtime 展示 Chub Sessions 与独立的 Native Sessions。用户进入任何 Chub Session 都进入同一对话页面；任务历史、提交、重命名、停止、归档和删除都围绕该 Session 执行。权限、模型和推理等级始终可修改，修改只作为下一次任务的默认值；已受理任务继续使用创建时的配置快照。外部占用和状态未知的 Session 仍允许查看历史，但除后续任务配置外的写入和破坏性操作按服务端最终门禁收敛。
+
+当前 Session Store 持久化后端拥有的 `session_kind` 和 `show_internal_sessions`。会话设置中的单一开关默认关闭；`/api/ai/sessions` 按该偏好过滤 `internal` Chub Session。开关只影响 Runtime Sessions 主列表，不影响 Native Sessions 列表、Session 状态、任务或配置。今日关注、Deliveryline、版本说明和周报的受信创建入口标记内部 Session；普通创建入口默认标记为 `user`。
 
 ## 验收范围与复检
 
-已验证：v3 Store、单一 Session 入口、首次 Native 绑定、后续 `resume`、Native 列表投影和 Session 页面回归。
+自动化验证覆盖 Session 类型持久化、可见性设置默认值与读写、内部 Session 列表过滤及 Native Session 隔离，并验证今日关注、Deliveryline 和周报的内部创建标记。维护者已在当前运行实例通过版本发布说明和今日关注的 Session 完成手工验收；版本说明入口未由独立自动化用例覆盖。这不代表其他平台或所有 Runtime 的完整验收。
 
-修改 Store 格式、Session 身份与实现槽位、Native ID 认领、writer 判断、操作终态或用户可见状态时，必须重新验收相关 API、Worker 恢复和页面行为。
+修改 Store 格式、Session 身份/类型与实现槽位、Native ID 认领、writer 判断、操作终态或用户可见状态时，必须重新验收相关 API、Worker 恢复和页面行为。新增内部创建/重建路径、改变普通 Session 默认类型、调整可见性 API 或设置位置，以及恢复未清理的旧 Session 状态时，都必须复检类型标记、列表过滤、Native 列表隔离和清理边界。

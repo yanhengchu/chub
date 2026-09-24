@@ -67,6 +67,19 @@ async def test_quick_interaction_rejects_caller_selected_runtime_implementation(
 
 
 @pytest.mark.anyio
+async def test_session_creation_rejects_caller_selected_session_kind(settings: Settings) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/ai/sessions",
+            json={"workspace_id": "home", "session_kind": "internal"},
+        )
+
+    assert response.status_code == 422
+
+
+@pytest.mark.anyio
 async def test_codex_sessions_allow_loopback(settings: Settings) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -83,10 +96,6 @@ async def test_session_list_ignores_unavailable_release_note_state(
 ) -> None:
     app = create_app(settings)
 
-    def unavailable() -> set[str]:
-        raise ApiError(503, "deployment_package_state_invalid", "state unavailable")
-
-    app.state.deployment_package.hidden_release_note_session_ids = unavailable
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -245,7 +254,7 @@ async def test_runtime_management_lists_and_updates_enablement(settings: Setting
 
 
 @pytest.mark.anyio
-async def test_session_list_uses_current_visibility_rules(
+async def test_session_list_hides_internal_sessions_until_global_toggle_is_enabled(
     settings: Settings,
 ) -> None:
     app = create_app(settings)
@@ -283,6 +292,7 @@ async def test_session_list_uses_current_visibility_rules(
         ),
         SessionInfo(
             id="search-session",
+            session_kind="internal",
             runtime_id="codex",
             workspace_id="home",
             workspace_name="用户目录",
@@ -301,10 +311,9 @@ async def test_session_list_uses_current_visibility_rules(
         manager.list_sessions.return_value,
         native_sessions,
     )
+    manager.show_internal_sessions.side_effect = [False, True]
     manager.read_session.return_value = manager.list_sessions.return_value[0]
     app.state.ai_session_manager = manager
-    app.state.ai_search = MagicMock()
-    app.state.ai_search.hidden_session_ids.return_value = {"search-session"}
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -312,6 +321,7 @@ async def test_session_list_uses_current_visibility_rules(
             "/api/ai/sessions",
             headers=authorization(settings),
         )
+        shown = await client.get("/api/ai/sessions", headers=authorization(settings))
         detail = await client.get(
             "/api/ai/sessions/ordinary-session",
             headers=authorization(settings),
@@ -319,6 +329,11 @@ async def test_session_list_uses_current_visibility_rules(
 
     assert hidden.status_code == 200
     assert [item["id"] for item in hidden.json()["data"]["sessions"]] == ["ordinary-session"]
+    assert [item["id"] for item in shown.json()["data"]["sessions"]] == [
+        "ordinary-session",
+        "search-session",
+    ]
+    assert shown.json()["data"]["sessions"][1]["session_kind"] == "internal"
     assert hidden.json()["data"]["native_sessions"][0]["title"] == "发现的终端"
     assert hidden.json()["data"]["native_sessions"][0]["runtime_id"] == "codex"
     assert detail.status_code == 200

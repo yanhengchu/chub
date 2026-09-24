@@ -36,7 +36,7 @@ Chub 的产品定位、个人工作站信任模型和插件模块通用生命周
 | 插件模块类型 | 当前状态 | Chub 保留的边界 |
 | --- | --- | --- |
 | Runtime 插件模块 | 已实现：第一方 Codex Runtime ZIP 与开发实现 | Chub 保留 Session、Worker、任务终态、维护操作和页面壳；详见 Runtime 插件模块设计。 |
-| 任务编排插件模块 | 已实现：Web 与微信手动任务提交的统一空阶段分发；微信旧润色插件已退役 | Chub 保留入口认证、路由、幂等、目标选择、主任务投递、通知与最终状态；自动化等内部入口可保持独立提交。 |
+| 任务编排插件模块 | 已实现：Web 与微信手动任务提交的统一空阶段分发；首个提示词优化插件已接入通用发现、协议预检、导入和未启用实现移除，尚未启用或加载；微信旧润色插件已退役 | Chub 保留入口认证、路由、幂等、目标选择、主任务投递、通知与最终状态；导入不代表插件可运行，自动化等内部入口可保持独立提交。 |
 | 工作台业务模块 | 已实现首个业务模块接入：Deliveryline | Chub 提供固定页面分区、统一导入/移除/启用/禁用、首页投影和设置页插件状态；Deliveryline 的交付线、交付项和执行流程仍在产品重构范围。 |
 
 插件模块按当前业务范围使用 Chub 能力；模块故障、未安装或停用不得阻塞 Chub 核心、其他模块或无关服务。Chub 不为普通调用设置逐项审批或额外全局门禁，但模块不能通过能力目录获得任意命令、路径、Runtime、Worker、外部通道、收件人或凭据。
@@ -70,7 +70,7 @@ Chub 的产品定位、个人工作站信任模型和插件模块通用生命周
 | `chub.documents.read` | 浏览已登记的项目资料与受限内容 | 已实现：工作台可信网络页面 | 当前不授予任务编排插件。 |
 | `chub.requests.read` / `chub.requests.manage` | 查询、保存、更新、归档或删除活动需求 | 已实现：CLI 与微信固定指令各自开放的子集 | 当前不授予任务编排插件；写入仍须遵循需求储备规则。 |
 | `chub.logs.read` | 查看或下载受限日志 | 已实现：日志页、本机 CLI | 当前不授予任务编排插件。 |
-| `chub.ai_today_focus.session` | 复用一个内部 AI Session 刷新工作台当天 AI 动态 | 已实现：工作台今日关注页 | 今日关注页面始终展示今日计划和待办；AI 动态分组及其刷新入口仅在 Runtime 可提交新任务时展示。今日关注 Session 默认不在 Runtime Sessions 主列表展示，可在会话设置“内部会话显示”中单独开启。创建或重建时继承通用新会话的 Runtime、权限、模型和推理等级；既有按当前规则创建的 Session 保留创建快照。刷新前由 Chub 核心在固定能力边界内读取四个固定来源的有界快照，初始地址与最终跳转地址均须属于对应官方域名，否则该来源按读取失败处理。Session 只根据快照总结，不能使用工具、命令或快照中的网页指令；结果标题链接必须使用对应官方来源页面中的可见详情链接，不能使用来源首页或编造链接，服务端仍会复核官方域名并回填来源名称。刷新任务以持久化操作标识精确关联 Quick Worker 任务，提交回执缺失时只在有限核验窗口内等待，不会取共享 Session 的其他任务作为结果。`read-only` Runner 的 DNS 限制不再影响该流程。旧搜索/今日关注运行状态升级时直接清空为当前空状态，不保留历史结果或旧专属权限，也不据此操作内部或 Runtime 原生 Session。今日计划和待办一期仅展示空状态，不把需求储备、Deliveryline 或 AI 推测伪装成待办。当前不授予任务编排插件、OpenClaw 或外部 Agent。 |
+| `chub.ai_today_focus.session` | 复用一个内部 AI Session 刷新工作台当天 AI 动态 | 已实现：工作台今日关注页 | 今日关注页面始终展示今日计划和待办；AI 动态分组及其刷新入口仅在 Runtime 可提交新任务时展示。Session 创建或重建时由后端标记为 `internal`，并继承通用新会话的 Runtime、权限、模型和推理等级；列表可见性统一遵循[Chub Session 状态模型设计](AI_SESSION_STATE_DESIGN.md)。既有按当前规则创建的 Session 保留创建快照。刷新前由 Chub 核心在固定能力边界内读取四个固定来源的有界快照，初始地址与最终跳转地址均须属于对应官方域名，否则该来源按读取失败处理。Session 只根据快照总结，不能使用工具、命令或快照中的网页指令；结果标题链接必须使用对应官方来源页面中的可见详情链接，不能使用来源首页或编造链接，服务端仍会复核官方域名并回填来源名称。刷新任务以持久化操作标识精确关联 Quick Worker 任务，提交回执缺失时只在有限核验窗口内等待，不会取共享 Session 的其他任务作为结果。`read-only` Runner 的 DNS 限制不再影响该流程。旧搜索/今日关注运行状态升级时直接清空为当前空状态，不保留历史结果或旧专属权限，也不据此操作内部或 Runtime 原生 Session。今日计划和待办一期仅展示空状态，不把需求储备、Deliveryline 或 AI 推测伪装成待办。当前不授予任务编排插件、OpenClaw 或外部 Agent。 |
 | **Debug Chrome** |  |  |  |
 | `chub.debug_chrome.manage` | 管理受管 Debug Chrome 的状态、已初始化 Profile 与有界面/无界面实例 | 已实现：自动化页与 Chub 内置 Debug Chrome 能力 | 当前不授予任务编排插件、普通 AI Session 或外部 Agent。 |
 | `chub.debug_chrome.page.read` | 使用已运行的受管 Debug Chrome 创建临时页面，读取公网 HTTP(S) 页面的最终地址、标题和有界正文快照；可复用所选 Profile 已有的网站登录态 | 已实现：Chub Session 与本机 CLI 通过固定 `chub capability page-read` 命令调用 | 不授予任务编排插件、OpenClaw、远程浏览器或其他外部 Agent；不能扩展为 Profile/CDP 控制。 |
@@ -80,7 +80,7 @@ Chub 的产品定位、个人工作站信任模型和插件模块通用生命周
 | `chub.weekly_report.prepare` / `chub.weekly_report.generate` | 准备输入、生成和复核受管周报 | 已实现：周报页、固定脚本与技能 | 当前不授予任务编排插件。 |
 | `chub.maintenance.check` | 只读检查本机服务、配置和受限资源 | 已实现：CLI、工作台、微信 `check` | 当前不授予任务编排插件。 |
 | `chub.maintenance.recover` | 对固定服务执行重启、恢复或升级操作 | 已实现：本机 CLI、工作台、少量微信固定指令 | 当前不授予任务编排插件；不接受任意命令、路径或服务目标。 |
-| `chub.deployment.release_note` | 在版本发布页复用固定内部 Session，基于最近成功发版记录、当前 HEAD 与工作区改动生成简短发版说明草稿 | 已实现：维护与版本页 | 页面打开或刷新时说明为空；AI 成功后自动填入，也可手工填写。填写说明和目标 `MAJOR.MINOR.PATCH` 版本后，确认弹窗只读显示当前 HEAD、目标 tag 的旧/新指向与实际发布类型；版本声明不一致时列出具体项。同版本重发不创建提交，更高版本由受控发布流程统一更新版本声明并创建本地版本提交。版本提交前已登记发布状态，提交后中断可明确以同一版本重试；草稿不持久化且仅由发起页面的短期令牌读取。内部 Session 默认隐藏，可在会话设置单独显示；Runtime 或 Worker 不可用时仍可手工填写后发布。 |
+| `chub.deployment.release_note` | 在版本发布页复用固定内部 Session，基于最近成功发版记录、当前 HEAD 与工作区改动生成简短发版说明草稿 | 已实现：维护与版本页 | 页面打开或刷新时说明为空；AI 成功后自动填入，也可手工填写。填写说明和目标 `MAJOR.MINOR.PATCH` 版本后，确认弹窗只读显示当前 HEAD、目标 tag 的旧/新指向与实际发布类型；版本声明不一致时列出具体项。同版本重发不创建提交，更高版本由受控发布流程统一更新版本声明并创建本地版本提交。版本提交前已登记发布状态，提交后中断可明确以同一版本重试；草稿不持久化且仅由发起页面的短期令牌读取。Session 创建或重建时由后端标记为 `internal`，列表可见性统一遵循[Chub Session 状态模型设计](AI_SESSION_STATE_DESIGN.md)。Runtime 或 Worker 不可用时仍可手工填写后发布。 |
 | `chub.integration.openclaw.read` / `chub.integration.openclaw.manage` | 查询受管 OpenClaw 集成状态，或在固定维护范围内配置、启动、停止和恢复 Gateway 集成 | 已实现：设置与受控维护入口 | 当前不授予任务编排插件；不提供任意 Gateway 指令、账号或路由。 |
 | `chub.maintenance.terminal` | 为维护者的可信浏览器创建短期维护终端访问，并维持单一活动连接 | 已实现：工作台维护终端 | 当前不授予任务编排插件、微信、OpenClaw 或自动化；该能力等同本机用户 Shell 权限。 |
 
@@ -174,10 +174,13 @@ Debug Chrome 是 Chub 核心层唯一受管的浏览器执行环境。其生命�
 - `chub notification send --target <target> --message <message>`
 - `chub notification send --target <target> --message <message> --mention-all`
 - `chub notification send --target <target> --message <message> --mention-recipient <recipient> [--mention-recipient <recipient> ...]`
+- `chub notification send --target <target> --message <message> --mention-inline-recipient <recipient> [--mention-inline-recipient <recipient> ...]`
+
+`--mention-recipient` 将真实 @提醒放在消息正文前；`--mention-inline-recipient` 只将消息中与所选用户展示名完全匹配的 `@姓名` 替换为真实提醒并保留原位置。每个所选用户都必须在正文中有对应标记；未登记或未选择的 `@姓名` 保持普通文本，内容仍按纯文本转义。
 
 通知目标登记在 `~/.config/chub/notifications/registry.yaml`，Webhook 保存在
 `~/.config/chub/notifications/secrets/` 下权限为 `600` 的独立文件；需要提醒的飞书用户登记在
-`~/.config/chub/notifications/users.yaml`，registry 和 users 文件都必须使用 `600` 权限，两个目录必须使用 `700` 权限。目标配置只保存目标 ID、展示名称、Webhook 和 `@all` 策略，不维护群成员清单。调用方只能选择预配置目标和用户 ID 并发送有界纯文本，不能指定任意 URL、Open ID、Secret 路径或凭据。
+`~/.config/chub/notifications/users.yaml`，registry 和 users 文件都必须使用 `600` 权限，两个目录必须使用 `700` 权限。目标配置保存稳定目标 ID、`display_names` 展示/别名列表、Webhook 和 `@all` 策略，不维护群成员清单。`display_names` 支持中文名称；CLI 的 `--target` 可使用目标 ID 或唯一别名，服务端最终仍按稳定目标 ID 投递。不同目标的别名不能重复，也不能与其他目标 ID 冲突。调用方只能选择预配置目标和用户 ID 并发送有界纯文本，不能指定任意 URL、Open ID、Secret 路径或凭据。
 
 首次配置可从不含真实凭据的示例开始：
 
@@ -267,7 +270,7 @@ chmod 600 \
 ##### Session、任务与模型
 
 - 页面与微信手动任务提交均先经过统一任务编排分发器的空阶段链，再由分发器作为唯一物理主任务 writer 调用 Quick Worker。自动化、周报等内部入口不因本次改造改变。
-- 会话设置页“内部会话显示”只控制内部 Session 的可见性，不提供另一套权限设置。今日关注及后续内部会话在创建时均继承通用新会话设置；默认设置调整不追溯改写已存在的内部 Session。
+- 内部 Session 的后端类型标记、统一列表可见性开关、设置位置及 Native Session 隔离，以[Chub Session 状态模型设计](AI_SESSION_STATE_DESIGN.md)为准。内部 Session 创建时继承通用新会话配置，调整默认值不追溯改写既有 Session 的任务配置。
 - 旧翻译 Session 不属于当前能力；升级时直接清除其 Chub 自有运行态，不提供显示开关或兼容读取。
 - 当默认 AI Runtime 被设置页停用时，微信 ClawBot 的新任务固定回复 `Not submitted · The default AI Runtime is disabled. Chub is in base mode. Enable it in Settings to submit AI tasks.`；`chub` 状态摘要在 `Issues` 中显示 `AI Runtime is disabled. Chub is in base mode.`。这不取消已受理任务，也不影响既有 Session 的维护指令。
 - 当 Quick Worker 当前不可用时，微信 ClawBot 的 `new` 和普通任务固定回复 `Not submitted · Quick Worker is unavailable. Try again later.`；维护恢复指令仍按各自契约可用。

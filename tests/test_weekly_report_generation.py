@@ -15,12 +15,12 @@ class _SessionManager:
 
     def __init__(self, settings: AiRuntimeGeneralSettings) -> None:
         self.runtime_settings_store = SimpleNamespace(read_general=lambda: settings)
-        self.created: list[tuple[object, ...]] = []
+        self.created: list[tuple[tuple[object, ...], dict[str, object]]] = []
         self.title: str | None = None
         self.sessions: set[str] = set()
 
-    def create_session(self, *values):
-        self.created.append(values)
+    def create_session(self, *values, **kwargs):
+        self.created.append((values, kwargs))
         session_id = f"session-{len(self.created)}"
         self.sessions.add(session_id)
         return SimpleNamespace(id=session_id)
@@ -109,7 +109,7 @@ def test_focus_generation_creates_configured_quick_session_after_download(
 
     step = service.start("focus", source_ip="127.0.0.1")
 
-    assert manager.created == [("chub",)]
+    assert manager.created == [(("chub",), {"session_kind": "internal"})]
     assert manager.title == f"V 国内业务周报 · {period}"
     assert step.status == "running"
     assert "generate-weekly-report" in (quick.prompt or "")

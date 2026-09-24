@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-
 from fastapi import APIRouter, Depends, Header, Request
 from typing import Literal
 
@@ -9,8 +7,6 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app.core.response import ApiError, ApiResponse
 from app.core.security import require_trusted_network
-from app.core.business_modules import loaded_business_module, loaded_business_modules
-from app.services.internal_session_visibility import internal_session_visibility_lock
 from app.services.operation_log import log_operation
 from app.services.deployment_package import (
     DeploymentPackageConfiguration,
@@ -27,6 +23,7 @@ router = APIRouter(
     tags=["settings"],
     dependencies=[Depends(require_trusted_network)],
 )
+
 
 class DeploymentPackageSettingsUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -57,137 +54,26 @@ class DeploymentPackageReleaseNoteRequest(BaseModel):
     include_development_sources: bool = False
 
 
-class DeploymentPackageReleaseNoteSessionVisibilityUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    show_sessions: bool
-
-
 class InternalSessionVisibilityUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    show_sessions: bool
+    show_internal_sessions: bool
 
 
 class InternalSessionVisibilityData(BaseModel):
-    business_modules: dict[str, bool] = Field(default_factory=dict)
-    # Kept as a response compatibility alias for existing clients.
-    deliveryline: bool | None = None
-    today_focus: bool
-    deployment_package: bool
+    show_internal_sessions: bool
 
 
 @router.get(
-    "/business-modules/{module_id}/session-visibility",
-    response_model=ApiResponse[InternalSessionVisibilityUpdate],
+    "/internal-session-visibility",
+    response_model=ApiResponse[InternalSessionVisibilityData],
 )
-def get_business_module_session_visibility(
-    request: Request,
-    module_id: str,
-) -> ApiResponse[InternalSessionVisibilityUpdate]:
-    module = loaded_business_module(request, module_id)
-    if (
-        module is None
-        or module.session_visibility_get is None
-        or module_id not in request.app.state.plugin_lifecycle.imported_plugin_ids()
-    ):
-        raise ApiError(404, "business_module_not_found", "业务模块不可用。")
-    try:
-        return ApiResponse(
-            data=InternalSessionVisibilityUpdate(
-                show_sessions=module.session_visibility_get(request)
-            )
-        )
-    except (OSError, RuntimeError):
-        raise ApiError(
-            503,
-            "internal_session_visibility_unavailable",
-            "内部会话显示设置暂时不可用。",
-        ) from None
-
-
-@router.put(
-    "/business-modules/{module_id}/session-visibility",
-    response_model=ApiResponse[InternalSessionVisibilityUpdate],
-)
-def update_business_module_session_visibility(
-    request: Request,
-    module_id: str,
-    payload: InternalSessionVisibilityUpdate,
-) -> ApiResponse[InternalSessionVisibilityUpdate]:
-    module = loaded_business_module(request, module_id)
-    if (
-        module is None
-        or module.session_visibility_get is None
-        or module.session_visibility_set is None
-        or module_id not in request.app.state.plugin_lifecycle.imported_plugin_ids()
-    ):
-        raise ApiError(404, "business_module_not_found", "业务模块不可用。")
-    try:
-        module.session_visibility_set(request, payload.show_sessions)
-        return ApiResponse(
-            data=InternalSessionVisibilityUpdate(
-                show_sessions=module.session_visibility_get(request)
-            )
-        )
-    except (OSError, RuntimeError):
-        raise ApiError(
-            503,
-            "internal_session_visibility_update_failed",
-            "内部会话显示设置未能完成，请稍后重试。",
-        ) from None
-
-
-def _internal_session_visibility_data(request: Request) -> InternalSessionVisibilityData:
-    try:
-        imported_plugins = request.app.state.plugin_lifecycle.imported_plugin_ids()
-        module_visibility: dict[str, bool] = {}
-        for module in loaded_business_modules(request):
-            if (
-                module.module_id in imported_plugins
-                and module.session_visibility_get is not None
-            ):
-                module_visibility[module.module_id] = module.session_visibility_get(request)
-        return InternalSessionVisibilityData(
-            business_modules=module_visibility,
-            deliveryline=module_visibility.get("deliveryline"),
-            today_focus=request.app.state.ai_search.show_sessions(),
-            deployment_package=request.app.state.deployment_package.show_release_note_session(),
-        )
-    except (OSError, RuntimeError):
-        raise ApiError(
-            503,
-            "internal_session_visibility_unavailable",
-            "内部会话显示设置暂时不可用。",
-        ) from None
-
-
-def _internal_session_visibility_setters(
-    request: Request,
-    current: InternalSessionVisibilityData,
-) -> list[tuple[Callable[[bool], object], bool]]:
-    setters: list[tuple[Callable[[bool], object], bool]] = []
-    for module in loaded_business_modules(request):
-        value = current.business_modules.get(module.module_id)
-        if value is None and module.module_id == "deliveryline":
-            value = current.deliveryline
-        if value is not None and module.session_visibility_set is not None:
-            setters.append(
-                (
-                    lambda value, module=module: module.session_visibility_set(request, value),
-                    value,
-                )
-            )
-    setters.extend(
-        (
-            (request.app.state.ai_search.set_show_sessions, current.today_focus),
-            (
-                request.app.state.deployment_package.set_show_release_note_session,
-                current.deployment_package,
-            ),
+def get_internal_session_visibility(request: Request) -> ApiResponse[InternalSessionVisibilityData]:
+    return ApiResponse(
+        data=InternalSessionVisibilityData(
+            show_internal_sessions=request.app.state.ai_session_manager.show_internal_sessions()
         )
     )
-    return setters
 
 
 @router.put(
@@ -198,36 +84,13 @@ def update_internal_session_visibility(
     request: Request,
     payload: InternalSessionVisibilityUpdate,
 ) -> ApiResponse[InternalSessionVisibilityData]:
-    with internal_session_visibility_lock:
-        applied: list[tuple[Callable[[bool], object], bool]] = []
-        try:
-            current = _internal_session_visibility_data(request)
-            for setter, previous in _internal_session_visibility_setters(request, current):
-                if previous != payload.show_sessions:
-                    setter(payload.show_sessions)
-                    applied.append((setter, previous))
-            result = _internal_session_visibility_data(request)
-        except (ApiError, OSError, RuntimeError) as exc:
-            if not applied and isinstance(exc, ApiError):
-                raise
-            rollback_failed = False
-            for setter, previous in reversed(applied):
-                try:
-                    setter(previous)
-                except (ApiError, OSError, RuntimeError):
-                    rollback_failed = True
-            if rollback_failed:
-                raise ApiError(
-                    503,
-                    "internal_session_visibility_state_unknown",
-                    "部分内部会话显示设置状态暂时无法确认，请刷新后重试。",
-                ) from None
-            raise ApiError(
-                503,
-                "internal_session_visibility_update_failed",
-                "内部会话显示设置未能完成，已恢复原状态。",
-            ) from None
-    return ApiResponse(data=result)
+    return ApiResponse(
+        data=InternalSessionVisibilityData(
+            show_internal_sessions=request.app.state.ai_session_manager.set_show_internal_sessions(
+                payload.show_internal_sessions
+            )
+        )
+    )
 
 
 @router.get(
@@ -352,33 +215,6 @@ def generate_deployment_package_release_note(
         )
         raise
     return ApiResponse(data=data)
-
-
-@router.get(
-    "/deployment-package/release-note-session",
-    response_model=ApiResponse[dict[str, bool]],
-)
-def get_deployment_package_release_note_session_visibility(
-    request: Request,
-) -> ApiResponse[dict[str, bool]]:
-    return ApiResponse(
-        data={"show_sessions": request.app.state.deployment_package.show_release_note_session()}
-    )
-
-
-@router.put(
-    "/deployment-package/release-note-session",
-    response_model=ApiResponse[dict[str, bool]],
-)
-def update_deployment_package_release_note_session_visibility(
-    payload: DeploymentPackageReleaseNoteSessionVisibilityUpdate,
-    request: Request,
-) -> ApiResponse[dict[str, bool]]:
-    with internal_session_visibility_lock:
-        show_sessions = request.app.state.deployment_package.set_show_release_note_session(
-            payload.show_sessions
-        )
-    return ApiResponse(data={"show_sessions": show_sessions})
 
 
 @router.post(

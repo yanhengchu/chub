@@ -30,7 +30,7 @@ def test_notification_registry_example_is_valid() -> None:
     )
 
     assert list(registry.targets) == ["test"]
-    assert registry.targets["test"].display_name == "Test Feishu Group"
+    assert registry.targets["test"].display_names == ["Test Feishu Group", "测试群"]
     assert registry.targets["test"].webhook_file == "test.webhook"
 
     users_path = Path(__file__).resolve().parents[1] / "config" / "notification_users.example.yaml"
@@ -38,6 +38,44 @@ def test_notification_registry_example_is_valid() -> None:
         "version": 1,
         "users": {},
     }
+
+
+def test_notification_registry_accepts_legacy_display_name() -> None:
+    registry = NotificationRegistry.model_validate(
+        {
+            "version": 2,
+            "targets": {
+                "test": {
+                    "display_name": "测试群",
+                    "provider": "feishu",
+                    "webhook_file": "test.webhook",
+                }
+            },
+        }
+    )
+
+    assert registry.targets["test"].display_names == ["测试群"]
+
+
+def test_notification_registry_rejects_duplicate_display_names() -> None:
+    with pytest.raises(ValueError, match="unique across targets"):
+        NotificationRegistry.model_validate(
+            {
+                "version": 2,
+                "targets": {
+                    "test": {
+                        "display_names": ["测试群"],
+                        "provider": "feishu",
+                        "webhook_file": "test.webhook",
+                    },
+                    "other": {
+                        "display_names": ["测试群"],
+                        "provider": "feishu",
+                        "webhook_file": "other.webhook",
+                    },
+                },
+            }
+        )
 
 
 def authorization(settings: Settings) -> dict[str, str]:
@@ -88,7 +126,7 @@ def configure_notifications(
                 "version": 2,
                 "targets": {
                     "test": {
-                        "display_name": "Test Feishu Group",
+                        "display_names": ["Test Feishu Group", "测试群"],
                         "provider": "feishu",
                         "webhook_file": "test.webhook",
                         "allow_mention_all": allow_mention_all,
@@ -140,6 +178,18 @@ def accepted_transport(requests: list[httpx.Request]) -> httpx.MockTransport:
     return httpx.MockTransport(handler)
 
 
+def test_notification_service_resolves_display_name_alias(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    configure_notifications(settings, tmp_path)
+    service = NotificationService(settings.notifications)
+
+    assert service.resolve_target_id("测试群") == "test"
+    assert service.resolve_target_id("TEST FEISHU GROUP") == "test"
+    assert service.resolve_target_id("test") == "test"
+
+
 @pytest.mark.anyio
 async def test_notification_api_is_protected_and_hides_secrets(
     settings: Settings,
@@ -184,7 +234,7 @@ async def test_notification_api_is_protected_and_hides_secrets(
     assert targets.json()["data"] == [
         {
             "id": "test",
-            "display_name": "Test Feishu Group",
+            "display_names": ["Test Feishu Group", "测试群"],
             "provider": "feishu",
             "enabled": True,
             "allow_mention_all": True,
@@ -233,6 +283,64 @@ async def test_notification_escapes_injected_mentions_and_deduplicates(
     text = json.loads(requests[0].content)["content"]["text"]
     assert "&lt;at user_id=\"all\"&gt;所有人&lt;/at&gt;" in text
     assert '<at user_id="all">' not in text
+
+
+@pytest.mark.anyio
+async def test_notification_replaces_selected_inline_mentions_in_place(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    configure_notifications(settings, tmp_path)
+    requests: list[httpx.Request] = []
+    service = NotificationService(
+        settings.notifications,
+        transport=accepted_transport(requests),
+    )
+
+    await service.send(
+        NotificationRequest(
+            request_id="request-inline-0001",
+            target="test",
+            message="第一项 @维护者；未登记的 @其他人 <内容>",
+            mention_mode="inline_recipients",
+            recipients=["maintainer"],
+        )
+    )
+
+    await service.close()
+    text = json.loads(requests[0].content)["content"]["text"]
+    assert text == (
+        '第一项 <at user_id="ou_12345678abcdef">维护者</at>；'
+        "未登记的 @其他人 &lt;内容&gt;"
+    )
+
+
+@pytest.mark.anyio
+async def test_notification_rejects_inline_recipient_without_marker(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    configure_notifications(settings, tmp_path)
+    requests: list[httpx.Request] = []
+    service = NotificationService(
+        settings.notifications,
+        transport=accepted_transport(requests),
+    )
+
+    with pytest.raises(Exception) as captured:
+        await service.send(
+            NotificationRequest(
+                request_id="request-inline-0002",
+                target="test",
+                message="没有内联标记",
+                mention_mode="inline_recipients",
+                recipients=["maintainer"],
+            )
+        )
+
+    await service.close()
+    assert getattr(captured.value, "code") == "notification_inline_mention_not_found"
+    assert requests == []
 
 
 @pytest.mark.anyio

@@ -86,7 +86,7 @@ class WeeklyReportGenerationService:
                             "当前周报自动化会话为只读权限，无法生成周报产物。",
                         )
                     with self._quick_interactions.session_creation_guard():
-                        session = self._session_manager.create_session("chub")
+                        session = self._session_manager.create_session("chub", session_kind="internal")
                     session_id = session.id
                     created_session = True
                     self._session_manager.rename_session(
