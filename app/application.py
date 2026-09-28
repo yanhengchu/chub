@@ -48,6 +48,7 @@ from app.ai_session import AiSessionManager
 from app.ai_session.operations import archive_session, delete_session
 from app.ai_interactions.quick_interactions import QuickInteractionManager
 from app.ai_interactions.task_orchestration import (
+    PromptOptimizerStageSelection,
     TaskOrchestrationDispatcher,
     retire_weixin_refinement_state,
 )
@@ -62,6 +63,7 @@ from app.automations.manager import AutomationManager
 from app.automations.models import RuntimeAccountEnvironmentState
 from app.core.config import PROJECT_ROOT, Settings, load_settings, log_local_config_fallback
 from app.core.business_modules import load_business_modules
+from app.ai_interactions.prompt_optimization import PromptOptimizationUseCase
 from app.core.logger import configure_logging
 from app.core.security import require_trusted_network
 from app.core.platform import detect_platform
@@ -312,6 +314,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         completion_notifier.notify,
         deferred_restart,
         restart_notifier=completion_notifier.notify_restart,
+        prompt_optimization_notifier=(
+            completion_notifier.notify_prompt_optimization_completed
+        ),
         timeout_seconds=resolved_settings.ai_runtime.shared.quick_interaction_timeout_seconds,
         worker_settings=resolved_settings,
     )
@@ -459,7 +464,49 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     prompt_optimizer_settings = PromptOptimizerSettingsStore(
         resolved_settings.business_modules.state_file.parent.parent,
     )
-    orchestration_plugins = plugin_lifecycle.assemble_orchestration_plugins()
+    plugin_lifecycle.assemble_orchestration_plugins()
+
+    def prompt_optimizer_stage_selection(_entry: str) -> PromptOptimizerStageSelection:
+        state = plugin_lifecycle.prompt_optimizer_execution_state()
+        if not state["enabled"]:
+            return PromptOptimizerStageSelection()
+        mode = prompt_optimizer_settings.read()["mode"]
+        descriptor = state["descriptor"]
+        return PromptOptimizerStageSelection(
+            enabled=True,
+            mode=str(mode),
+            implementation_ref=str(state["implementation_ref"] or "") or None,
+            stage_runner=(
+                descriptor.stage_runner
+                if descriptor is not None
+                else None
+            ),
+            optimization_prompt_builder=(descriptor.optimization_prompt_builder if descriptor else None),
+            optimization_result_reader=(descriptor.optimization_result_reader if descriptor else None),
+        )
+
+    task_orchestrator.set_prompt_optimizer_stage_provider(
+        prompt_optimizer_stage_selection
+    )
+    task_orchestrator.configure_optimization(
+        PromptOptimizationUseCase(ai_session_manager, quick_interactions),
+        plugin_lifecycle.resolve_orchestration_implementation,
+    )
+
+    def prune_prompt_optimizer_snapshots() -> None:
+        try:
+            plugin_lifecycle.prune_development_snapshots(
+                task_orchestrator.active_implementation_references()
+            )
+        except Exception:
+            logger.warning(
+                "Unable to prune prompt optimizer source snapshots",
+                exc_info=True,
+            )
+
+    task_orchestrator.set_development_snapshot_cleanup_handler(
+        prune_prompt_optimizer_snapshots
+    )
     business_modules = load_business_modules(resolved_settings)
     configure_business_module_templates(resolved_settings)
     ai_session_manager.set_runtime_plugin_lifecycle_state_reader(
@@ -474,9 +521,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 exc_info=True,
             )
         task_orchestrator.record_task_finished(task)
+        prune_prompt_optimizer_snapshots()
 
     quick_interactions.set_task_finished_handler(record_quick_task_finished)
     task_orchestrator.reconcile()
+    prune_prompt_optimizer_snapshots()
 
     system_upgrade_maintenance = SystemUpgradeMaintenanceUseCase(detected_platform)
     workstation_rebuild = WorkstationRebuildCoordinator()
@@ -994,6 +1043,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_application: FastAPI):
+        task_orchestrator.start()
         restart_recovery_task = None
         worker_maintenance_recovery_task = None
         system_upgrade_recovery_task = None
@@ -1201,6 +1251,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 system_upgrade_recovery_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await system_upgrade_recovery_task
+            task_orchestrator.close()
             await quick_interactions.aclose()
             await notification_service.close()
             maintenance_terminal.close()
@@ -1242,7 +1293,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.weixin_chub_mode = weixin_chub_mode
     application.state.plugin_lifecycle = plugin_lifecycle
     application.state.prompt_optimizer_settings = prompt_optimizer_settings
-    application.state.orchestration_plugins = orchestration_plugins
     application.state.business_modules = business_modules
     for module in business_modules:
         if module.initialize is not None:

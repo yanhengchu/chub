@@ -16,8 +16,11 @@ from app.ai_session.api_models import (
     WorkspaceInfo,
 )
 from app.ai_interactions.models import (
+    PromptOptimizationVersions,
+    QuickInteractionTask,
     QuickInteractionWeixinRoute,
 )
+from app.ai_interactions.task_orchestration import PromptOptimizerStageSelection
 from app.ai_usage.models import (
     CodexQuotaData,
     CodexQuotaWindow,
@@ -131,6 +134,113 @@ def test_retired_or_non_exact_status_prompt_is_submitted_as_normal_task(
     assert result.disposition == "reply"
     assert result.message == submitted_task_message(settings, prompt)
     quick_interactions.submit.assert_called_once()
+
+
+def test_weixin_auto_task_keeps_original_route_and_returns_prompt_to_dispatcher(
+    settings: Settings,
+) -> None:
+    manager, ai_session_manager, quick_interactions = configured_manager(settings)
+    route = delivery_route(account_id="auto-test", recipient="auto-owner@im.wechat")
+    session = ai_session_manager.get_session.return_value
+    ai_session_manager.list_sessions.return_value = [session]
+    manager._state.session_id = "session-1"
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=1, session_id="session-1")
+    ]
+
+    parent = QuickInteractionTask(
+        id="weixin-parent",
+        session_id="session-1",
+        prompt="整理设备检查步骤",
+        status="requested",
+        orchestration_pending=True,
+        notification_route="weixin-task",
+        notification_status="pending",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    child = QuickInteractionTask(
+        id="optimizer-child",
+        session_id="optimizer-session",
+        prompt="优化当前任务",
+        status="running",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    quick_interactions.submit.return_value = parent
+    quick_interactions.get.side_effect = lambda task_id: (
+        parent if task_id == parent.id else child
+    )
+
+    use_case = MagicMock()
+    use_case.execution_snapshot.return_value = {
+        "runtime_id": "codex",
+        "implementation_id": "codex-runtime-dev",
+        "model": None,
+        "reasoning_effort": None,
+    }
+    use_case.restore_session.return_value = "optimizer-session"
+    use_case.submit.return_value = child
+    use_case.get.return_value = child
+    reader = lambda result: PromptOptimizationVersions.model_validate({
+        "chinese": json.loads(result)["optimized_prompt_zh"],
+        "english": json.loads(result)["optimized_prompt_en"],
+    })
+    descriptor = SimpleNamespace(optimization_result_reader=reader)
+    dispatcher = manager.task_orchestrator
+    dispatcher.configure_optimization(use_case, lambda _ref: descriptor)
+    dispatcher.set_prompt_optimizer_stage_provider(
+        lambda _entry: PromptOptimizerStageSelection(
+            enabled=True,
+            mode="auto",
+            implementation_ref="development:optimizer+abc",
+            stage_runner=lambda _mode, prompt: prompt,
+            optimization_prompt_builder=lambda prompt: f"只优化本任务：{prompt}",
+            optimization_result_reader=reader,
+        )
+    )
+
+    accepted = manager.submit(
+        message_id="weixin-auto-message",
+        prompt="整理设备检查步骤",
+        correlation_id="weixin-auto-correlation",
+        source_ip="127.0.0.1",
+        delivery_route=route,
+        target_session_id="session-1",
+    )
+
+    assert accepted.code == "submitted"
+    assert "Optimizing prompt; task accepted." in accepted.message
+    quick_interactions.submit.assert_called_once()
+    submitted = quick_interactions.submit.call_args
+    assert submitted.args == (
+        "session-1",
+        "整理设备检查步骤",
+    )
+    assert submitted.kwargs["defer_orchestration"] is True
+    assert submitted.kwargs["notification_route"] == route
+
+    request = dispatcher._state.requests[0]
+    dispatcher._advance_optimization(request.id)
+    use_case.submit.assert_called_once_with(
+        "optimizer-session",
+        "只优化本任务：整理设备检查步骤",
+        request.stage_call_id,
+    )
+    child.status = "succeeded"
+    child.result = json.dumps({
+        "optimized_prompt_zh": "优化后设备检查步骤",
+        "optimized_prompt_en": "Optimized device inspection steps",
+    }, ensure_ascii=False)
+    dispatcher._advance_optimization(request.id)
+
+    quick_interactions.submit_orchestrated.assert_called_once_with(
+        parent.id,
+        "优化后设备检查步骤",
+    )
+    assert quick_interactions.submit.call_count == 1
+    persisted_orchestration = dispatcher.path.read_text(encoding="utf-8")
+    assert "auto-owner@im.wechat" not in persisted_orchestration
 
 
 def test_dispatch_persists_pass_decision_across_mode_change(

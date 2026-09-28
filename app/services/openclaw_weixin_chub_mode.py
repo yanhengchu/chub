@@ -759,7 +759,9 @@ class WeixinChubModeManager:
             reservation.code = "submitted"
             reservation.message = self._format_submitted_task_message(
                 "Submission is being verified by Quick Worker. Do not resend yet."
-                if getattr(task, "submission_verifying", False) else "Submitted",
+                if getattr(task, "submission_verifying", False)
+                else "Optimizing prompt; task accepted."
+                if getattr(task, "orchestration_pending", False) else "Submitted",
                 submitted_session_id=session_id,
                 submitted_session_slot=session_slot,
                 submitted_session_title=session_title,
@@ -3608,9 +3610,14 @@ class WeixinChubModeManager:
         write_operation(
             operation_id=notification_operation_id,
             action="weixin_chub_restart_notification",
-            status="succeeded" if notification_status == "sent" else "failed",
+            status=(
+                "succeeded"
+                if notification_status == "sent"
+                else "skipped" if notification_status == "skipped" else "failed"
+            ),
             target=self.settings.node.id,
             source_ip=snapshot.source_ip,
+            reason="notification_skipped" if notification_status == "skipped" else None,
         )
 
     def start_status_cache(self) -> None:
@@ -5484,9 +5491,14 @@ class WeixinChubModeManager:
         write_operation(
             operation_id=notification_operation_id,
             action="weixin_chub_stop_notification",
-            status="succeeded" if notification_status == "sent" else "failed",
+            status=(
+                "succeeded"
+                if notification_status == "sent"
+                else "skipped" if notification_status == "skipped" else "failed"
+            ),
             target=self.settings.node.id,
             source_ip=snapshot.source_ip,
+            reason="notification_skipped" if notification_status == "skipped" else None,
         )
         return notification_status, notification_error
 

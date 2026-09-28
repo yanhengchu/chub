@@ -371,7 +371,7 @@ def test_design_document_index_rejects_missing_or_unknown_category_or_group(
     assert service.list_design_documents() == []
 
 
-def test_home_documents_group_by_topic_and_limit_each_group() -> None:
+def test_home_documents_pin_core_and_include_recent_items() -> None:
     now = datetime(2026, 8, 18, 12, 0)
     documents = [
         service.DesignDocumentView(
@@ -422,6 +422,53 @@ def test_home_documents_group_by_topic_and_limit_each_group() -> None:
         "design-3",
         "design-4",
         "design-5",
+        "design-6",
+        "design-7",
+        "design-8",
+        "design-9",
+    ]
+
+
+def test_home_documents_limit_recent_items_across_groups() -> None:
+    now = datetime(2026, 8, 18, 12, 0)
+    documents = [
+        service.DesignDocumentView(
+            id=document_id,
+            title=document_id,
+            summary="核心",
+            status="持续维护",
+            updated_at=now - timedelta(days=index),
+            category="project_baseline",
+            category_label="项目基线",
+            group="project-core-documents",
+            group_label="项目核心文档",
+        )
+        for index, document_id in enumerate(
+            ("project-readme", "chub-architecture"),
+            start=1,
+        )
+    ]
+    documents.extend(
+        service.DesignDocumentView(
+            id=f"design-{index}",
+            title=f"设计 {index}",
+            summary="专项",
+            status="已验收",
+            updated_at=now - timedelta(hours=index),
+            category="delivery_requirement",
+            category_label="专项需求与设计",
+            group="ai-runtime" if index <= 6 else "task-orchestration",
+            group_label="AI Runtime" if index <= 6 else "任务编排",
+        )
+        for index in range(1, 12)
+    )
+
+    selected = service.select_home_design_documents(documents)
+
+    assert [document.id for document in selected] == [
+        "project-readme",
+        "chub-architecture",
+        *(f"design-{index}" for index in range(1, 11)),
     ]
 
 
@@ -464,4 +511,9 @@ def test_home_documents_do_not_restore_hidden_core_document() -> None:
         "design-3",
         "design-4",
         "design-5",
+        "design-6",
+        "design-7",
+        "design-8",
+        "design-9",
+        "design-10",
     ]

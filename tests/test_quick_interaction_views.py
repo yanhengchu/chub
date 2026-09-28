@@ -216,6 +216,13 @@ const unknownFailedTask = {
   id: "unknown-failed",
   error_source: undefined,
 };
+const bilingualTask = {
+  ...oldTask,
+  prompt_optimization_result: {
+    chinese: "检查设备状态并用中文汇报。",
+    english: "Check device status and report in Chinese.",
+  },
+};
 const merged = timeline.mergeTasks([oldTask], [failedTask, updatedOldTask], 2);
 const trimmed = timeline.mergeTasks([oldTask, failedTask], [{
   ...oldTask,
@@ -229,6 +236,7 @@ process.stdout.write(JSON.stringify({
       failed: timeline.buildTaskState(failedTask),
       timedOut: timeline.buildTaskState(timedOutTask),
       unknownFailed: timeline.buildTaskState(unknownFailedTask),
+      bilingual: timeline.buildTaskState(bilingualTask),
 }));
 """
     result = subprocess.run(
@@ -252,6 +260,10 @@ process.stdout.write(JSON.stringify({
     assert behavior["failed"]["errorSource"] == "上游 Runtime"
     assert behavior["timedOut"]["errorSource"] == ""
     assert behavior["unknownFailed"]["errorSource"] == "来源未确认"
+    assert behavior["bilingual"]["promptOptimization"] == {
+        "chinese": "检查设备状态并用中文汇报。",
+        "english": "Check device status and report in Chinese.",
+    }
     assert behavior["failed"]["notification"] == {
         "status": "failed",
         "label": "通知失败",

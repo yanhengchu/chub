@@ -1256,6 +1256,17 @@ class AiSessionManager:
     def read_session(self, session_id: str) -> SessionInfo:
         return self._public(self.get_session(session_id))
 
+    def internal_session_execution_snapshot(self) -> dict[str, str | None]:
+        """Host-owned defaults for a read-only prompt processing Session."""
+        with self._lock:
+            try:
+                defaults = self.runtime_settings_store.read_general()
+            except RuntimeSettingsStoreUnavailable as exc:
+                raise ApiError(503, "ai_runtime_settings_unavailable", "无法读取内部 Session 默认配置。") from exc
+            runtime_id, implementation_id = self.select_new_session_runtime()
+            return {"runtime_id": runtime_id, "implementation_id": implementation_id,
+                    "model": defaults.model, "reasoning_effort": defaults.reasoning_effort}
+
     def create_session(
         self,
         workspace_id: str,
@@ -1266,12 +1277,16 @@ class AiSessionManager:
         session_kind: SessionKind = "user",
         creation_request_id: str | None = None,
         creation_request_fingerprint: str | None = None,
+        internal_execution_snapshot: dict[str, str | None] | None = None,
+        internal_title: str | None = None,
     ) -> SessionInfo:
         # This is the only shared writer for browser Session creation.  Keep
         # lookup and persistence in one critical section so duplicate HTTP
         # delivery with the same request ID replays one logical Session.
         with self._lock:
             self._require_store()
+            if internal_title is not None and (session_kind != "internal" or workspace_id != "chub"):
+                raise ValueError("Internal Session titles require an internal Chub Session")
             if creation_request_id is not None:
                 if creation_request_fingerprint is None:
                     raise ValueError(
@@ -1296,16 +1311,26 @@ class AiSessionManager:
                             "本次 Session 创建请求与已有结果不一致，请关闭窗口后重新创建。",
                         )
                     return self._public(existing)
-            try:
-                defaults = self.runtime_settings_store.read_general()
-            except RuntimeSettingsStoreUnavailable as exc:
-                raise ApiError(
-                    503,
-                    "ai_runtime_settings_unavailable",
-                    "无法读取新建 Session 默认配置，请稍后重试。",
-                ) from exc
-            runtime_id, implementation_id = self.select_new_session_runtime()
-            if permission_mode is None or model is None or reasoning_effort is None:
+            if internal_execution_snapshot is None:
+                try:
+                    defaults = self.runtime_settings_store.read_general()
+                except RuntimeSettingsStoreUnavailable as exc:
+                    raise ApiError(
+                        503,
+                        "ai_runtime_settings_unavailable",
+                        "无法读取新建 Session 默认配置，请稍后重试。",
+                    ) from exc
+            if internal_execution_snapshot is not None:
+                if session_kind != "internal" or workspace_id != "chub":
+                    raise ValueError("Internal execution snapshots require an internal Chub Session")
+                runtime_id = internal_execution_snapshot["runtime_id"]
+                implementation_id = internal_execution_snapshot["implementation_id"]
+                permission_mode = "read-only"
+                model = internal_execution_snapshot["model"]
+                reasoning_effort = internal_execution_snapshot["reasoning_effort"]
+            else:
+                runtime_id, implementation_id = self.select_new_session_runtime()
+            if internal_execution_snapshot is None and (permission_mode is None or model is None or reasoning_effort is None):
                 permission_mode = permission_mode or defaults.new_session_permission
                 model = model if model is not None else defaults.model
                 reasoning_effort = (
@@ -1337,6 +1362,7 @@ class AiSessionManager:
             session = AiSession(
                 id=str(uuid.uuid4()),
                 session_kind=session_kind,
+                title=internal_title,
                 creation_request_id=creation_request_id,
                 creation_request_fingerprint=creation_request_fingerprint,
                 runtime_id=runtime_id,
@@ -1516,6 +1542,43 @@ class AiSessionManager:
         if session.native_session_id is None:
             return
         adapter = self.runtime_adapters[implementation_id]
+        compatibility_id = adapter.descriptor.native_session_compatibility_id
+        if (
+            session.native_session_compatibility_id is not None
+            and compatibility_id != session.native_session_compatibility_id
+        ):
+            raise ApiError(
+                409,
+                "runtime_implementation_incompatible_session",
+                "当前 Runtime 版本与该 Session 的原生格式不兼容，请选择兼容版本或新建 Session。",
+            )
+
+    def ensure_session_implementation_identity_compatible(
+        self, session_id: str, implementation_id: str
+    ) -> None:
+        """Check pinned identity and native format without current enablement gates.
+
+        Continuations of an already-accepted orchestration task use their pinned
+        Runtime snapshot after a Runtime/plugin is disabled. New submissions must
+        continue using ensure_session_implementation_compatible.
+        """
+        session = self.get_session(session_id, reconcile=False)
+        pinned_implementation_id = self.session_implementation_id(session_id)
+        if implementation_id != pinned_implementation_id:
+            raise ApiError(
+                409,
+                "runtime_implementation_session_bound",
+                "该 Chub Session 已绑定其他 Runtime 版本，请新建 Session 后再使用该版本。",
+            )
+        adapter = self.runtime_adapters.get(implementation_id)
+        if adapter is None or not adapter.status().available:
+            raise ApiError(
+                503,
+                "runtime_implementation_unavailable",
+                "当前 Runtime 版本不可用，无法确认该 Session 的原生格式。",
+            )
+        if session.native_session_id is None:
+            return
         compatibility_id = adapter.descriptor.native_session_compatibility_id
         if (
             session.native_session_compatibility_id is not None
@@ -1738,15 +1801,9 @@ class AiSessionManager:
             if session is None:
                 raise ApiError(404, "session_not_found", "AI Session not found")
             pinned_implementation_id = self.session_implementation_id(session_id)
-            if implementation_id is not None:
-                self.ensure_session_implementation_compatible(session_id, implementation_id)
-            else:
-                implementation_id = pinned_implementation_id
-            self.validate_native_session_id(
-                native_session_id,
-                implementation_id=implementation_id,
-            )
-            if worker_task_id is not None or execution_id is not None:
+            implementation_id = implementation_id or pinned_implementation_id
+            accepted_task_claim = worker_task_id is not None or execution_id is not None
+            if accepted_task_claim:
                 if (
                     worker_task_id is None
                     or execution_id is None
@@ -1758,10 +1815,19 @@ class AiSessionManager:
                         "quick_interaction_native_session_stale",
                         "Quick Worker result no longer belongs to the current Session task.",
                     )
-                if session.quick_native_claim_execution_id != execution_id:
-                    session.quick_native_claim_execution_id = execution_id
-                    session.updated_at = utc_now()
-                    self.store.save(session)
+                self.ensure_session_implementation_identity_compatible(
+                    session_id, implementation_id
+                )
+            else:
+                self.ensure_session_implementation_compatible(session_id, implementation_id)
+            self.validate_native_session_id(
+                native_session_id,
+                implementation_id=implementation_id,
+            )
+            if accepted_task_claim and session.quick_native_claim_execution_id != execution_id:
+                session.quick_native_claim_execution_id = execution_id
+                session.updated_at = utc_now()
+                self.store.save(session)
             for candidate in self.store.list():
                 if (
                     candidate.id != session_id

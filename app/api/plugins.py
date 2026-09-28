@@ -6,6 +6,7 @@ from typing import Literal
 
 from app.core.response import ApiError, ApiResponse
 from app.core.security import require_trusted_network
+from app.plugin_lifecycle.prompt_optimizer_settings import auto_mode_unavailable_reason
 from app.services.operation_log import log_operation
 
 router = APIRouter(prefix="/api/plugins", tags=["plugins"], dependencies=[Depends(require_trusted_network)])
@@ -45,17 +46,28 @@ def _prompt_optimizer_settings_data(request: Request) -> dict[str, object]:
     loaded_ids = plugin.get("loaded_artifact_ids", [])
     enabled = isinstance(enabled_ids, list) and bool(enabled_ids)
     loaded = isinstance(loaded_ids, list) and bool(loaded_ids)
+    effective = request.app.state.task_orchestrator.is_prompt_optimizer_effective("web")
+    descriptor = request.app.state.plugin_lifecycle.prompt_optimizer_settings_descriptor()
+    if descriptor is None:
+        for artifact_id in plugin.get("imported_artifact_ids", []):
+            if artifact_id == "development:chub-task-prompt-optimizer":
+                continue
+            candidate = request.app.state.plugin_lifecycle.resolve_orchestration_implementation(artifact_id)
+            if candidate is not None and callable(candidate.optimization_prompt_builder):
+                descriptor = candidate
+                break
+    auto_available = bool(request.app.state.task_orchestrator.auto_available()
+                          and descriptor is not None
+                          and callable(descriptor.optimization_prompt_builder)
+                          and callable(descriptor.optimization_result_reader))
     return {
         **settings_data,
         "plugin_enabled": enabled,
         "entry_loaded": loaded,
-        "auto_available": False,
-        "auto_unavailable_reason": (
-            "auto 模式依赖的任务阶段尚未接入，后续交付完成后开放。"
-        ),
-        "effective": False,
-        "effective_mode": None,
-        "runtime_notice": "当前阶段链尚未接入，模式配置暂不参与普通任务执行。",
+        "auto_available": auto_available,
+        "auto_unavailable_reason": None if auto_available else auto_mode_unavailable_reason(),
+        "effective": effective,
+        "effective_mode": settings_data["mode"] if effective else None,
     }
 
 
@@ -88,7 +100,9 @@ def update_prompt_optimizer_settings(
         operation_id=operation_id,
     )
     try:
-        _prompt_optimizer_settings_data(request)
+        current = _prompt_optimizer_settings_data(request)
+        if payload.mode == "auto" and not current["auto_available"]:
+            raise ApiError(409, "prompt_optimizer_auto_unavailable", auto_mode_unavailable_reason())
         request.app.state.prompt_optimizer_settings.save(payload.mode)
         data = _prompt_optimizer_settings_data(request)
     except ApiError as exc:

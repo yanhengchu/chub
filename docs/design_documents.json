@@ -148,8 +148,8 @@
     {
       "id": "deliveryline-case-task-prompt-optimizer",
       "title": "真实案例：Chub 任务提示词优化插件设计",
-      "summary": "记录任务提示词优化插件这条真实交付线的当前场景和后续推进结果。",
-      "status": "调研中",
+      "summary": "记录任务提示词优化插件交付线的推进过程、已验收范围及复检边界。",
+      "status": "已验收",
       "category": "delivery_requirement",
       "group": "delivery-automation",
       "path": "DELIVERYLINE_CASE_TASK_PROMPT_OPTIMIZER.md"

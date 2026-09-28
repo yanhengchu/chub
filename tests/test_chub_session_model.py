@@ -9,6 +9,30 @@ from app.ai_session.models import AiSession
 from app.ai_session.store import AiSessionStore
 
 
+def test_prompt_optimization_session_restores_pinned_defaults_and_read_only_permission(settings):
+    from unittest.mock import MagicMock
+    from app.ai_interactions.prompt_optimization import PromptOptimizationUseCase
+
+    settings.ai_runtime.shared.workspace.mkdir(parents=True, exist_ok=True)
+    manager = AiSessionManager(settings)
+    manager.select_new_session_runtime = MagicMock(return_value=("codex", "codex-runtime-dev"))
+    manager.validate_model = MagicMock()
+    use_case = PromptOptimizationUseCase(manager, MagicMock())
+    snapshot = use_case.execution_snapshot()
+    manager.runtime_settings_store.read_general = MagicMock(side_effect=AssertionError("must use accepted snapshot"))
+    first = use_case.restore_session("stage-call-1", snapshot)
+    later_snapshot = {**snapshot, "model": "a-later-default"}
+    restored = use_case.restore_session("stage-call-2", later_snapshot)
+    assert first == restored
+    session = manager.store.get(first)
+    assert session.session_kind == "internal"
+    assert session.title == "任务提示词优化"
+    assert session.permission_mode == "read-only"
+    assert session.implementation_id == snapshot["implementation_id"]
+    assert session.model == snapshot["model"]
+    assert session.reasoning_effort == snapshot["reasoning_effort"]
+
+
 def test_legacy_v2_state_is_discarded_before_loading_current_schema(tmp_path: Path) -> None:
     path = tmp_path / "ai-sessions.json"
     base = {
@@ -177,3 +201,59 @@ def test_legacy_state_is_discarded_without_parsing_obsolete_fields(
     assert AiSessionStore.discard_legacy_session_state(path) is True
     assert AiSessionStore(path).available
     assert AiSessionStore(path).list() == []
+
+
+def test_accepted_quick_task_can_bind_native_session_after_plugin_disable(settings, tmp_path: Path):
+    from unittest.mock import MagicMock
+    manager = AiSessionManager(settings)
+    manager.validate_native_session_id = MagicMock()
+    session = manager.create_session(
+        "chub",
+        session_kind="internal",
+        internal_execution_snapshot={
+            "runtime_id": "codex",
+            "implementation_id": "codex-runtime-dev",
+            "model": None,
+            "reasoning_effort": None,
+        },
+        internal_title="任务提示词优化",
+    )
+    worker_task_id = f"qw-0000000000000-{'b' * 32}"
+    execution_id = "c" * 32
+    manager.register_quick_native_claim(session.id, worker_task_id)
+    manager.set_runtime_plugin_lifecycle_state_reader(lambda _implementation_id: (True, False))
+
+    manager.bind_quick_interaction_native_session(
+        session.id,
+        "11111111-1111-4111-8111-111111111111",
+        worker_task_id=worker_task_id,
+        execution_id=execution_id,
+        implementation_id="codex-runtime-dev",
+    )
+
+    assert manager.store.get(session.id).native_session_id == "11111111-1111-4111-8111-111111111111"
+
+
+def test_prompt_optimization_submits_internal_processing_task():
+    from contextlib import nullcontext
+    from unittest.mock import MagicMock
+
+    from app.ai_interactions.prompt_optimization import PromptOptimizationUseCase
+
+    quick_interactions = MagicMock()
+    quick_interactions.find_for_operation.return_value = None
+    quick_interactions.session_operation_guard.return_value = nullcontext()
+    expected = object()
+    quick_interactions.submit.return_value = expected
+
+    use_case = PromptOptimizationUseCase(MagicMock(), quick_interactions)
+    result = use_case.submit("internal-session", "optimize this task", "stage-call")
+
+    assert result is expected
+    assert quick_interactions.submit.call_args.kwargs == {
+        "operation_id": "stage-call",
+        "source_ip": "127.0.0.1",
+        "suppress_completion_notification": True,
+        "prompt_processing": True,
+        "accepted_orchestration_task": True,
+    }

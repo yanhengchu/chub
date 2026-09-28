@@ -17,6 +17,8 @@ QuickInteractionDeferredRestartStatus = Literal["pending", "started", "succeeded
 QuickInteractionNotificationRoute = Literal["default", "weixin-task"]
 QuickInteractionKind = Literal["standard"]
 TASK_SUMMARY_MAX_LENGTH = 27
+QUICK_INTERACTION_RESULT_MAX_LENGTH = 100_000
+PROMPT_OPTIMIZATION_WARNING = "提示词优化未完成，主任务将按原始输入继续执行。"
 
 
 class QuickInteractionWeixinRoute(BaseModel):
@@ -67,6 +69,35 @@ class QuickInteractionRequest(BaseModel):
         return resolved
 
 
+class PromptOptimizationVersions(BaseModel):
+    """Validated bilingual prompt pair for one accepted task."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    chinese: str = Field(min_length=1, max_length=8_000)
+    english: str = Field(min_length=1, max_length=8_000)
+
+    @field_validator("chinese")
+    @classmethod
+    def validate_chinese(cls, value: str) -> str:
+        resolved = value.strip()
+        if not resolved or "\x00" in resolved:
+            raise ValueError("Chinese optimized prompt must be non-empty text")
+        if not any("\u3400" <= char <= "\u9fff" for char in resolved):
+            raise ValueError("Chinese optimized prompt must contain Chinese text")
+        return resolved
+
+    @field_validator("english")
+    @classmethod
+    def validate_english(cls, value: str) -> str:
+        resolved = value.strip()
+        if not resolved or "\x00" in resolved:
+            raise ValueError("English optimized prompt must be non-empty text")
+        if not any(("a" <= char.lower() <= "z") for char in resolved):
+            raise ValueError("English optimized prompt must contain English text")
+        return resolved
+
+
 class QuickInteractionTask(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str
@@ -74,6 +105,11 @@ class QuickInteractionTask(BaseModel):
     session_id: str
     implementation_id: str | None = Field(default=None, pattern=RUNTIME_ID_PATTERN)
     prompt: str | None = Field(default=None, max_length=20_000)
+    execution_prompt: str | None = Field(default=None, max_length=20_000, exclude=True)
+    prompt_optimization_result: PromptOptimizationVersions | None = None
+    prompt_optimization_warning: str | None = Field(default=None, max_length=200)
+    orchestration_pending: bool = False
+    prompt_processing: bool = False
     summary: str | None = Field(default=None, max_length=48)
     kind: QuickInteractionKind = "standard"
     permission_mode: PermissionMode | None = None
@@ -82,13 +118,22 @@ class QuickInteractionTask(BaseModel):
     restart_sensitive: bool = False
     submission_verifying: bool = False
     status: QuickInteractionStatus
-    result: str | None = Field(default=None, max_length=100_000)
+    result: str | None = Field(default=None, max_length=QUICK_INTERACTION_RESULT_MAX_LENGTH)
     error: str | None = Field(default=None, max_length=4000)
     error_source: QuickInteractionErrorSource | None = None
     notification_status: QuickInteractionNotificationStatus | None = None
     notification_route: QuickInteractionNotificationRoute = "default"
     notification_error: str | None = Field(default=None, max_length=1000)
     notification_updated_at: datetime | None = None
+    prompt_optimization_notification_status: QuickInteractionNotificationStatus | None = Field(
+        default=None, exclude=True
+    )
+    prompt_optimization_notification_error: str | None = Field(
+        default=None, max_length=1000, exclude=True
+    )
+    prompt_optimization_notification_updated_at: datetime | None = Field(
+        default=None, exclude=True
+    )
     deferred_restart_status: QuickInteractionDeferredRestartStatus | None = None
     deferred_restart_error: str | None = Field(default=None, max_length=500)
     deferred_restart_updated_at: datetime | None = None

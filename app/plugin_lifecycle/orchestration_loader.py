@@ -4,9 +4,11 @@ import importlib.util
 import json
 import logging
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Callable
 
+from app.ai_interactions.models import PromptOptimizationVersions
 from app.core.module_sources import RegisteredModuleSource
 from app.plugin_lifecycle.orchestration_manifest import inspect_development_root
 
@@ -15,12 +17,16 @@ LOGGER = logging.getLogger("hub.orchestration_plugins")
 
 @dataclass(frozen=True)
 class OrchestrationPluginDescriptor:
-    """Minimal host-load contract; stages remain unavailable in this delivery item."""
+    """Validated host descriptor for one loaded orchestration plugin."""
 
     module_id: str
     version: str
     scope: str
     stage_kinds: tuple[str, ...] = ()
+    stage_runner: Callable[[str, str], str] | None = None
+    implementation_ref: str | None = None
+    optimization_prompt_builder: Callable[[str], str] | None = None
+    optimization_result_reader: Callable[[str], PromptOptimizationVersions] | None = None
 
 
 @dataclass(frozen=True)
@@ -37,10 +43,11 @@ def load_development_orchestration_plugin(
     chub_version: str,
 ) -> OrchestrationPluginLoadResult:
     """Load one fixed, indexed development entry after revalidating its source ref."""
+    namespace: str | None = None
     try:
         metadata = inspect_development_root(source.root, source.module_id, chub_version)
         if metadata.get("development_ref") != expected_artifact_id:
-            return _failed(expected_artifact_id, "开发源码已变化；请重新扫描并导入当前实现。")
+            return _failed(expected_artifact_id, "开发源码引用与请求快照不匹配。")
         manifest_path = source.root / "chub-capability-orchestration.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         entry = manifest["entry"]
@@ -77,25 +84,49 @@ def load_development_orchestration_plugin(
                 raise TypeError("entry factory unavailable")
             descriptor = factory()
         except Exception:
-            sys.modules.pop(namespace, None)
+            unload_development_orchestration_plugin(expected_artifact_id)
             raise
         current = inspect_development_root(source.root, source.module_id, chub_version)
         if current.get("development_ref") != expected_artifact_id:
-            sys.modules.pop(namespace, None)
-            return _failed(expected_artifact_id, "插件源码在装配期间发生变化；请重新扫描并导入。")
+            unload_development_orchestration_plugin(expected_artifact_id)
+            return _failed(expected_artifact_id, "插件源码在装配期间发生变化；请稍后重试。")
         if (
             not isinstance(descriptor, OrchestrationPluginDescriptor)
             or descriptor.module_id != source.module_id
             or descriptor.version != metadata.get("version")
             or descriptor.scope != metadata.get("scope")
-            or descriptor.stage_kinds
+            or descriptor.stage_kinds != ("prompt_optimization",)
+            or not callable(descriptor.stage_runner)
+            or descriptor.implementation_ref is not None
         ):
-            sys.modules.pop(namespace, None)
+            unload_development_orchestration_plugin(expected_artifact_id)
             return _failed(expected_artifact_id, "插件入口返回了不兼容的模块描述。")
+        descriptor = replace(descriptor, implementation_ref=expected_artifact_id)
         return OrchestrationPluginLoadResult(expected_artifact_id, "loaded", descriptor)
     except Exception:
+        if namespace is not None:
+            unload_development_orchestration_plugin(expected_artifact_id)
         LOGGER.warning("Unable to assemble orchestration plugin %s", source.module_id)
-        return _failed(expected_artifact_id, "插件入口装配失败；请修复模块后重新加载 Web。")
+        return _failed(expected_artifact_id, "当前插件源码入口装配失败。")
+
+
+def unload_development_orchestration_plugin(implementation_ref: str) -> None:
+    """Unload a namespaced development module and any package submodules."""
+    module_id, separator, digest = implementation_ref.partition("+")
+    if (
+        not separator
+        or not module_id.startswith("development:")
+        or len(digest) != 64
+        or any(char not in "0123456789abcdef" for char in digest)
+    ):
+        return
+    plugin_id = module_id.removeprefix("development:")
+    if not plugin_id or any(not (part.isalnum() or part == "-") for part in plugin_id.split("-")):
+        return
+    namespace = f"_chub_orchestration_{plugin_id.replace('-', '_')}_{digest[:16]}"
+    for name in tuple(sys.modules):
+        if name == namespace or name.startswith(f"{namespace}."):
+            sys.modules.pop(name, None)
 
 
 def _failed(artifact_id: str, reason: str) -> OrchestrationPluginLoadResult:

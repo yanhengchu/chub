@@ -12,6 +12,18 @@ from app.core.response import ApiError
 from modules.business.deliveryline.store import DeliverylineUnavailable
 
 
+@pytest.fixture(autouse=True)
+def isolate_deliveryline_files(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        "modules.business.deliveryline.MODULE_SHARED_DATA_DIR",
+        tmp_path / "requirements",
+    )
+    monkeypatch.setattr(
+        "modules.business.deliveryline.MODULE_STATE_DIR",
+        tmp_path / "deliveryline-state",
+    )
+
+
 class _Manager:
     def __init__(self) -> None:
         self.sessions: set[str] = set()

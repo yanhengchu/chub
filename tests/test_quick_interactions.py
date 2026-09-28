@@ -15,6 +15,7 @@ from app.ai_session.store import AiSessionStoreUnavailable
 from app.ai_interactions.models import (
     QuickInteractionDeferredRestartContext,
     QuickInteractionOperationContext,
+    PromptOptimizationVersions,
     QuickInteractionTask,
     QuickInteractionWeixinRoute,
 )
@@ -32,6 +33,101 @@ from app.core.response import ApiError
 from app.quick_worker import QuickWorkerServer
 from app.quick_worker import WorkerRequestNotSent
 from app.services.deferred_restart import DeferredRestartRequest
+
+
+def test_orchestration_reservation_keeps_public_identity_and_execution_prompt(tmp_path):
+    quick = manager(tmp_path)
+    quick._start_worker_observer = MagicMock()
+    reserved = quick.submit("session-1", "original requirement", operation_id="parent-op",
+                            source_ip="127.0.0.1", defer_orchestration=True)
+    assert reserved.worker_task_id is None
+    assert reserved.orchestration_pending
+    assert quick.is_running("session-1")
+    quick._worker_call.assert_not_called()
+
+    optimization_result = PromptOptimizationVersions(
+        chinese="优化后的中文任务。",
+        english="Optimized English task.",
+    )
+    quick.set_prompt_optimization_result(reserved.id, optimization_result)
+
+    submitted = quick.submit_orchestrated(reserved.id, "optimized requirement")
+    assert submitted.id == reserved.id
+    assert submitted.prompt == "original requirement"
+    assert not submitted.orchestration_pending
+    assert "execution_prompt" not in submitted.model_dump(mode="json")
+    payload = quick._worker_call.call_args.kwargs["task"]
+    assert "optimized requirement" in payload["prompt"]
+    worker_id = submitted.worker_task_id
+    assert quick.submit_orchestrated(reserved.id, "different text").worker_task_id == worker_id
+    assert quick._worker_call.call_count == 1
+
+    restored = manager(tmp_path)
+    assert restored.get(reserved.id).execution_prompt == "optimized requirement"
+    assert restored.get(reserved.id).prompt_optimization_result == optimization_result
+    assert restored.get(reserved.id).worker_task_id == worker_id
+
+
+def test_pending_orchestration_can_stop_when_worker_is_unavailable(tmp_path):
+    quick = manager(tmp_path)
+    reserved = quick.submit("session-1", "original", operation_id="pending-op",
+                            source_ip="127.0.0.1", defer_orchestration=True)
+    quick._recovery_ready = False
+    with quick.stop_operation_guard("session-1"):
+        assert quick.cancel_task(reserved.id)
+    assert quick.get(reserved.id).status == "cancelled"
+    assert not quick.is_running("session-1")
+    quick._worker_call.assert_not_called()
+
+
+def test_prompt_optimizer_submits_immediately_with_pinned_runtime_identity(tmp_path):
+    from app.ai_interactions.prompt_optimization import PromptOptimizationUseCase
+
+    quick = manager(tmp_path)
+    quick._start_worker_observer = MagicMock()
+    use_case = PromptOptimizationUseCase(quick.ai_session_manager, quick)
+
+    task = use_case.submit("session-1", "optimize current task", "accepted-optimizer-op")
+
+    assert task.prompt_processing
+    assert not task.orchestration_pending
+    assert task.worker_task_id is not None
+    assert quick._worker_call.call_count == 1
+    assert quick._worker_call.call_args.args[0] == "runtime_task_submit"
+    quick.ai_session_manager.ensure_session_implementation_identity_compatible.assert_called_once_with(
+        "session-1", "codex-runtime-dev"
+    )
+    quick.ai_session_manager.ensure_session_implementation_compatible.assert_not_called()
+
+
+def test_accepted_optimizer_task_cannot_be_left_deferred(tmp_path):
+    quick = manager(tmp_path)
+
+    with pytest.raises(ValueError, match="restricted internal task shape"):
+        quick.submit(
+            "session-1",
+            "optimize current task",
+            operation_id="accepted-optimizer-op",
+            source_ip="127.0.0.1",
+            defer_orchestration=True,
+            prompt_processing=True,
+            suppress_completion_notification=True,
+            accepted_orchestration_task=True,
+        )
+
+    quick._worker_call.assert_not_called()
+
+
+def test_internal_prompt_processing_uses_standard_task_without_user_boilerplate(tmp_path):
+    quick = manager(tmp_path)
+    quick._start_worker_observer = MagicMock()
+    task = quick.submit("session-1", "return only JSON", operation_id="internal-op",
+                        source_ip="127.0.0.1", prompt_processing=True,
+                        suppress_completion_notification=True)
+    payload = quick._worker_call.call_args.kwargs["task"]
+    assert payload["prompt"] == "return only JSON"
+    assert payload["task_kind"] == "standard"
+    assert task.notification_status == "skipped"
 
 
 def manager(
@@ -1053,6 +1149,367 @@ def test_quick_interaction_completion_notification_is_independent(
     assert notification_task.id == finished.id
     assert notification_task.notification_status == "sending"
     assert notification_route is None
+
+
+def test_prompt_optimization_progress_notification_uses_saved_route_and_precedes_final(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    progress_notifier = MagicMock(return_value=SimpleNamespace(status="sent", error=None))
+    completion_notifier = MagicMock(return_value=SimpleNamespace(status="sent", error=None))
+    quick = manager(tmp_path, completion_notifier=completion_notifier)
+    quick.prompt_optimization_notifier = progress_notifier
+    route = QuickInteractionWeixinRoute(
+        account_id="account-1",
+        recipient="owner@im.wechat",
+    )
+    task = QuickInteractionTask(
+        id="auto-parent",
+        session_id="session-1",
+        prompt="original request",
+        notification_route="weixin-task",
+        orchestration_pending=True,
+        status="requested",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    quick._tasks[task.id] = task
+    quick._notification_routes[task.id] = route
+    quick._operations[task.id] = ("parent-operation", "127.0.0.1")
+
+    class ImmediateThread:
+        def __init__(self, *, target, args, daemon, **_kwargs):
+            self.target = target
+            self.args = args
+
+        def start(self) -> None:
+            self.target(*self.args)
+
+    monkeypatch.setattr(
+        "app.ai_interactions.quick_interactions.threading.Thread",
+        ImmediateThread,
+    )
+    operation_logs = []
+    monkeypatch.setattr(
+        "app.ai_interactions.quick_interactions.write_operation",
+        lambda **kwargs: operation_logs.append(kwargs),
+    )
+
+    quick.notify_prompt_optimization_completed(task.id)
+
+    assert quick.get(task.id).prompt_optimization_notification_status == "sent"
+    progress_notifier.assert_called_once()
+    notified_task, notified_route = progress_notifier.call_args.args
+    assert notified_task.id == task.id
+    assert "prompt_optimization_notification_status" not in notified_task.model_dump(
+        mode="json"
+    )
+    assert notified_route == route
+    assert completion_notifier.call_count == 0
+    assert [entry["status"] for entry in operation_logs] == [
+        "requested",
+        "started",
+        "succeeded",
+    ]
+    assert all(
+        entry["action"] == "quick_interaction_prompt_optimization_notification"
+        for entry in operation_logs
+    )
+
+    # If the main task finishes while the progress receipt is unresolved, its
+    # final Weixin message waits; resolving the progress message releases it.
+    quick._tasks[task.id].prompt_optimization_notification_status = "sending"
+    quick._finish(task.id, "succeeded", "final result")
+    assert quick.get(task.id).notification_status == "pending"
+    assert completion_notifier.call_count == 0
+    quick._tasks[task.id].prompt_optimization_notification_status = "failed"
+    quick.resume_pending_completion_notifications()
+    assert quick.get(task.id).notification_status == "sent"
+    assert completion_notifier.call_count == 1
+
+
+def test_prompt_optimization_notification_write_failures_do_not_hold_final_delivery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    progress_notifier = MagicMock(return_value=SimpleNamespace(status="sent", error=None))
+    completion_notifier = MagicMock(return_value=SimpleNamespace(status="sent", error=None))
+    quick = manager(tmp_path, completion_notifier=completion_notifier)
+    quick.prompt_optimization_notifier = progress_notifier
+    route = QuickInteractionWeixinRoute(
+        account_id="account-1",
+        recipient="owner@im.wechat",
+    )
+    task = QuickInteractionTask(
+        id="auto-persist-error",
+        session_id="session-1",
+        prompt="original request",
+        notification_route="weixin-task",
+        orchestration_pending=True,
+        status="requested",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    quick._tasks[task.id] = task
+    quick._notification_routes[task.id] = route
+    quick._operations[task.id] = ("auto-persist-operation", "127.0.0.1")
+
+    original_write = quick._write
+    write_count = 0
+
+    def fail_once_at_send_state() -> None:
+        nonlocal write_count
+        write_count += 1
+        if write_count == 2:
+            raise OSError("temporary state write failure")
+        original_write()
+
+    monkeypatch.setattr(quick, "_write", fail_once_at_send_state)
+
+    class ImmediateThread:
+        def __init__(self, *, target, args, daemon, **_kwargs):
+            self.target = target
+            self.args = args
+
+        def start(self) -> None:
+            self.target(*self.args)
+
+    monkeypatch.setattr(
+        "app.ai_interactions.quick_interactions.threading.Thread",
+        ImmediateThread,
+    )
+    operation_logs = []
+    monkeypatch.setattr(
+        "app.ai_interactions.quick_interactions.write_operation",
+        lambda **kwargs: operation_logs.append(kwargs),
+    )
+
+    quick.notify_prompt_optimization_completed(task.id)
+
+    assert progress_notifier.call_count == 0
+    assert quick.get(task.id).prompt_optimization_notification_status == "failed"
+    assert any(
+        entry["operation_id"] == "auto-persist-operation:prompt-optimization"
+        and entry["status"] == "failed"
+        for entry in operation_logs
+    )
+
+    quick._finish(task.id, "succeeded", "main result")
+    assert quick.get(task.id).notification_status == "sent"
+    completion_notifier.assert_called_once()
+
+
+def test_prompt_optimization_notification_outcome_write_failure_releases_final(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    progress_notifier = MagicMock(return_value=SimpleNamespace(status="sent", error=None))
+    completion_notifier = MagicMock(return_value=SimpleNamespace(status="sent", error=None))
+    quick = manager(tmp_path, completion_notifier=completion_notifier)
+    quick.prompt_optimization_notifier = progress_notifier
+    route = QuickInteractionWeixinRoute(
+        account_id="account-1",
+        recipient="owner@im.wechat",
+    )
+    task = QuickInteractionTask(
+        id="auto-outcome-error",
+        session_id="session-1",
+        prompt="original request",
+        notification_route="weixin-task",
+        orchestration_pending=True,
+        status="requested",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    quick._tasks[task.id] = task
+    quick._notification_routes[task.id] = route
+
+    original_write = quick._write
+    write_count = 0
+
+    def fail_once_at_outcome_state() -> None:
+        nonlocal write_count
+        write_count += 1
+        if write_count == 3:
+            raise OSError("temporary outcome write failure")
+        original_write()
+
+    monkeypatch.setattr(quick, "_write", fail_once_at_outcome_state)
+
+    class ImmediateThread:
+        def __init__(self, *, target, args, daemon, **_kwargs):
+            self.target = target
+            self.args = args
+
+        def start(self) -> None:
+            self.target(*self.args)
+
+    monkeypatch.setattr(
+        "app.ai_interactions.quick_interactions.threading.Thread",
+        ImmediateThread,
+    )
+
+    quick.notify_prompt_optimization_completed(task.id)
+
+    assert progress_notifier.call_count == 1
+    assert quick.get(task.id).prompt_optimization_notification_status == "sent"
+    quick._finish(task.id, "succeeded", "main result")
+    assert quick.get(task.id).notification_status == "sent"
+    completion_notifier.assert_called_once()
+
+
+def test_prompt_optimization_notification_thread_start_failure_is_logged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    completion_notifier = MagicMock(return_value=SimpleNamespace(status="sent", error=None))
+    quick = manager(tmp_path, completion_notifier=completion_notifier)
+    quick.prompt_optimization_notifier = MagicMock(
+        return_value=SimpleNamespace(status="sent", error=None)
+    )
+    route = QuickInteractionWeixinRoute(
+        account_id="account-1",
+        recipient="owner@im.wechat",
+    )
+    task = QuickInteractionTask(
+        id="auto-thread-start-error",
+        session_id="session-1",
+        prompt="original request",
+        notification_route="weixin-task",
+        orchestration_pending=True,
+        status="requested",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    quick._tasks[task.id] = task
+    quick._notification_routes[task.id] = route
+    quick._operations[task.id] = ("auto-thread-operation", "127.0.0.1")
+
+    class FailedThread:
+        starts = 0
+
+        def __init__(self, *, target, args, **_kwargs):
+            type(self).starts += 1
+            if type(self).starts == 1:
+                raise RuntimeError("thread unavailable")
+            self.target = target
+            self.args = args
+
+        def start(self) -> None:
+            self.target(*self.args)
+
+    monkeypatch.setattr(
+        "app.ai_interactions.quick_interactions.threading.Thread",
+        FailedThread,
+    )
+    operation_logs = []
+    monkeypatch.setattr(
+        "app.ai_interactions.quick_interactions.write_operation",
+        lambda **kwargs: operation_logs.append(kwargs),
+    )
+
+    quick.notify_prompt_optimization_completed(task.id)
+
+    assert quick.get(task.id).prompt_optimization_notification_status == "failed"
+    assert [entry["status"] for entry in operation_logs] == ["requested", "failed"]
+    quick._finish(task.id, "succeeded", "main result")
+    assert quick.get(task.id).notification_status == "sent"
+    completion_notifier.assert_called_once()
+
+
+def test_inflight_optimization_notification_is_not_retried_after_restart_and_unblocks_final(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = manager(tmp_path)
+    task = QuickInteractionTask(
+        id="recovered-auto-parent",
+        session_id="session-1",
+        prompt="original request",
+        notification_route="weixin-task",
+        prompt_optimization_notification_status="sending",
+        notification_status="pending",
+        status="succeeded",
+        result="final result",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    route = QuickInteractionWeixinRoute(
+        account_id="account-1",
+        recipient="owner@im.wechat",
+    )
+    first._tasks[task.id] = task
+    first._notification_routes[task.id] = route
+    first._operation_contexts[task.id] = QuickInteractionOperationContext(
+        operation_id="parent-operation",
+        source_ip="127.0.0.1",
+    )
+    first._operations[task.id] = ("parent-operation", "127.0.0.1")
+    first._write()
+    operation_logs = []
+    monkeypatch.setattr(
+        "app.ai_interactions.quick_interactions.write_operation",
+        lambda **kwargs: operation_logs.append(kwargs),
+    )
+
+    completion_notifier = MagicMock(
+        return_value=SimpleNamespace(status="sent", error=None)
+    )
+    progress_notifier = MagicMock()
+    reopened = manager(tmp_path, completion_notifier=completion_notifier)
+    reopened.prompt_optimization_notifier = progress_notifier
+
+    class ImmediateThread:
+        def __init__(self, *, target, args, daemon, **_kwargs):
+            self.target = target
+            self.args = args
+
+        def start(self) -> None:
+            self.target(*self.args)
+
+    monkeypatch.setattr(
+        "app.ai_interactions.quick_interactions.threading.Thread",
+        ImmediateThread,
+    )
+
+    recovered = reopened.get(task.id)
+    assert recovered.prompt_optimization_notification_status == "failed"
+    assert recovered.notification_status == "pending"
+    reopened.resume_pending_prompt_optimization_notifications()
+    reopened.resume_pending_completion_notifications()
+
+    assert progress_notifier.call_count == 0
+    completion_notifier.assert_called_once()
+    assert reopened.get(task.id).notification_status == "sent"
+    assert any(
+        entry["operation_id"] == "parent-operation:prompt-optimization"
+        and entry["action"] == "quick_interaction_prompt_optimization_notification"
+        and entry["status"] == "failed"
+        for entry in operation_logs
+    )
+
+
+def test_prompt_optimization_progress_notification_is_skipped_for_web_task(
+    tmp_path: Path,
+) -> None:
+    notifier = MagicMock()
+    quick = manager(tmp_path)
+    quick.prompt_optimization_notifier = notifier
+    task = QuickInteractionTask(
+        id="web-auto-parent",
+        session_id="session-1",
+        prompt="original request",
+        orchestration_pending=True,
+        status="requested",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    quick._tasks[task.id] = task
+
+    quick.notify_prompt_optimization_completed(task.id)
+
+    assert quick.get(task.id).prompt_optimization_notification_status == "skipped"
+    notifier.assert_not_called()
 
 
 def test_claim_cleanup_failure_does_not_block_completion_or_notification(

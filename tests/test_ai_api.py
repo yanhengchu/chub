@@ -1,7 +1,9 @@
-from tests.session_fixtures import AiSessionFixture
+import json
 
+from tests.session_fixtures import AiSessionFixture
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, call
 
 import httpx
@@ -20,7 +22,12 @@ from app.ai_session.api_models import (
     WorkspaceInfo,
 )
 from app.ai_interactions.models import (
+    PromptOptimizationVersions,
     QuickInteractionTask,
+)
+from app.ai_interactions.task_orchestration import (
+    PromptOptimizerStageSelection,
+    TaskOrchestrationDispatcher,
 )
 from app.ai_runtime.contracts import (
     RuntimeModelCatalogData,
@@ -32,6 +39,14 @@ from app.ai_session.models import (
 )
 from app.core.config import Settings
 from app.core.response import ApiError
+
+
+def _read_optimization_versions(result: str) -> PromptOptimizationVersions:
+    payload = json.loads(result)
+    return PromptOptimizationVersions(
+        chinese=payload["optimized_prompt_zh"],
+        english=payload["optimized_prompt_en"],
+    )
 
 
 def authorization(settings: Settings) -> dict[str, str]:
@@ -744,6 +759,102 @@ async def test_page_quick_interaction_uses_task_orchestration_dispatcher(
     assert submitted.kwargs["session_id"] == "session-1"
     assert submitted.kwargs["prompt"] == "检查状态"
     assert submitted.kwargs["request_id"] == "11111111-1111-4111-8111-111111111111"
+
+
+@pytest.mark.anyio
+async def test_web_auto_submission_returns_optimized_main_result_through_same_task(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    from tests.test_quick_interactions import manager as quick_manager
+
+    app = create_app(settings)
+    quick = quick_manager(tmp_path)
+    quick._start_worker_observer = MagicMock()
+    app.state.ai_session_manager = quick.ai_session_manager
+    app.state.quick_interactions = quick
+    app.state.ai_session_manager.require_session_access = MagicMock()
+
+    child = QuickInteractionTask(
+        id="optimizer-child",
+        session_id="optimizer-session",
+        prompt="optimize:检查设备",
+        status="running",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    use_case = SimpleNamespace(
+        execution_snapshot=lambda: {"runtime_id": "codex", "implementation_id": "codex-runtime-dev"},
+        restore_session=lambda *_args: "optimizer-session",
+        submit=MagicMock(return_value=child),
+        find_for_operation=MagicMock(return_value=None),
+        get=lambda _task_id: child,
+        cancel=MagicMock(return_value=True),
+    )
+    reader = _read_optimization_versions
+    descriptor = SimpleNamespace(optimization_result_reader=reader)
+    dispatcher = TaskOrchestrationDispatcher(tmp_path / "orchestration.json", quick)
+    dispatcher.configure_optimization(use_case, lambda _ref: descriptor)
+    dispatcher.set_prompt_optimizer_stage_provider(
+        lambda _entry: PromptOptimizerStageSelection(
+            enabled=True,
+            mode="auto",
+            implementation_ref="development:optimizer+abc",
+            stage_runner=lambda _mode, prompt: prompt,
+            optimization_prompt_builder=lambda prompt: f"optimize:{prompt}",
+            optimization_result_reader=reader,
+        )
+    )
+    quick.set_task_finished_handler(dispatcher.record_task_finished)
+    app.state.task_orchestrator = dispatcher
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        accepted = await client.post(
+            "/api/ai/sessions/session-1/quick-interactions",
+            headers={
+                **authorization(settings),
+                "X-Chub-Task-Request-Id": "11111111-1111-4111-8111-111111111111",
+            },
+            json={"prompt": "检查设备"},
+        )
+        assert accepted.status_code == 200
+        task_data = accepted.json()["data"]["task"]
+        assert task_data["orchestration_pending"] is True
+        task_id = task_data["id"]
+
+        request = dispatcher._state.requests[0]
+        dispatcher._advance_optimization(request.id)
+        assert use_case.submit.call_count == 1
+        assert quick._worker_call.call_count == 0
+
+        child.status = "succeeded"
+        child.result = json.dumps({
+            "optimized_prompt_zh": "优化后的设备检查任务",
+            "optimized_prompt_en": "Optimized device inspection task",
+        }, ensure_ascii=False)
+        dispatcher._advance_optimization(request.id)
+        parent = quick.get(task_id)
+        assert parent.id == task_id
+        assert parent.prompt == "检查设备"
+        assert parent.execution_prompt == "优化后的设备检查任务"
+        assert parent.prompt_optimization_result.chinese == "优化后的设备检查任务"
+        assert parent.prompt_optimization_result.english == "Optimized device inspection task"
+        assert quick._worker_call.call_count == 1
+        assert "优化后的设备检查任务" in quick._worker_call.call_args.kwargs["task"]["prompt"]
+
+        quick._finish(task_id, "succeeded", "设备状态正常")
+        completed = await client.get(f"/api/ai/quick-interactions/{task_id}")
+
+    assert completed.status_code == 200
+    assert completed.json()["data"]["task"]["status"] == "succeeded"
+    assert completed.json()["data"]["task"]["result"] == "设备状态正常"
+    assert completed.json()["data"]["task"]["prompt_optimization_result"] == {
+        "chinese": "优化后的设备检查任务",
+        "english": "Optimized device inspection task",
+    }
 
 
 @pytest.mark.anyio

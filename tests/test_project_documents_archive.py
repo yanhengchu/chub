@@ -57,7 +57,8 @@ async def test_archived_document_is_hidden_from_home_api_and_kept_in_full_list(
         document["id"] for document in home_api.json()["data"]["documents"][:2]
     ] == ["project-readme", "chub-architecture"]
     assert "automation-download" not in visible_document_ids
-    assert len(visible_document_ids) == 15
+    # The home card includes two pinned documents plus the ten-document recent window.
+    assert len(visible_document_ids) == 12
     assert 'href="/project-docs/automation-download"' not in home_page.text
     assert 'data-archived="true"' in full_list.text
     assert "已隐藏" in full_list.text

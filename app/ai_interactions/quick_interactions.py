@@ -21,6 +21,8 @@ from app.ai_interactions.models import (
     QuickInteractionErrorSource,
     QuickInteractionOperationContext,
     QuickInteractionOrder,
+    PromptOptimizationVersions,
+    PROMPT_OPTIMIZATION_WARNING,
     QuickInteractionTask,
     QuickInteractionWeixinRoute,
     TASK_SUMMARY_MAX_LENGTH,
@@ -153,6 +155,11 @@ class QuickInteractionManager:
         | None = None,
         deferred_restart: DeferredRestartCoordinator | None = None,
         *,
+        prompt_optimization_notifier: Callable[
+            [QuickInteractionTask, QuickInteractionWeixinRoute | None],
+            object,
+        ]
+        | None = None,
         restart_notifier: Callable[
             [
                 QuickInteractionTask,
@@ -168,6 +175,7 @@ class QuickInteractionManager:
         self.path = data_file.with_name("quick-interactions.json")
         self.ai_session_manager = ai_session_manager
         self.completion_notifier = completion_notifier
+        self.prompt_optimization_notifier = prompt_optimization_notifier
         self.restart_notifier = restart_notifier
         self.deferred_restart = deferred_restart
         self.timeout_seconds = timeout_seconds
@@ -181,6 +189,9 @@ class QuickInteractionManager:
         self._task_done_events: dict[str, threading.Event] = {}
         self._session_locks: dict[str, threading.RLock] = {}
         self._operations: dict[str, tuple[str, str]] = {}
+        self._recovered_prompt_optimization_notification_failures: list[
+            tuple[str, str]
+        ] = []
         self._notification_routes: dict[str, QuickInteractionWeixinRoute] = {}
         self._deferred_restart_contexts: dict[
             str,
@@ -209,6 +220,18 @@ class QuickInteractionManager:
         recovered_tasks = self._load()
         if recovered_tasks and self._local_state_error is None:
             self._write()
+        for task_id, session_id in self._recovered_prompt_optimization_notification_failures:
+            operation = self._operations.get(task_id)
+            if operation is None:
+                continue
+            operation_id, source_ip = operation
+            write_operation(
+                operation_id=f"{operation_id}:prompt-optimization",
+                action="quick_interaction_prompt_optimization_notification",
+                status="failed",
+                target=session_id,
+                source_ip=source_ip,
+            )
         self.restart_request_dir.mkdir(parents=True, exist_ok=True)
         os.chmod(self.restart_request_dir, 0o700)
 
@@ -319,7 +342,7 @@ class QuickInteractionManager:
                 )
             if task.status in {"requested", "running"}:
                 recovered_tasks = True
-                if task.worker_task_id is not None:
+                if task.worker_task_id is not None or task.orchestration_pending:
                     self._running_sessions.add(task.session_id)
                     self._active_task_ids.add(task.id)
                     self._task_done_events[task.id] = threading.Event()
@@ -354,6 +377,16 @@ class QuickInteractionManager:
                 )
             if worker_delivery_confirmed is True:
                 self._worker_delivery_confirmed.add(task.id)
+            if task.prompt_optimization_notification_status == "sending":
+                recovered_tasks = True
+                task.prompt_optimization_notification_status = "failed"
+                task.prompt_optimization_notification_error = (
+                    "服务重启时提示词优化通知未完成。"
+                )
+                task.prompt_optimization_notification_updated_at = utc_now()
+                self._recovered_prompt_optimization_notification_failures.append(
+                    (task.id, task.session_id)
+                )
             if task.notification_status == "sending":
                 recovered_tasks = True
                 if task.notification_route == "weixin-task":
@@ -451,7 +484,18 @@ class QuickInteractionManager:
         suppress_completion_notification: bool = False,
         summary_max_chars: int = TASK_SUMMARY_MAX_LENGTH,
         summary_max_width: int | None = None,
+        defer_orchestration: bool = False,
+        prompt_processing: bool = False,
+        accepted_orchestration_task: bool = False,
     ) -> QuickInteractionTask:
+        if accepted_orchestration_task and not (
+            prompt_processing
+            and not defer_orchestration
+            and suppress_completion_notification
+            and notification_route is None
+            and source_ip == "127.0.0.1"
+        ):
+            raise ValueError("Accepted orchestration continuation must use the restricted internal task shape")
         self._require_worker_recovery()
         with self._session_lock(session_id):
             session = self.ai_session_manager.get_session(session_id)
@@ -494,12 +538,20 @@ class QuickInteractionManager:
                     "quick_interaction_writer_active",
                     ACTIVE_WRITER_ERROR,
                 )
-            ensure_compatible = getattr(
-                self.ai_session_manager,
-                "ensure_session_implementation_compatible",
-                None,
+            compatibility_method = (
+                "ensure_session_implementation_identity_compatible"
+                if accepted_orchestration_task
+                else "ensure_session_implementation_compatible"
             )
-            if callable(ensure_compatible):
+            ensure_compatible = getattr(self.ai_session_manager, compatibility_method, None)
+            if not callable(ensure_compatible):
+                if accepted_orchestration_task:
+                    raise ApiError(
+                        503,
+                        "runtime_implementation_unavailable",
+                        "无法确认已受理任务绑定的 Runtime Session；任务未继续。",
+                    )
+            else:
                 ensure_compatible(session_id, selected_implementation_id)
             if not session.native_session_id:
                 self.ai_session_manager.set_initial_quick_interaction_title(
@@ -516,7 +568,9 @@ class QuickInteractionManager:
                 persisted_prompt = prompt
                 task = QuickInteractionTask(
                     id=str(uuid.uuid4()),
-                    worker_task_id=new_worker_task_id(),
+                    worker_task_id=None if defer_orchestration else new_worker_task_id(),
+                    orchestration_pending=defer_orchestration,
+                    prompt_processing=prompt_processing,
                     session_id=session_id,
                     implementation_id=selected_implementation_id,
                     prompt=persisted_prompt,
@@ -560,7 +614,8 @@ class QuickInteractionManager:
                 self._running_sessions.add(session_id)
                 self._active_task_ids.add(task.id)
                 self._task_done_events[task.id] = threading.Event()
-                self._submitting_task_ids.add(task.id)
+                if not defer_orchestration:
+                    self._submitting_task_ids.add(task.id)
                 self._operations[task.id] = (operation_id, source_ip)
                 self._operation_contexts[task.id] = QuickInteractionOperationContext(
                     operation_id=operation_id,
@@ -580,6 +635,102 @@ class QuickInteractionManager:
                     self._operation_contexts.pop(task.id, None)
                     self._notification_routes.pop(task.id, None)
                     raise
+        if defer_orchestration:
+            self._log_status(task.id, "requested", session.id)
+            return task.model_copy(deep=True)
+        return self._start_reserved_worker(task, session, prompt)
+
+    def submit_orchestrated(self, task_id: str, prompt: str) -> QuickInteractionTask:
+        """Continue one reserved public task; persist its Worker identity before IPC."""
+        self._require_worker_recovery()
+        task = self.get(task_id)
+        with self._session_lock(task.session_id):
+            session = self.ai_session_manager.get_session(task.session_id)
+            with self._lock:
+                task = self._tasks[task_id]
+                if not task.orchestration_pending or task.status != "requested":
+                    return task.model_copy(deep=True)
+                task.execution_prompt = prompt
+                task.worker_task_id = new_worker_task_id()
+                task.orchestration_pending = False
+                # Recovery may safely retry this same immutable Worker identity.
+                task.submission_verifying = True
+                task.updated_at = utc_now()
+                self._submitting_task_ids.add(task.id)
+                self._write()
+            return self._start_reserved_worker(task, session, prompt, retain_on_failure=True)
+
+    def set_prompt_optimization_result(
+        self,
+        task_id: str,
+        result: PromptOptimizationVersions,
+    ) -> QuickInteractionTask:
+        """Persist the bilingual checkpoint for the original task's Web timeline."""
+        validated = PromptOptimizationVersions.model_validate(result)
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                raise ApiError(404, "quick_interaction_not_found", "快速交互任务不存在。")
+            if task.prompt_optimization_result is not None:
+                if task.prompt_optimization_result != validated:
+                    raise ApiError(
+                        409,
+                        "prompt_optimization_result_conflict",
+                        "提示词优化检查点与已保存结果不一致，主任务未继续。",
+                    )
+                return task.model_copy(deep=True)
+            task.prompt_optimization_result = validated
+            task.updated_at = utc_now()
+            try:
+                self._write()
+            except OSError:
+                task.prompt_optimization_result = None
+                raise
+            return task.model_copy(deep=True)
+
+    def set_prompt_optimization_warning(self, task_id: str) -> QuickInteractionTask:
+        """Persist the fixed notice that the original task is continuing."""
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                raise ApiError(404, "quick_interaction_not_found", "快速交互任务不存在。")
+            if task.prompt_optimization_warning == PROMPT_OPTIMIZATION_WARNING:
+                return task.model_copy(deep=True)
+            task.prompt_optimization_warning = PROMPT_OPTIMIZATION_WARNING
+            task.updated_at = utc_now()
+            # This is a best-effort user-facing projection. Keep it in memory
+            # if persistence is temporarily unavailable so subsequent writes
+            # can recover it; the main task must not depend on this field.
+            self._write()
+            return task.model_copy(deep=True)
+
+    def finish_orchestration(self, task_id: str, message: str, *, cancelled: bool = False) -> bool:
+        task = self.get(task_id)
+        with self._session_lock(task.session_id):
+            with self._lock:
+                current = self._tasks[task_id]
+                if not current.orchestration_pending or current.status != "requested":
+                    return False
+                current.orchestration_pending = False
+            self._finish(task_id, "cancelled" if cancelled else "failed", message, error_source="chub")
+            with self._lock:
+                self._active_task_ids.discard(task_id)
+                self._running_sessions.discard(task.session_id)
+                self._submitting_task_ids.discard(task_id)
+                self._cancelled_task_ids.discard(task_id)
+                done = self._task_done_events.pop(task_id, None)
+                if done is not None:
+                    done.set()
+                self._write()
+            if self.deferred_restart is not None:
+                self.deferred_restart.maybe_schedule()
+            return True
+
+    def _start_reserved_worker(
+        self, task: QuickInteractionTask, session: AiSession, prompt: str,
+        *, retain_on_failure: bool = False,
+    ) -> QuickInteractionTask:
+        session_id = session.id
         if task.worker_task_id is None:
             raise RuntimeError("Worker task identity is unavailable")
         self._log_status(task.id, "requested", session.id)
@@ -614,6 +765,17 @@ class QuickInteractionManager:
             )
             self._log_status(task.id, "failed", session.id)
             detail = self._worker_exception_detail(exc)
+            if retain_on_failure:
+                self._finish(task.id, "failed", f"Chub Quick Worker submission error: {detail}", error_source="chub")
+                with self._lock:
+                    self._active_task_ids.discard(task.id)
+                    self._running_sessions.discard(session.id)
+                    self._submitting_task_ids.discard(task.id)
+                    done = self._task_done_events.pop(task.id, None)
+                    if done is not None:
+                        done.set()
+                    self._write()
+                return self.get(task.id)
             with self._lock:
                 self._tasks.pop(task.id, None)
                 self._running_sessions.discard(session_id)
@@ -633,10 +795,17 @@ class QuickInteractionManager:
             ) from exc
         else:
             with self._lock:
+                task.submission_verifying = False
                 self._submitting_task_ids.discard(task.id)
+                self._write()
         try:
             self._start_worker_observer(task, session, prompt)
         except RuntimeError as observer_error:
+            if retain_on_failure:
+                # The persisted Worker task remains the sole accepted task.
+                # The resident recovery reconciler can observe it without a per-task thread.
+                LOGGER.warning("Orchestrated task observer unavailable; using Worker reconciliation: %s", task.id)
+                return self.get(task.id)
             observer_detail = self._worker_exception_detail(observer_error)
             if task.worker_task_id:
                 try:
@@ -698,6 +867,12 @@ class QuickInteractionManager:
 
     def set_recovery_ready_handler(self, handler: Callable[[], object]) -> None:
         self._recovery_ready_handler = handler
+
+    def set_prompt_optimization_notifier(
+        self,
+        notifier: Callable[[QuickInteractionTask, QuickInteractionWeixinRoute | None], object],
+    ) -> None:
+        self.prompt_optimization_notifier = notifier
 
     def set_task_finished_handler(
         self,
@@ -882,6 +1057,7 @@ class QuickInteractionManager:
             self._untracked_worker_sessions.clear()
             self._recovery_ready = True
             self._recovery_error = None
+        self.resume_pending_prompt_optimization_notifications()
         self.resume_pending_completion_notifications()
         self.resume_pending_deferred_restart_notifications()
         if became_ready and self._recovery_ready_handler is not None:
@@ -1003,7 +1179,7 @@ class QuickInteractionManager:
                         session = self.ai_session_manager.get_session(task.session_id)
                         if not task.prompt:
                             raise OSError("Verifying Worker task has no prompt")
-                        submission = self._worker_submission(task, session, task.prompt)
+                        submission = self._worker_submission(task, session, task.execution_prompt or task.prompt)
                         submitted = self._worker_call(
                             "runtime_task_submit",
                             task=submission.model_dump(mode="json"),
@@ -1199,6 +1375,243 @@ class QuickInteractionManager:
             self._native_claim_restore_errors.pop(task_id, None)
             self._write()
 
+    def notify_prompt_optimization_completed(self, task_id: str) -> None:
+        """Queue the optimizer outcome on the original Weixin route."""
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None or not task.orchestration_pending:
+                return
+            if task.prompt_optimization_notification_status is not None:
+                return
+            if task.notification_route != "weixin-task":
+                task.prompt_optimization_notification_status = "skipped"
+                task.prompt_optimization_notification_error = (
+                    "Web 端通过原任务时间线展示双语优化结果。"
+                )
+                task.prompt_optimization_notification_updated_at = utc_now()
+                try:
+                    self._write()
+                except OSError:
+                    LOGGER.warning("Unable to persist skipped prompt optimization notification")
+                    task.prompt_optimization_notification_status = None
+                    task.prompt_optimization_notification_error = None
+                    task.prompt_optimization_notification_updated_at = None
+                return
+            if self.prompt_optimization_notifier is None:
+                task.prompt_optimization_notification_status = "failed"
+                task.prompt_optimization_notification_error = "微信双语优化结果通知不可用。"
+                task.prompt_optimization_notification_updated_at = utc_now()
+                try:
+                    self._write()
+                except OSError:
+                    LOGGER.warning("Unable to persist unavailable prompt optimization notification")
+                    task.prompt_optimization_notification_status = None
+                    task.prompt_optimization_notification_error = None
+                    task.prompt_optimization_notification_updated_at = None
+                return
+            task.prompt_optimization_notification_status = "pending"
+            task.prompt_optimization_notification_updated_at = utc_now()
+            operation = self._operations.get(task_id) or (uuid.uuid4().hex, "unknown")
+            try:
+                self._write()
+            except OSError:
+                # Progress delivery is ancillary and must not prevent the main task.
+                task.prompt_optimization_notification_status = None
+                task.prompt_optimization_notification_error = None
+                task.prompt_optimization_notification_updated_at = None
+                write_operation(
+                    operation_id=f"{operation[0]}:prompt-optimization",
+                    action="quick_interaction_prompt_optimization_notification",
+                    status="failed",
+                    target=task.session_id,
+                    source_ip=operation[1],
+                )
+                LOGGER.warning("Unable to persist prompt optimization notification state")
+                return
+        self._start_prompt_optimization_notification(task_id, operation)
+
+    def resume_pending_prompt_optimization_notifications(self) -> None:
+        with self._lock:
+            pending = [
+                (
+                    task.id,
+                    self._operations.get(task.id) or (uuid.uuid4().hex, "unknown"),
+                )
+                for task in self._tasks.values()
+                if task.prompt_optimization_notification_status == "pending"
+                and task.notification_route == "weixin-task"
+            ]
+        for task_id, operation in pending:
+            self._start_prompt_optimization_notification(task_id, operation)
+
+    def _start_prompt_optimization_notification(
+        self,
+        task_id: str,
+        operation: tuple[str, str],
+    ) -> None:
+        try:
+            threading.Thread(
+                target=self._deliver_prompt_optimization_notification,
+                args=(task_id, operation),
+                daemon=True,
+                name=f"chub-optimization-notification-{task_id[:8]}",
+            ).start()
+        except RuntimeError:
+            operation_id, source_ip = operation
+            notification_operation_id = f"{operation_id}:prompt-optimization"
+            with self._lock:
+                task = self._tasks.get(task_id)
+                if task is not None and task.prompt_optimization_notification_status == "pending":
+                    task.prompt_optimization_notification_status = "failed"
+                    task.prompt_optimization_notification_error = "微信双语优化结果通知线程未能启动。"
+                    task.prompt_optimization_notification_updated_at = utc_now()
+                    snapshot = task.model_copy(deep=True)
+                    try:
+                        self._write()
+                    except OSError:
+                        LOGGER.warning(
+                            "Unable to persist failed prompt optimization notification state"
+                        )
+                else:
+                    snapshot = None
+            if snapshot is not None:
+                write_operation(
+                    operation_id=notification_operation_id,
+                    action="quick_interaction_prompt_optimization_notification",
+                    status="requested",
+                    target=snapshot.session_id,
+                    source_ip=source_ip,
+                )
+                write_operation(
+                    operation_id=notification_operation_id,
+                    action="quick_interaction_prompt_optimization_notification",
+                    status="failed",
+                    target=snapshot.session_id,
+                    source_ip=source_ip,
+                )
+            LOGGER.warning("Unable to start prompt optimization notification thread")
+            self.resume_pending_completion_notifications()
+
+    def _deliver_prompt_optimization_notification(
+        self,
+        task_id: str,
+        operation: tuple[str, str],
+    ) -> None:
+        operation_id, source_ip = operation
+        notification_operation_id = f"{operation_id}:prompt-optimization"
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if (
+                task is None
+                or task.prompt_optimization_notification_status != "pending"
+                or task.notification_route != "weixin-task"
+            ):
+                return
+            task.prompt_optimization_notification_status = "sending"
+            task.prompt_optimization_notification_updated_at = utc_now()
+            try:
+                self._write()
+            except OSError:
+                # The send has not started. Settle this receipt locally and let a
+                # later parent-state write persist the failure before any final send.
+                task.prompt_optimization_notification_status = "failed"
+                task.prompt_optimization_notification_error = (
+                    "无法确认微信双语优化结果通知状态；本次未尝试发送。"
+                )
+                task.prompt_optimization_notification_updated_at = utc_now()
+                snapshot = task.model_copy(deep=True)
+                try:
+                    self._write()
+                except OSError:
+                    LOGGER.warning(
+                        "Unable to persist failed prompt optimization notification state"
+                    )
+                send_state_persisted = False
+            else:
+                snapshot = task.model_copy(deep=True)
+                send_state_persisted = True
+        if not send_state_persisted:
+            write_operation(
+                operation_id=notification_operation_id,
+                action="quick_interaction_prompt_optimization_notification",
+                status="requested",
+                target=snapshot.session_id,
+                source_ip=source_ip,
+            )
+            write_operation(
+                operation_id=notification_operation_id,
+                action="quick_interaction_prompt_optimization_notification",
+                status="failed",
+                target=snapshot.session_id,
+                source_ip=source_ip,
+            )
+            LOGGER.warning("Unable to persist prompt optimization notification start state")
+            self.resume_pending_completion_notifications()
+            return
+        write_operation(
+            operation_id=notification_operation_id,
+            action="quick_interaction_prompt_optimization_notification",
+            status="requested",
+            target=snapshot.session_id,
+            source_ip=source_ip,
+        )
+        write_operation(
+            operation_id=notification_operation_id,
+            action="quick_interaction_prompt_optimization_notification",
+            status="started",
+            target=snapshot.session_id,
+            source_ip=source_ip,
+        )
+        try:
+            route = self._notification_routes.get(task_id)
+            result = (
+                self.prompt_optimization_notifier(snapshot, route)
+                if self.prompt_optimization_notifier
+                else None
+            )
+            notification_status = getattr(result, "status", "failed")
+            notification_error = getattr(result, "error", None)
+            if notification_status not in {"sent", "failed", "skipped"}:
+                notification_status = "failed"
+                notification_error = "微信双语优化结果通知返回了无效状态。"
+        except Exception:
+            LOGGER.warning("Prompt optimization result notification failed", exc_info=True)
+            notification_status = "failed"
+            notification_error = "微信双语优化结果通知未送达。"
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                return
+            task.prompt_optimization_notification_status = notification_status
+            task.prompt_optimization_notification_error = (
+                notification_error[:1000] if notification_error else None
+            )
+            task.prompt_optimization_notification_updated_at = utc_now()
+            try:
+                self._write()
+            except OSError:
+                # The external result is already known. Keep it in memory and
+                # release the final-notification gate; restart recovery will
+                # treat the durable `sending` marker as unconfirmed, never resend.
+                LOGGER.warning(
+                    "Unable to persist prompt optimization notification outcome"
+                )
+        write_operation(
+            operation_id=notification_operation_id,
+            action="quick_interaction_prompt_optimization_notification",
+            status=(
+                "succeeded"
+                if notification_status == "sent"
+                else "skipped" if notification_status == "skipped" else "failed"
+            ),
+            target=snapshot.session_id,
+            source_ip=source_ip,
+            reason="notification_skipped" if notification_status == "skipped" else None,
+        )
+        # A very fast main task may finish while this progress receipt is in
+        # flight. Send its terminal receipt only after this one has settled.
+        self.resume_pending_completion_notifications()
+
     def resume_pending_completion_notifications(self) -> None:
         with self._lock:
             pending = [
@@ -1211,6 +1624,8 @@ class QuickInteractionManager:
                 if (
                     task.notification_status == "pending"
                     and task.notification_route == "weixin-task"
+                    and task.prompt_optimization_notification_status
+                    not in {"pending", "sending"}
                 )
             ]
         for task_id, operation in pending:
@@ -1317,7 +1732,7 @@ class QuickInteractionManager:
             self._start_worker_observer(
                 current,
                 session,
-                current.prompt or submission.prompt,
+                current.execution_prompt or current.prompt or submission.prompt,
             )
             return
         if message is None:
@@ -1453,8 +1868,8 @@ class QuickInteractionManager:
     def find_for_operation(self, operation_id: str) -> QuickInteractionTask | None:
         """Return the locally reserved task for one trusted operation, if any."""
         with self._lock:
-            for task_id, context in self._operations.items():
-                if context[0] == operation_id and (task := self._tasks.get(task_id)):
+            for task_id, context in self._operation_contexts.items():
+                if context.operation_id == operation_id and (task := self._tasks.get(task_id)):
                     return task.model_copy(deep=True)
         return None
 
@@ -1519,13 +1934,19 @@ class QuickInteractionManager:
                     task.status in {"requested", "running"} for task in matching
                 ),
                 pending_notification_count=sum(
-                    task.status not in {"requested", "running"}
-                    and task.notification_status in {"pending", "sending"}
+                    task.prompt_optimization_notification_status in {"pending", "sending"}
+                    or (
+                        task.status not in {"requested", "running"}
+                        and task.notification_status in {"pending", "sending"}
+                    )
                     for task in matching
                 ),
                 failed_notification_count=sum(
-                    task.status not in {"requested", "running"}
-                    and task.notification_status in {None, "failed", "skipped"}
+                    task.prompt_optimization_notification_status == "failed"
+                    or (
+                        task.status not in {"requested", "running"}
+                        and task.notification_status in {None, "failed", "skipped"}
+                    )
                     for task in matching
                 ),
                 running_tasks=tuple(
@@ -1606,6 +2027,8 @@ class QuickInteractionManager:
                     return "仍有快速交互任务尚未结束。"
                 if task.notification_status in {"pending", "sending"}:
                     return "仍有任务结果通知尚未确认。"
+                if task.prompt_optimization_notification_status in {"pending", "sending"}:
+                    return "仍有提示词优化结果通知尚未确认。"
                 if task.deferred_restart_status in {"pending", "started"}:
                     return "仍有协调重启请求尚未结束。"
                 if task.deferred_restart_notification_status in {"pending", "sending"}:
@@ -1649,6 +2072,7 @@ class QuickInteractionManager:
             if not requesting_tasks or any(
                 task.status != "succeeded"
                 or task.notification_status in {"pending", "sending"}
+                or task.prompt_optimization_notification_status in {"pending", "sending"}
                 for task in requesting_tasks
             ):
                 return "waiting"
@@ -1888,9 +2312,14 @@ class QuickInteractionManager:
         write_operation(
             operation_id=operation_id,
             action="quick_interaction_restart_weixin_notification",
-            status="succeeded" if notification_status == "sent" else "failed",
+            status=(
+                "succeeded"
+                if notification_status == "sent"
+                else "skipped" if notification_status == "skipped" else "failed"
+            ),
             target=snapshot.session_id,
             source_ip=source_ip,
+            reason="notification_skipped" if notification_status == "skipped" else None,
         )
         if self.deferred_restart is not None:
             self.deferred_restart.maybe_schedule()
@@ -1963,13 +2392,17 @@ class QuickInteractionManager:
 
     def cancel_task(self, task_id: str, *, timeout: float = 5) -> bool:
         """Cancel one exact task without guessing among a shared Session queue."""
-        self._require_worker_recovery()
         with self._lock:
             task = self._tasks.get(task_id)
             if task is None or task_id not in self._active_task_ids:
                 return False
             self._cancelled_task_ids.add(task.id)
             done = self._task_done_events.get(task.id)
+        if task.orchestration_pending:
+            if self.finish_orchestration(task_id, "已由用户停止。", cancelled=True):
+                return True
+            return self.cancel_task(task_id, timeout=timeout)
+        self._require_worker_recovery()
         if task.worker_task_id:
             try:
                 payload = self._worker_call(
@@ -2057,7 +2490,11 @@ class QuickInteractionManager:
     def stop_operation_guard(self, session_id: str) -> Iterator[None]:
         """Serialize stop with submission while allowing active work to cancel."""
         with self._session_lock(session_id):
-            self._require_worker_recovery()
+            with self._lock:
+                pending = any(task.session_id == session_id and task.orchestration_pending
+                              and task.id in self._active_task_ids for task in self._tasks.values())
+            if not pending:
+                self._require_worker_recovery()
             yield
 
     def _is_cancelled(self, task_id: str) -> bool:
@@ -2207,7 +2644,7 @@ class QuickInteractionManager:
             implementation_id=implementation_id,
             session_id=session.id,
             workspace_id=session.workspace_id,
-            prompt=self._execution_prompt(prompt),
+            prompt=prompt if task.prompt_processing else self._execution_prompt(prompt),
             permission_profile=permission_profile,
             native_session_id=session.native_session_id,
             model=model,
@@ -2494,7 +2931,12 @@ class QuickInteractionManager:
                 self._task_finished_handler(finished_snapshot)
             except Exception:
                 LOGGER.warning("Quick interaction completion handler failed", exc_info=True)
-        if notification_operation is not None:
+        if (
+            notification_operation is not None
+            and finished_snapshot is not None
+            and finished_snapshot.prompt_optimization_notification_status
+            not in {"pending", "sending"}
+        ):
             try:
                 threading.Thread(
                     target=self._deliver_completion_notification,
@@ -2596,9 +3038,14 @@ class QuickInteractionManager:
         write_operation(
             operation_id=notification_operation_id,
             action="quick_interaction_weixin_notification",
-            status="succeeded" if notification_status == "sent" else "failed",
+            status=(
+                "succeeded"
+                if notification_status == "sent"
+                else "skipped" if notification_status == "skipped" else "failed"
+            ),
             target=snapshot.session_id,
             source_ip=source_ip,
+            reason="notification_skipped" if notification_status == "skipped" else None,
         )
         if self.deferred_restart is not None:
             self.deferred_restart.maybe_schedule()
@@ -2673,6 +3120,7 @@ class QuickInteractionManager:
                     task.status in {"requested", "running"}
                     or task.id in self._active_task_ids
                     or task.notification_status in {"pending", "sending"}
+                    or task.prompt_optimization_notification_status in {"pending", "sending"}
                     or task.deferred_restart_status in {"pending", "started"}
                     or task.deferred_restart_notification_status
                     in {"pending", "sending"}
@@ -2686,6 +3134,8 @@ class QuickInteractionManager:
                         task.status not in {"requested", "running"}
                         and task.id not in self._active_task_ids
                         and task.notification_status not in {"pending", "sending"}
+                        and task.prompt_optimization_notification_status
+                        not in {"pending", "sending"}
                         and task.deferred_restart_status not in {"pending", "started"}
                         and task.deferred_restart_notification_status
                         not in {"pending", "sending"}
@@ -2719,6 +3169,19 @@ class QuickInteractionManager:
         payload = []
         for item in self._tasks.values():
             serialized = item.model_dump(mode="json")
+            if item.execution_prompt is not None:
+                serialized["execution_prompt"] = item.execution_prompt
+            serialized["prompt_optimization_notification_status"] = (
+                item.prompt_optimization_notification_status
+            )
+            serialized["prompt_optimization_notification_error"] = (
+                item.prompt_optimization_notification_error
+            )
+            serialized["prompt_optimization_notification_updated_at"] = (
+                item.prompt_optimization_notification_updated_at.isoformat()
+                if item.prompt_optimization_notification_updated_at is not None
+                else None
+            )
             serialized["_state_version"] = QUICK_INTERACTION_STATE_VERSION
             route = self._notification_routes.get(item.id)
             if route is not None:

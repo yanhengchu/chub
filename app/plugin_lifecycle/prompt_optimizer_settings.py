@@ -12,7 +12,7 @@ from app.core.response import ApiError
 PromptOptimizerMode = Literal["direct", "auto"]
 _SETTINGS_VERSION = 1
 _DEFAULT_MODE: PromptOptimizerMode = "direct"
-_AUTO_UNAVAILABLE_REASON = "auto 模式依赖的任务阶段尚未接入，后续交付完成后开放。"
+_AUTO_UNAVAILABLE_REASON = "AI 优化入口尚未就绪，请扫描、导入并启用当前插件实现。"
 
 
 class PromptOptimizerSettingsStore:
@@ -53,12 +53,8 @@ class PromptOptimizerSettingsStore:
             return {"mode": payload["mode"], "is_default": False}
 
     def save(self, mode: PromptOptimizerMode) -> dict[str, object]:
-        if mode == "auto":
-            raise ApiError(
-                409,
-                "prompt_optimizer_auto_unavailable",
-                _AUTO_UNAVAILABLE_REASON,
-            )
+        if mode not in {"direct", "auto"}:
+            raise ApiError(400, "prompt_optimizer_mode_invalid", "提示词处理模式无效。")
         payload = json.dumps(
             {"version": _SETTINGS_VERSION, "mode": mode},
             ensure_ascii=True,

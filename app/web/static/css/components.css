@@ -5527,6 +5527,40 @@ pre {
   justify-items: start;
 }
 
+.conversation-prompt-optimization {
+  width: 100%;
+}
+
+.conversation-prompt-optimization-bubble {
+  width: 100%;
+  max-width: 100%;
+}
+
+.conversation-prompt-optimization-label {
+  margin: 0;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.conversation-prompt-optimization-label {
+  margin-top: 0.65rem;
+  color: var(--color-text-muted);
+  font-weight: 600;
+}
+
+.conversation-prompt-optimization-label:first-of-type {
+  margin-top: 0;
+}
+
+.conversation-prompt-optimization-content {
+  margin: 0.25rem 0 0;
+  font: inherit;
+  font-size: 0.88rem;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 .conversation-bubble {
   min-width: 3.5rem;
   border: 1px solid var(--color-border);
@@ -5551,6 +5585,12 @@ pre {
   border-color: var(--color-danger-border);
   color: var(--color-danger);
   background: var(--color-danger-background);
+}
+
+.conversation-bubble.is-warning {
+  border-color: var(--color-warning-border);
+  color: var(--color-warning);
+  background: var(--color-warning-background);
 }
 
 .conversation-bubble p {

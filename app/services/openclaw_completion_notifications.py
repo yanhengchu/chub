@@ -18,6 +18,7 @@ from app.services.deferred_restart import DeferredRestartOutcome
 
 MAX_COMMAND_OUTPUT_BYTES = 64 * 1024
 MAX_COMPLETION_MESSAGE_PARTS = 5
+MAX_PROMPT_OPTIMIZATION_MESSAGE_PARTS = 80
 OVERFLOW_MESSAGE = "结果超过微信发送上限，剩余内容请在 Chub 快速交互页面查看。"
 COMPLETION_OVERFLOW_MESSAGE = "More in Chub."
 COMPLETION_USAGE_TIMEOUT_SECONDS = 2.0
@@ -65,6 +66,79 @@ class OpenClawCompletionNotifier:
                 footer=self._completion_usage_footer(task),
             ),
         )
+
+    def notify_prompt_optimization_completed(
+        self,
+        task: QuickInteractionTask,
+        route: QuickInteractionWeixinRoute | None = None,
+    ) -> CompletionNotificationResult:
+        """Return the optimizer result or failure notice to the original sender."""
+        if task.notification_route != "weixin-task":
+            return CompletionNotificationResult(
+                "skipped",
+                "页面任务通过原任务时间线显示优化进度。",
+            )
+        if not self.config.enabled:
+            return CompletionNotificationResult("skipped", "微信优化结果通知未启用。")
+        if task.prompt_optimization_warning is not None:
+            return self._send(
+                task,
+                route,
+                ["Prompt optimization failed; the original task is continuing."],
+                disabled_message="WeChat optimization notice is unavailable.",
+            )
+        if task.prompt_optimization_result is None:
+            return CompletionNotificationResult(
+                "failed",
+                "双语优化结果缺失，未发送阶段结果。",
+            )
+        messages = self._prompt_optimization_messages(task)
+        if messages is None:
+            return CompletionNotificationResult(
+                "failed",
+                "双语优化结果超过微信固定分段上限，未发送完整结果。",
+            )
+        return self._send(
+            task,
+            route,
+            messages,
+            disabled_message="微信优化结果通知未启用。",
+        )
+
+    def _prompt_optimization_messages(
+        self,
+        task: QuickInteractionTask,
+    ) -> list[str] | None:
+        versions = task.prompt_optimization_result
+        if versions is None:
+            return None
+        content = (
+            "Chinese:\n"
+            f"{versions.chinese}\n\n"
+            "English:\n"
+            f"{versions.english}"
+        )
+        single_prefix = "Prompt optimization completed\n\n"
+        if len(single_prefix) + len(content) <= self.config.max_message_chars:
+            return [f"{single_prefix}{content}"]
+
+        multipart_prefix = (
+            "Prompt optimization completed · "
+            f"{MAX_PROMPT_OPTIMIZATION_MESSAGE_PARTS}/"
+            f"{MAX_PROMPT_OPTIMIZATION_MESSAGE_PARTS}\n\n"
+        )
+        content_limit = self.config.max_message_chars - len(multipart_prefix)
+        if content_limit <= 0:
+            return None
+        parts = self._split_exact_text(content, content_limit)
+        if len(parts) > MAX_PROMPT_OPTIMIZATION_MESSAGE_PARTS:
+            return None
+        total = len(parts)
+        return [
+            "Prompt optimization completed · "
+            f"{index}/{total}\n\n{part}"
+            for index, part in enumerate(parts, start=1)
+        ]
 
     def notify_restart(
         self,
@@ -503,6 +577,27 @@ class OpenClawCompletionNotifier:
         while remaining:
             part, remaining = cls._take_part(remaining, limit)
             parts.append(part)
+        return parts
+
+    @staticmethod
+    def _split_exact_text(text: str, limit: int) -> list[str]:
+        """Split text without trimming, so concatenated parts preserve the result."""
+        parts: list[str] = []
+        remaining = text
+        separators = ("\n\n", "\n", "。", "！", "？", ". ", "! ", "? ", "；", "; ")
+        while len(remaining) > limit:
+            minimum_break = max(1, limit // 2)
+            boundary = -1
+            for separator in separators:
+                candidate = remaining.rfind(separator, minimum_break, limit)
+                if candidate >= minimum_break and candidate + len(separator) <= limit:
+                    boundary = max(boundary, candidate + len(separator))
+            if boundary < minimum_break:
+                boundary = limit
+            parts.append(remaining[:boundary])
+            remaining = remaining[boundary:]
+        if remaining:
+            parts.append(remaining)
         return parts
 
     @staticmethod

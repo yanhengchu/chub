@@ -41,6 +41,8 @@
       task.deferred_restart_notification_status,
       task.deferred_restart_notification_error,
       task.deferred_restart_notification_updated_at,
+      task.prompt_optimization_result,
+      task.prompt_optimization_warning,
       core.statusText(task),
     ]);
   }
@@ -102,6 +104,17 @@
         : "",
       statusOnly: !hasResult,
       error,
+      promptOptimization: task.prompt_optimization_result
+        && typeof task.prompt_optimization_result.chinese === "string"
+        && typeof task.prompt_optimization_result.english === "string"
+        ? Object.freeze({
+          chinese: task.prompt_optimization_result.chinese,
+          english: task.prompt_optimization_result.english,
+        })
+        : null,
+      promptOptimizationWarning: typeof task.prompt_optimization_warning === "string"
+        ? task.prompt_optimization_warning
+        : "",
       notification: notificationState(
         task.notification_status,
         task.notification_error,
@@ -146,6 +159,36 @@
         notification.setAttribute("aria-label", `${state.label}：${state.error}`);
       }
       return notification;
+    }
+
+    function createPromptOptimization(state) {
+      if (!state) {
+        return null;
+      }
+      const message = documentRef.createElement("div");
+      const bubble = documentRef.createElement("div");
+      const chineseLabel = documentRef.createElement("p");
+      const chineseContent = documentRef.createElement("pre");
+      const englishLabel = documentRef.createElement("p");
+      const englishContent = documentRef.createElement("pre");
+      message.className = "conversation-message conversation-message-assistant conversation-prompt-optimization";
+      bubble.className = "conversation-bubble conversation-prompt-optimization-bubble";
+      chineseLabel.className = "conversation-prompt-optimization-label";
+      chineseLabel.textContent = "Chinese";
+      chineseContent.className = "conversation-prompt-optimization-content";
+      chineseContent.textContent = state.chinese;
+      englishLabel.className = "conversation-prompt-optimization-label";
+      englishLabel.textContent = "English";
+      englishContent.className = "conversation-prompt-optimization-content";
+      englishContent.textContent = state.english;
+      bubble.append(
+        chineseLabel,
+        chineseContent,
+        englishLabel,
+        englishContent,
+      );
+      message.append(bubble);
+      return message;
     }
 
     function updateTurn(turn, task) {
@@ -196,7 +239,25 @@
         assistantMeta.append(notification);
       }
       assistantMessage.append(assistantBubble, assistantMeta);
-      turn.append(userMessage, assistantMessage);
+      turn.append(userMessage);
+      const optimization = createPromptOptimization(state.promptOptimization);
+      if (optimization) {
+        turn.append(optimization);
+      }
+      if (state.promptOptimizationWarning) {
+        const warningMessage = documentRef.createElement("div");
+        const warningBubble = documentRef.createElement("div");
+        const warningContent = documentRef.createElement("p");
+        warningMessage.className = (
+          "conversation-message conversation-message-assistant conversation-message-system"
+        );
+        warningBubble.className = "conversation-bubble is-status is-warning";
+        warningContent.textContent = state.promptOptimizationWarning;
+        warningBubble.append(warningContent);
+        warningMessage.append(warningBubble);
+        turn.append(warningMessage);
+      }
+      turn.append(assistantMessage);
 
       if (state.restart) {
         const restartMessage = documentRef.createElement("div");

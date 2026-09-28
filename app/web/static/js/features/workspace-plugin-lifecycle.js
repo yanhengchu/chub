@@ -75,12 +75,12 @@
       const detail = document.createElement("small");
       const unavailable = artifact.available === false;
       title.textContent = `${plugin.name} · ${artifact.name}`;
-      const loadLabel = artifact.load_state === "loaded"
-        ? (enabled ? "入口已装配；尚未接入任务阶段" : "当前仍已装配；待重载卸载（未接入阶段）")
-        : artifact.load_state === "failed"
-          ? `装配失败：${artifact.load_reason || "修复模块后重新加载 Web。"}`
-          : artifact.load_state === "pending_reload"
-            ? "待 Web 重载装配入口"
+      const loadLabel = artifact.load_state === "failed"
+        ? `装配失败：${artifact.load_reason || "请修复源码；无需重新导入或重启 Web。"}`
+        : artifact.load_reason
+          ? artifact.load_reason
+          : artifact.load_state === "loaded"
+            ? (enabled ? "入口已装配" : "已停用；新任务不再进入编排阶段")
             : "未装配入口";
       const lifecycleDetail = plugin.module_type === "orchestration" && (imported || artifact.loaded)
         ? ` ${enabled ? "已启用" : "未启用"} · ${loadLabel}`
@@ -165,7 +165,7 @@
           void window.showConfirmationDialog({
             title: "移除插件",
             body: plugin.module_type === "orchestration"
-              ? "若已启用，将先停用再移除；已受理任务按原有快照继续处理。当前实例已装配的入口会在 Web 重载后卸载。"
+              ? "若已启用，将立即停用后续任务并移除；已受理任务按原有快照继续处理。"
               : "若已启用，将先停用再移除；已受理任务按原有快照与恢复规则继续处理。",
             details: [{ label: "插件", value: `${plugin.name} · ${artifact.name}` }],
             confirmLabel: "移除",
@@ -204,12 +204,14 @@
       const loaded = Array.isArray(plugin.loaded_artifact_ids) && plugin.loaded_artifact_ids.includes(selectedId);
       const loadStatus = plugin.module_type === "orchestration"
         ? artifact?.load_state === "failed"
-          ? `装配失败：${artifact.load_reason || "修复模块后重新加载 Web。"}`
-          : loaded
-            ? (enabled.includes(selectedId) ? "入口已装配，尚未接入任务阶段" : "当前仍已装配，待重载卸载（未接入阶段）")
-            : enabled.includes(selectedId)
-              ? "已启用，待 Web 重载装配入口"
-              : "未装配入口"
+          ? `装配失败：${artifact.load_reason || "请修复源码；无需重新导入或重启 Web。"}`
+          : artifact?.load_reason
+            ? artifact.load_reason
+            : loaded
+              ? (enabled.includes(selectedId) ? "入口已装配" : "已停用；新任务不再进入编排阶段")
+              : enabled.includes(selectedId)
+                ? "已启用，但入口未装配"
+                : "未装配入口"
         : "";
       const item = document.createElement("div");
       item.className = "workstation-status-row plugin-lifecycle-status-row";

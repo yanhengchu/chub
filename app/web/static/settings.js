@@ -627,7 +627,6 @@ async function fetchSettingsApi(path, options = {}) {
 function initializePromptOptimizerSettings() {
   const mode = document.querySelector("#prompt-optimizer-mode");
   const pluginStatus = document.querySelector("#prompt-optimizer-plugin-status");
-  const message = document.querySelector("#prompt-optimizer-settings-message");
   if (!(mode instanceof HTMLSelectElement)) return;
 
   const endpoint = "/api/plugins/chub-task-prompt-optimizer/settings";
@@ -648,17 +647,25 @@ function initializePromptOptimizerSettings() {
     const picker = settingsChoicePickers.get(mode);
     if (picker) renderSettingsChoicePicker(picker);
     if (pluginStatus) {
-      const status = data.plugin_enabled ? "插件已启用" : "插件已停用，设置保留但暂不生效";
-      pluginStatus.textContent = `${status}；${data.entry_loaded ? "入口已装配" : "入口尚未装配"}。`;
+      let status = "插件已停用，设置保留但暂不生效。";
+      if (data.plugin_enabled && data.effective) {
+        status = `插件已启用；${data.effective_mode} 模式作用于后续 Web 与微信普通任务。`;
+      } else if (data.plugin_enabled && data.entry_loaded) {
+        status = "插件已启用；当前模式尚未参与任务处理。";
+      } else if (data.plugin_enabled) {
+        status = "插件入口未就绪；请重新扫描、导入并启用。";
+      }
+      pluginStatus.textContent = status;
     }
   };
   const load = async () => {
     try {
       render(await fetchSettingsApi(endpoint));
-      setSettingsMessage(message, "");
     } catch (error) {
       mode.disabled = true;
-      setSettingsMessage(message, error instanceof Error ? error.message : "无法读取插件设置。", "error");
+      const picker = settingsChoicePickers.get(mode);
+      if (picker) renderSettingsChoicePicker(picker);
+      window.showChubToast?.(error instanceof Error ? error.message : "无法读取插件设置。", { kind: "error" });
     }
   };
   mode.addEventListener("change", async () => {
@@ -669,17 +676,17 @@ function initializePromptOptimizerSettings() {
 
     busy = true;
     mode.disabled = true;
-    setSettingsMessage(message, "正在保存…");
+    const picker = settingsChoicePickers.get(mode);
+    if (picker) renderSettingsChoicePicker(picker);
     try {
       render(await fetchSettingsApi(endpoint, {
         method: "PUT",
         headers: settingsHeaders(true),
         body: JSON.stringify({ mode: nextMode }),
       }));
-      setSettingsMessage(message, "");
     } catch (error) {
       render(current);
-      setSettingsMessage(message, error instanceof Error ? error.message : "插件设置未能保存。", "error");
+      window.showChubToast?.(error instanceof Error ? error.message : "插件设置未能保存。", { kind: "error" });
     } finally {
       busy = false;
       if (current) render(current);

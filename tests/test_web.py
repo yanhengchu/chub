@@ -23,6 +23,7 @@ from app.core.config import Settings
 import app.services.weekly_reports as weekly_report_service
 import app.web.routes as web_routes
 from app.web.themes import WEB_FONT_SIZES, WEB_THEMES
+from modules.business import deliveryline as deliveryline_module
 
 
 def _theme_hex_color(tokens: str, theme_id: str, suffix: str) -> str:
@@ -685,7 +686,9 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert 'class="settings-navigation-link settings-navigation-parent" href="/settings/runtime"' in pages["runtime"].text
     assert '<span>插件管理</span>' in pages["runtime"].text
     assert pages["runtime"].text.index('<span class="settings-navigation-group">通用设置</span>') < pages["runtime"].text.index('href="/settings/appearance"') < pages["runtime"].text.index('href="/settings/runtime"')
-    assert pages["runtime"].text.count('class="settings-navigation-tree"') == 0
+    assert pages["runtime"].text.count('class="settings-navigation-tree"') == 1
+    assert '<span class="settings-navigation-subgroup">任务编排插件</span>' in pages["runtime"].text
+    assert 'class="settings-navigation-link settings-navigation-child" href="/settings/chub-task-prompt-optimizer"' in pages["runtime"].text
     assert 'class="settings-navigation-link settings-navigation-child" href="/settings/runtime/codex"' not in pages["runtime"].text
     assert 'class="settings-navigation-link settings-navigation-child" href="/settings/task-orchestration"' not in pages["runtime"].text
     assert "插件生命周期" not in pages["runtime"].text
@@ -808,6 +811,7 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert 'remove.addEventListener("click", clearSelectedRuntimePlugin);' not in script.text
     assert 'remove.addEventListener("click", clearSelectedOrchestrationPlugin);' not in script.text
     assert 'request("/api/plugins")' in lifecycle_script.text
+    assert "尚未接入任务阶段" not in lifecycle_script.text
     assert 'request(`/api/plugins/${encodeURIComponent(plugin.plugin_id)}/imports`' in lifecycle_script.text
     assert 'href="/settings/runtime/codex" aria-current="page"' not in pages["runtime-detail"].text
     assert 'id="runtime-plugin-status"' in pages["runtime-detail"].text
@@ -820,8 +824,9 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert '"/api/today-focus/refresh"' in workspace_search_script.text
     assert '"/api/today-focus/open-pages"' not in workspace_search_script.text
     assert 'window.initializeWorkspacePluginLifecycle?.();' in script.text
-    assert 'workstation-status-detail-${enabled.length ? "success" : "warning"}' in lifecycle_script.text
-    assert 'deliverylineVersion.disabled = busy || enabled.length === 0 || artifacts.length === 0;' in lifecycle_script.text
+    assert 'const tone = plugin.module_type === "orchestration" && artifact?.load_state === "failed"' in lifecycle_script.text
+    assert 'detail.className = `workstation-status-detail workstation-status-detail-${tone}`;' in lifecycle_script.text
+    assert 'picker.disabled = busy || enabled.length === 0 || artifacts.length === 0;' in lifecycle_script.text
     assert 'busy = false;\n        render();' in lifecycle_script.text
     assert 'function bindConfirmationDialog() {' in ui_script.text
     assert 'const dialog = document.querySelector("#confirmation-dialog");' in ui_script.text
@@ -1127,7 +1132,19 @@ async def test_root_page_is_the_workspace_and_legacy_workspace_redirects(
 @pytest.mark.anyio
 async def test_deliveryline_workspace_section_follows_import_lifecycle(
     settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
+    monkeypatch.setattr(
+        deliveryline_module,
+        "MODULE_SHARED_DATA_DIR",
+        tmp_path / "deliveryline-requirements",
+    )
+    monkeypatch.setattr(
+        deliveryline_module,
+        "MODULE_STATE_DIR",
+        tmp_path / "deliveryline-state",
+    )
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         initial_home = await client.get("/")
@@ -1982,6 +1999,11 @@ async def test_quick_interaction_conversation_page_is_available(
     assert "Chub 已完成自动重启，服务已恢复。" in timeline_script.text
     assert 'task.deferred_restart_status === "pending"' in script.text
     assert 'failed: "重启结果通知失败"' in timeline_script.text
+    assert 'chineseLabel.textContent = "Chinese"' in timeline_script.text
+    assert 'englishLabel.textContent = "English"' in timeline_script.text
+    assert "提示词优化已完成" not in timeline_script.text
+    assert "已提交主任务" not in timeline_script.text
+    assert "prompt_optimization_result" in timeline_script.text
     assert "Chub 自动重启未完成" in timeline_script.text
     assert "task.deferred_restart_error" in timeline_script.text
     assert "旧记录没有保存具体原因，请查看 Chub 运行日志" in timeline_script.text
@@ -2135,7 +2157,7 @@ async def test_design_document_pages_render_markdown(settings: Settings) -> None
     )
     assert home.text.index("项目核心文档") < home.text.index("AI Runtime")
     assert 'data-project-document-category=' not in home.text
-    assert home.text.count('class="workspace-project-document"') == 15
+    assert home.text.count('class="workspace-project-document"') == 12
     assert '<span class="badge badge-muted">项目核心文档</span>' not in home.text
     assert listing.text.index('href="/project-docs/project-readme"') < listing.text.index(
         'href="/project-docs/chub-architecture"'
@@ -2241,7 +2263,7 @@ async def test_project_document_card_and_weekly_report_apis_allow_loopback(
     ]
     assert weekly_reports[0]["available"] is True
     assert weekly_reports[1]["available"] is False
-    assert len(data["documents"]) == 15
+    assert len(data["documents"]) == 12
     assert any(document["status"] == "持续维护" for document in data["documents"])
     assert any(document["category"] == "project_baseline" for document in data["documents"])
     assert any(document["category_label"] == "专项需求与设计" for document in data["documents"])
@@ -2382,9 +2404,8 @@ async def test_page_uses_external_script_only(settings: Settings) -> None:
         "/static/js/components/ui.js",
         "/static/workspace.js",
         "/static/js/features/workspace-sessions.js",
-            "/static/js/features/workspace-workstation.js",
-            "/static/js/features/workspace-deliveryline.js",
-            "/static/js/features/workspace-search.js",
+        "/static/js/features/workspace-workstation.js",
+        "/static/js/features/workspace-search.js",
     ]
     assert response.text.count("<script") == len(expected_scripts) + 2
     assert '<script src="/static/workspace-bootstrap.js"></script>' in response.text

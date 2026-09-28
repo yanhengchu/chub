@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.ai_interactions.models import (
+    PromptOptimizationVersions,
     QuickInteractionTask,
     QuickInteractionWeixinRoute,
 )
@@ -43,6 +44,126 @@ def executable(tmp_path: Path) -> Path:
     path.write_text("#!/bin/sh\n", encoding="utf-8")
     path.chmod(0o700)
     return path
+
+
+def test_prompt_optimization_notification_returns_both_versions_to_weixin() -> None:
+    notifier = OpenClawCompletionNotifier(OpenClawCompletionNotificationConfig())
+    captured = {}
+
+    def send(_task, _route, messages, *, disabled_message, message_factory=None):
+        captured["disabled_message"] = disabled_message
+        captured["messages"] = message_factory() if message_factory else messages
+        return CompletionNotificationResult("sent")
+
+    notifier._send = send
+    route = QuickInteractionWeixinRoute(
+        account_id="account-1",
+        recipient="owner@im.wechat",
+    )
+
+    result = notifier.notify_prompt_optimization_completed(
+        task(notification_route="weixin-task").model_copy(
+            update={
+                "prompt": "private optimized prompt",
+                "summary": "检查发布流程",
+                "prompt_optimization_result": PromptOptimizationVersions(
+                    chinese="中文优化正文不能外泄。",
+                    english="Private English optimized content.",
+                ),
+            }
+        ),
+        route,
+    )
+
+    assert result.status == "sent"
+    assert captured["messages"] == [
+        "Prompt optimization completed\n\n"
+        "Chinese:\n"
+        "中文优化正文不能外泄。\n\n"
+        "English:\n"
+        "Private English optimized content."
+    ]
+    assert "private optimized prompt" not in captured["messages"][0]
+
+
+def test_prompt_optimization_notification_splits_without_truncating_versions() -> None:
+    config = OpenClawCompletionNotificationConfig(max_message_chars=256)
+    notifier = OpenClawCompletionNotifier(config)
+    captured: dict[str, list[str]] = {}
+
+    def send(_task, _route, messages, *, disabled_message, message_factory=None):
+        captured["messages"] = message_factory() if message_factory else messages
+        return CompletionNotificationResult("sent")
+
+    notifier._send = send
+    route = QuickInteractionWeixinRoute(
+        account_id="account-1",
+        recipient="owner@im.wechat",
+    )
+    chinese = "任务约束。" * 1600
+    english = "English constraint. " * 399 + "English constraint."
+    expected_content = (
+        "Chinese:\n"
+        f"{chinese}\n\n"
+        "English:\n"
+        f"{english}"
+    )
+
+    result = notifier.notify_prompt_optimization_completed(
+        task(notification_route="weixin-task").model_copy(
+            update={
+                "prompt_optimization_result": PromptOptimizationVersions(
+                    chinese=chinese,
+                    english=english,
+                )
+            }
+        ),
+        route,
+    )
+
+    messages = captured["messages"]
+    assert result.status == "sent"
+    assert len(messages) > 1
+    assert all(len(message) <= config.max_message_chars for message in messages)
+    assert [message.split("\n", 1)[0] for message in messages] == [
+        f"Prompt optimization completed · {index}/{len(messages)}"
+        for index in range(1, len(messages) + 1)
+    ]
+    assert "".join(message.split("\n\n", 1)[1] for message in messages) == expected_content
+
+
+def test_prompt_optimization_notification_fails_instead_of_truncating_over_part_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.openclaw_completion_notifications.MAX_PROMPT_OPTIMIZATION_MESSAGE_PARTS",
+        2,
+    )
+    notifier = OpenClawCompletionNotifier(
+        OpenClawCompletionNotificationConfig(max_message_chars=256)
+    )
+    notifier._send = lambda *_args, **_kwargs: pytest.fail(
+        "an incomplete bilingual result must not be sent"
+    )
+    route = QuickInteractionWeixinRoute(
+        account_id="account-1",
+        recipient="owner@im.wechat",
+    )
+
+    result = notifier.notify_prompt_optimization_completed(
+        task(notification_route="weixin-task").model_copy(
+            update={
+                "prompt_optimization_result": PromptOptimizationVersions(
+                    chinese="限制条件。" * 800,
+                    english="Preserve every constraint. " * 250,
+                )
+            }
+        ),
+        route,
+    )
+
+    assert result.status == "failed"
+    assert result.error == "双语优化结果超过微信固定分段上限，未发送完整结果。"
 
 
 def test_notification_skips_when_recipient_is_not_configured(

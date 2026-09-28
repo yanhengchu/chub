@@ -144,6 +144,7 @@
   }
 
   function statusText(task) {
+    if (task.orchestration_pending && task.status === "requested") return "正在优化提示词";
     if (
       task.status === "failed"
       && task.error === "服务重启导致正在执行的任务中断，请重新提交任务。"
